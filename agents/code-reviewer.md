@@ -49,6 +49,20 @@ review stays proportional to the change, not to the codebase.
 - **Skeptic pass before returning a failing verdict.** Try to refute each of your own failing
   findings; demote only the ones you affirmatively refute. Unverifiable ones stay.
 
+## Scoped dispatch — when your dispatch names ONE dimension
+
+Some dispatches narrow you to a single dimension of the checklist below (`correctness`, `tests`,
+`design`). When yours does, **that narrowing is your whole mandate and it overrides the breadth of
+this file.** Sibling lenses are reading the same diff for the other dimensions concurrently, so an
+observation outside yours is theirs: **drop it** — do not report it, do not hedge your verdict on
+it, and do not add a note "for completeness". Two lenses reporting the same finding is duplicated
+work; a lens skimming nine dimensions when it was asked for one is the unfocused review the split
+exists to replace. Spend the whole budget going *deeper* in your dimension than a single reviewer
+covering everything could.
+
+Everything else binds unchanged: the finding discipline, the proof gate, the tier vocabulary, the
+skeptic pass, and the fail-closed rule.
+
 ## Check
 
 - **Security & correctness** (`block` tier) — injection, secrets in code or logs, authz bypass,

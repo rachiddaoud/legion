@@ -104,9 +104,15 @@ Chosen at intake, escalated (never lowered) the moment evidence says so:
 
 | Profile | Plan critic | Per-task review | Milestone product review | External second opinion |
 |---|---|---|---|---|
-| **express** | skipped | yes | no | no |
-| **standard** (default) | yes | yes | yes | no |
-| **full** | yes | yes | yes | yes, advisory |
+| **express** | skipped | one lens | no | no |
+| **standard** (default) | yes | one lens, plan risk tiers honoured | yes | no |
+| **full** | yes | three dimension lenses — correctness, tests, design — risk tiers ignored | yes | yes, advisory |
+
+`full` is the profile that costs more on *any* machine: its per-task review is three reviewers with
+narrow, disjoint mandates instead of one reviewer covering everything, and the plan's per-task risk
+tiers — which buy review cheapness on the other profiles — are ignored. The external second opinion
+(the `codex` CLI, at plan stage and each milestone close) is advisory on top of that, and simply
+absent when the CLI is not installed.
 
 ## Day to day
 

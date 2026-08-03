@@ -131,6 +131,10 @@ decision points your plan actually needs.
         surface — and omit it when you are unsure. An unset tier means the full dual-lens review,
         which is the correct default; an unrecognised value falls back to it too, so a misspelling
         costs nothing but is not a tier.
+      Tier the **diff**, never the profile: on `full` the build loop ignores every tier and reviews
+      each task at full depth anyway, reporting what it overrode. So a tier written there costs
+      nothing and buys nothing — and a tier withheld because the profile is `standard` silently
+      overpays on the profile where it would have counted.
       Tiering is a judgement the plan-critic challenges in **both** directions: under-tiering wastes
       a review round, over-tiering ships a real change past half its review.
     - **`visual`** *(optional — set it on a task that ships user-visible UI)* — `true`, or the

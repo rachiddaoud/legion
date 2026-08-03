@@ -126,8 +126,10 @@ report.
    simply overwrites the field.
 3. Classify the **profile** and say why: **express** (a contained change, one or two tasks, no
    product review), **standard** (the default: full plan, critic, per-task reviews, milestone
-   product review), **full** (adds a codex consult at plan and pre-merge). Record it with
-   `legion state escalate-profile <profile>`.
+   product review), **full** (**every task reviewed by three dimension lenses — correctness, tests,
+   design — with the plan's risk tiers ignored**, plus a codex consult at plan and at each milestone
+   close). The dimension split is what makes `full` cost more on any machine; the codex consults are
+   advisory and absent when the CLI is. Record it with `legion state escalate-profile <profile>`.
 4. **READ THE TARGET REPOSITORY — before the recap, at the depth this profile sets.**
    Classification comes first *because* it fixes the depth; you read the code with
    Read/Glob/Grep in this session, there is no explore agent to dispatch. Before the code, read
@@ -439,6 +441,10 @@ facts survive to reach it.
 - **`singleLens`** — `{taskId, tier}` for every task reviewed by one lens **because the approved
   plan tiered it that way**. This is a different fact from `degraded` and must stay a different
   line in the artifact: one is cheapness the human approved, the other is a hole in the review.
+- **`tiersIgnored`** — `{taskId, tier}` for every task whose plan risk tier the **full** profile
+  overrode, reviewing it at full depth instead. The mirror image of `singleLens`, and empty on
+  every other profile: without it the plan says "this task was tiered `low`" and nothing says the
+  loop declined to take the discount.
 - **`squashDeviations`** — a milestone whose task commits were kept because `squash: false` was
   passed. The loop reports the deviation and deliberately **no reason** — the reason is yours to
   write (review step 1).
@@ -495,6 +501,8 @@ flags the milestone's tasks `notes.visual` — the visual reviewer, with every v
    - **Every task returned in `singleLens`, with its tier** — reviewed by one lens **by design**,
      because the approved plan tiered it `low` or `trivial`. Keep it a separate line from
      `degraded`: the pre-merge human is entitled to tell approved cheapness from a missing lens.
+   - **Every task returned in `tiersIgnored`, with its tier** — the opposite entry, and only on the
+     **full** profile: the plan tiered it cheap and the profile reviewed it at full depth anyway.
    - **Every `squashDeviations` entry, with the reason** you are supplying for it.
    - **Every accepted residual** (RR3): the findings not fixed, each with the reason.
    - **Every adjudicated consult fail** (RR4): the rejected finding, why, and the residual.
@@ -552,7 +560,8 @@ just earned.
    findings on the full profile, anything the reviewers marked `unverified`, **every task
    the review artifact records as `degraded`** — a task reviewed by one lens because codex was
    unavailable — **every task it records under `singleLens`, with its plan-assigned tier** — one
-   lens by design, which is a different thing — and **the accepted residuals and adjudicated
+   lens by design, which is a different thing — **every task under `tiersIgnored`** — reviewed
+   deeper than the plan asked, because the profile is `full` — and **the accepted residuals and adjudicated
    consult fails** the artifact records (RR3, RR4). Read all of that off the artifact, not off your
    memory of the build stage.
    The human is deciding on this evidence; a thinner review than the profile promised, and a
@@ -650,7 +659,9 @@ round, RR1's warm re-review — then the human gate. A further round happens onl
 explicitly chose one, and you ask by saying what that round would buy, not by asking whether to
 continue. Standard and full run the reviewers their profile requires under the same discipline: a
 round that produced no `must-fix` finding is the last one. The stop condition lives here, in the
-rule, never in session judgement.
+rule, never in session judgement. **Full's three dimension lenses do not buy three rounds** — they
+are one review round in three parts, and they share the single fix round, each dimension re-judging
+only the findings it raised.
 
 **RR3 — SEVERITY IS GATED BY BLAST RADIUS, and every reviewer dispatch prompt says so.** A finding
 with no live call site, no user-visible wrong output and no data at risk is a **note** — never a

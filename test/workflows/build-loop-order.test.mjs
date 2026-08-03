@@ -994,6 +994,151 @@ test("notes.risk 'trivial' is a DIFF SCAN at low effort, and its fix round keeps
   assert.deepEqual(result.built, ['T1']);
 });
 
+// --- THE FULL PROFILE OWNS THE TASK REVIEW ----------------------------------------------------
+// On `full` the plan's risk tier is ignored and the Claude lens splits into one dispatch per
+// DIMENSION. Both facts live in control flow and in dispatch text, so both are only observable
+// from here. The dangerous half is the verdict arithmetic: three lenses sharing the `code-reviewer`
+// role write into an append-only reviews array whose readers take the LATEST row, so anything
+// short of an AND-fold recorded ONCE lets a passing dimension mask a failing one.
+
+const FULL = { args: { profile: 'full' } };
+/** The dimension keys, in dispatch order — the labels the split is supposed to produce. */
+const DIMS = ['correctness', 'tests', 'design'];
+const claudeLenses = (dispatches) =>
+  dispatches.filter((d) => d.agentType === 'legion:code-reviewer' && / review:/.test(d.label)).map((d) => d.label);
+
+test('FULL splits the Claude lens by dimension and IGNORES the plan risk tier', async () => {
+  const { result, dispatches, logs } = await runLoop([row('T1', { notes: { risk: 'low', mirror: 'src/x.mjs:1' } })], FULL);
+  assert.deepEqual(claudeLenses(dispatches), DIMS.map((k) => `T1 review:code-reviewer[${k}]`));
+  assert.deepEqual(dispatches.filter((d) => d.agentType === 'legion:codex-consult').map((d) => d.label),
+    ['T1 review:codex-consult', 'M1 codex review'],
+    'the codex lenses still run on full — the dimensions are an addition, not a replacement');
+  assert.deepEqual(result.singleLens, [],
+    "a tier the profile ignored did not buy a single lens, so it is not a by-design single-lens task");
+  assert.deepEqual(result.tiersIgnored, [{ taskId: 'T1', tier: 'low' }],
+    'the pre-merge human must see that the plan asked for cheapness and the profile declined');
+  assert.deepEqual(result.degraded, [], 'nothing degraded — four lenses ran');
+  assert.deepEqual(result.built, ['T1']);
+  assert.ok(logs.some((l) => /risk tier 'low' IGNORED/.test(l)));
+  // The tier bought nothing anywhere else either: same gate, same receipt, same notes in the brief.
+  assert.match(dispatches.find((d) => d.label === 'T1 build').prompt, /mirror: src\/x\.mjs:1/);
+});
+
+test("FULL ignores 'trivial' too: no diff-scan mandate and no low-effort budget survives it", async () => {
+  const { result, dispatches } = await runLoop([row('T1', { notes: { risk: 'trivial' } })], FULL);
+  const lenses = dispatches.filter((d) => d.agentType === 'legion:code-reviewer' && / review:/.test(d.label));
+  assert.equal(lenses.length, 3);
+  for (const l of lenses) {
+    assert.doesNotMatch(l.prompt, /DIFF SCAN/, `${l.label} must be an adversarial review, not a scan`);
+    assert.equal(l.opts.effort, undefined, `${l.label} keeps the agent's own high effort`);
+  }
+  assert.deepEqual(result.tiersIgnored, [{ taskId: 'T1', tier: 'trivial' }]);
+});
+
+test('each dimension prompt names ITS OWN mandate and disclaims the others', async () => {
+  // Three copies of one prompt would differ only by sampling noise. The narrowing IS the lens, so
+  // the mandates must be pairwise distinct and each must say an out-of-dimension observation is
+  // dropped — a lens hedging into its siblings' territory rebuilds the unfocused review three times.
+  const { dispatches } = await runLoop([row('T1')], FULL);
+  const prompts = new Map(DIMS.map((k) => [k, dispatches.find((d) => d.label === `T1 review:code-reviewer[${k}]`).prompt]));
+  assert.equal(new Set(prompts.values()).size, 3, 'the three prompts must not be the same prompt');
+  for (const [key, prompt] of prompts) {
+    assert.match(prompt, new RegExp(`your dimension is '${key}'`), `${key} is told which lens it is`);
+    assert.match(prompt, /DROP it, do not report it/, `${key} drops out-of-dimension findings`);
+    assert.match(prompt, /blast radius/i, 'RR3 still binds every lens on every profile');
+  }
+  assert.match(prompts.get('correctness'), /authz bypass/);
+  assert.match(prompts.get('tests'), /tautological/);
+  assert.match(prompts.get('design'), /smell baseline/);
+});
+
+test('THREE dimension lenses record exactly ONE code-reviewer verdict — a pass must not mask a fail', async () => {
+  // reviews is append-only and its readers take the LATEST row for a role+subject, so three rows
+  // under one role would let 'design' passing overwrite 'correctness' failing. One fold, one row.
+  const { kernelCmds } = await runLoop([row('T1')], FULL);
+  assert.equal(verdictsFor(kernelCmds, 'code-reviewer', "task:'T1'"), 1,
+    'one verdict for the Claude side, however many lenses produced it');
+  assert.equal(verdictsFor(kernelCmds, 'codex-consult', "task:'T1'"), 1);
+});
+
+test('ONE failing dimension fails the task, and ONLY that dimension re-reviews its own findings', async () => {
+  const { result, dispatches, kernelCmds } = await runLoop([row('T1')], {
+    ...FULL,
+    lensResult: (type, label) =>
+      (label === 'T1 review:code-reviewer[tests]'
+        ? { verdict: 'fail', findings: [mustFix('the reproducer passes on the unfixed code')] }
+        : undefined),
+  });
+  assert.deepEqual(reReviews(dispatches).map((d) => d.label), ['T1 re-review:code-reviewer[tests]'],
+    'a dimension that passed has nothing to confirm and is not re-dispatched');
+  assert.match(reReviews(dispatches)[0].prompt, /the reproducer passes on the unfixed code/,
+    "RR1 binds per dimension: the re-review carries that lens's OWN findings verbatim");
+  assert.deepEqual(result.built, ['T1'], 'the fix cleared the one dimension that rejected it');
+  assert.equal(verdictsFor(kernelCmds, 'code-reviewer', "task:'T1'"), 2,
+    'round 1 and the re-review round, one folded row each');
+});
+
+test('a passing dimension re-review NEVER clears a still-failing one', async () => {
+  // The AND-fold guard. With a single `primaryVerdict = reVerdict` assignment the last dimension to
+  // re-review decides the task, and 'design' passing would ship a task 'correctness' still rejects.
+  const { result, dispatches } = await runLoop([row('T1')], {
+    ...FULL,
+    lensResult: (type, label) => {
+      if (label === 'T1 review:code-reviewer[correctness]') return { verdict: 'fail', findings: [mustFix('authz bypass on the admin path')] };
+      if (label === 'T1 review:code-reviewer[design]') return { verdict: 'fail', findings: [mustFix('god screen')] };
+      if (label === 'T1 re-review:code-reviewer[design]') return { verdict: 'pass', findings: [] };
+      if (label === 'T1 re-review:code-reviewer[correctness]') return { verdict: 'fail', findings: [mustFix('authz bypass on the admin path')] };
+      return undefined;
+    },
+  });
+  assert.deepEqual(reReviews(dispatches).map((d) => d.label).sort(),
+    ['T1 re-review:code-reviewer[correctness]', 'T1 re-review:code-reviewer[design]']);
+  assert.deepEqual(result.built, [], 'one unresolved dimension is enough to fail the task');
+  assert.deepEqual(result.failed[0].findings.map((f) => f.title), ['authz bypass on the admin path']);
+});
+
+test('a dimension that vanishes mid-round is unconfirmed BY NAME, and fails the task closed', async () => {
+  // `unconfirmedBy` tells the session which lens never re-judged its own rejection. On full that
+  // has to name the dimension: "code-reviewer" alone cannot say which third of the review is missing.
+  const { result, kernelCmds } = await runLoop([row('T1')], {
+    ...FULL,
+    lensResult: (type, label) => {
+      if (label === 'T1 review:code-reviewer[correctness]') return { verdict: 'fail', findings: [mustFix('data-loss path')] };
+      if (label === 'T1 re-review:code-reviewer[correctness]') return null;
+      return undefined;
+    },
+  });
+  assert.deepEqual(result.failed[0].unconfirmedBy, ['code-reviewer[correctness]']);
+  assert.deepEqual(result.degraded, ['T1'], 'the review this task got is not the review it was owed');
+  assert.deepEqual(result.built, []);
+  assert.equal(verdictsFor(kernelCmds, 'code-reviewer', "task:'T1'"), 1,
+    'round 1 only — a verdict for a re-review that never happened would be forged evidence');
+});
+
+test('codex absent on FULL still leaves three Claude lenses, and still degrades on record', async () => {
+  // The reason the split exists: on a machine with no codex CLI, `full` must still buy more review
+  // than `standard` does. Three lenses ran; the missing fourth is reported, not papered over.
+  const { result, dispatches } = await runLoop([row('T1', { notes: { risk: 'low' } })], {
+    ...FULL,
+    lensResult: (type) => (type === 'legion:codex-consult' ? { verdict: 'pass', findings: [], available: false } : undefined),
+  });
+  assert.deepEqual(claudeLenses(dispatches), DIMS.map((k) => `T1 review:code-reviewer[${k}]`));
+  assert.deepEqual(result.degraded, ['T1']);
+  assert.deepEqual(result.tiersIgnored, [{ taskId: 'T1', tier: 'low' }]);
+  assert.deepEqual(result.built, ['T1']);
+});
+
+test('STANDARD is untouched: one whole-checklist lens, tiers honoured, nothing ignored', async () => {
+  const { result, dispatches } = await runLoop([row('T1', { notes: { risk: 'low' } })], { args: { profile: 'standard' } });
+  assert.deepEqual(claudeLenses(dispatches), ['T1 review:code-reviewer'],
+    'no dimension suffix, no split — the label the other profiles have always produced');
+  assert.deepEqual(result.singleLens, [{ taskId: 'T1', tier: 'low' }]);
+  assert.deepEqual(result.tiersIgnored, [], 'tiersIgnored is [] not absent on every other profile');
+  const untiered = await runLoop([row('T1')], { args: { profile: 'standard' } });
+  assert.deepEqual(claudeLenses(untiered.dispatches), ['T1 review:code-reviewer']);
+  assert.deepEqual(untiered.result.tiersIgnored, []);
+});
+
 test('an absent, unknown or malformed risk tier falls through to the DUAL-lens path', async () => {
   // The default must be the expensive one: a typo ('lo', 'Low', 'trivial ') or a tier someone
   // invented must not silently buy cheapness the architect never granted.
