@@ -1,0 +1,14 @@
+{
+  "name": "legion",
+  "owner": {
+    "name": "Rachid Mohamed-Daoud",
+    "email": "rachid.daoud@intech.lu"
+  },
+  "plugins": [
+    {
+      "name": "legion",
+      "source": "./",
+      "description": "Deterministic safety kernel + one-session-per-feature orchestration: /legion:start and /legion:feature skills, role agents, lifecycle hooks, the build workflow, and bin/legion. Install once; plain `claude` then loads legion everywhere. The installed copy is a snapshot — refresh it after upgrading the checkout."
+    }
+  ]
+}

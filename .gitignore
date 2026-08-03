@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+
+# The viewer is a BUILT-ON-DEMAND bundle (c13; PLAN-V3 decision 12). Its build-time dependencies
+# and its output never enter the repository: the root package.json's zero-runtime-dependency
+# property is a stated repo property, viewer/package-lock.json IS committed so the build stays
+# reproducible, and `legion viewer` refuses loudly (naming the two commands that fix it) when the
+# bundle is absent rather than serving a blank page. Landed with the server, BEFORE the first
+# build exists, so neither directory can ever be staged by accident.
+viewer/dist/
+viewer/node_modules/

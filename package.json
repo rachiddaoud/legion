@@ -1,0 +1,15 @@
+{
+  "name": "legion",
+  "version": "0.1.0",
+  "description": "Deterministic safety kernel + Claude Code plugin for feature orchestration. Design doc: /Users/rachid.mohamed-daoud/Work/legion2/PLAN-V3.md",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "legion": "./bin/legion"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}

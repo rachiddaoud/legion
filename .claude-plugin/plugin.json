@@ -1,0 +1,9 @@
+{
+  "name": "legion",
+  "description": "Deterministic safety kernel (bin/legion.mjs) + skills/agents/hooks for one-Claude-Code-session-per-feature orchestration; see PLAN-V3.md",
+  "version": "0.1.0",
+  "author": {
+    "name": "Rachid Mohamed-Daoud",
+    "email": "rachid.daoud@intech.lu"
+  }
+}

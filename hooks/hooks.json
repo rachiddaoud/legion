@@ -1,0 +1,61 @@
+{
+  "description": "legion hooks — VALIDATED AGAINST CLAUDE CODE 2.1.219 (binary ~/.local/share/claude/versions/2.1.219). Shape: plugin hooks live at hooks/hooks.json (auto-discovered; plugin.json declares no `hooks` path, because declaring one DISABLES the default folder) in the wrapper form {description?, hooks:{Event:[{matcher?, hooks:[...]}]}}. EXEC FORM, not shell: `args` is present on every entry, and per that build's own schema text 'When present, `command` is resolved as an executable and spawned directly with these arguments - no shell. Path placeholders like ${CLAUDE_PLUGIN_ROOT} are substituted per-element as plain strings'. MATCHERS, per the dispatcher's event->field switch: SessionStart matches `source`, SubagentStop matches `agent_type`, Notification matches `notification_type`, PreToolUse matches `tool_name`; a matcher of ^[a-zA-Z0-9_|]+$ is split on | and compared as EXACT STRINGS, anything else is compiled as a RegExp. EXACTLY FOUR EVENTS (T26 added PreToolUse to the original three), and NO GLOBAL Stop HOOK (PLAN-V3 §Gates: it would interfere with the approval and orchestration stages — that rule stands unchanged). PreToolUse DENY CONTRACT, validated against the same build: the payload is {hook_event_name, tool_name, tool_input, tool_use_id} plus the common fields, and BOTH honoured deny forms are used together by hooks/bash-remote-write.mjs — exit code 2 with the message on stderr ('Exit code 2 - show stderr to model and block tool call', which the runner turns into a blockingError and thence {behavior:'deny'}; PreToolUse is NOT among the events where a missing-script exit 2 is softened to non-blocking), and hookSpecificOutput.permissionDecision='deny' with permissionDecisionReason on stdout (`decision: block` is DEPRECATED for PreToolUse in this build). Exit 0 prints nothing anywhere, which is what a hook on every Bash call must do. WHY THE PreToolUse ENTRY EXISTS, in one line: PLAN-V3 §Remote safety layer 3 — deny a session's raw `git push` / `glab mr create` Bash calls so the sanctioned path stays `legion finalize`; DEPTH over the Bash tool only, bypassable by construction, and the server (verified by `legion doctor`) remains the guarantee.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/bash-remote-write.mjs"],
+            "timeout": 10,
+            "statusMessage": "legion: checking for a raw remote write"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs"],
+            "timeout": 30,
+            "statusMessage": "legion: resuming feature state"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "^(legion:)?builder$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/builder-receipt.mjs"],
+            "timeout": 60,
+            "statusMessage": "legion: verifying gate receipt"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "agent_needs_input|idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/notify.mjs"],
+            "timeout": 15,
+            "statusMessage": "legion: push notification"
+          }
+        ]
+      }
+    ]
+  }
+}

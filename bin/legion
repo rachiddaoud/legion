@@ -1,0 +1,19 @@
+#!/bin/sh
+# legion — PATH-installable launcher for the kernel router (T15a, closing R19: bin/legion.mjs
+# plus a package.json mapping is not an installation — nothing named `legion` existed to run).
+# Resolves its own symlink chain so BOTH install routes find legion.mjs beside the REAL file:
+#   1. `npm link`  — package.json bin.legion points here; npm symlinks <prefix>/bin/legion to it.
+#   2. `export PATH=".../legion3/bin:$PATH"` — this file runs in place.
+# POSIX sh, zero dependencies. Behaviour is exactly `node <repo>/bin/legion.mjs "$@"` — all
+# routing, fail-closed exits and usage output live in legion.mjs; this file only locates it.
+self=$0
+while [ -h "$self" ]; do
+  d=$(dirname -- "$self")
+  link=$(readlink -- "$self") || break
+  case $link in
+    /*) self=$link ;;
+    *)  self=$d/$link ;;
+  esac
+done
+dir=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P) || exit 1
+exec node "$dir/legion.mjs" "$@"
