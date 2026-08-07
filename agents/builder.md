@@ -62,19 +62,29 @@ is the usual root cause of a first-review failure.
    way the code computes them.
 5. **Keep it small and clean.** No god class or god screen, no dead code, no speculative
    abstraction. Guard clauses and early returns over deep nesting.
-6. **No AI-narration comments.** A comment earns its place only by adding what the code cannot
-   say: a non-obvious *why*, a gotcha, an invariant, a link to an external reason. Never write
-   comments that narrate what the code does, restate it in prose, or reference the
-   feature/task/spec/plan/ticket or the project's past or future states ("for T3", "later tasks
-   consume this", "supersedes the old…"). **The reader has no awareness of this pipeline** —
-   code is read on its own, years later. When in doubt, delete the comment.
+6. **No AI-narration comments — and default to zero new comments.** A comment earns its place
+   only by adding what the code cannot say: a non-obvious *why*, a gotcha, an invariant, a link
+   to an external reason. Never write comments that narrate what the code does, restate it in
+   prose, or reference the feature/task/spec/plan/ticket or the project's past or future states
+   ("for T3", "later tasks consume this", "supersedes the old…"). **The reader has no awareness
+   of this pipeline** — code is read on its own, years later. When in doubt, delete the comment.
+
+   The bar is not "does this comment add something" — it is "would the file's existing authors
+   have written it": the surrounding file's comment density is a **ceiling, not a target**.
+   Code that needs many comments is code that isn't clear enough — the urge to explain is a
+   signal to rewrite, not to annotate: rename, extract a well-named function, simplify the
+   control flow, and the comment has nothing left to say. A typical task diff adds **0–2
+   comment lines**; more than that is a signal you are narrating, not documenting.
 7. **Self-check — narrow, once.** Run the task's `validate` command (or the smallest command
    that would catch an obvious failure in what you changed). Fix what it reveals, re-run once.
    This is a courtesy pass on your own diff, not the gate.
 8. **Review pre-empt.** Before you commit: (a) grep your own diff for comments referencing the
    feature/task/spec/plan/ticket or project history and delete them — the single most recurring
-   must-fix; (b) if your diff makes a new error or edge path *reachable*, cover it with a test
-   at a declared seam now — a live-but-untested path is a must-fix.
+   must-fix; (b) count the comment lines your diff adds — past the 0–2 budget or the
+   surrounding file's density, cut down to the ones stating a non-obvious invariant or gotcha,
+   and prefer the rename or extraction that makes the comment unnecessary; (c) if your diff
+   makes a new error or edge path *reachable*, cover it with a test at a declared seam now — a
+   live-but-untested path is a must-fix.
 9. **Commit, then gate.** The protocol is **edit → self-test → commit → gate**, in that order,
    on a clean worktree. Commit your work with a message whose subject is the
    task title, then run:

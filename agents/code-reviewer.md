@@ -99,6 +99,11 @@ skeptic pass, and the fail-closed rule.
   ("for T3", "later tasks consume this", "supersedes…"). Code is read on its own with no
   awareness of this pipeline; a comment must add a non-obvious *why*, gotcha or invariant, or be
   deleted. This is a `must-fix`.
+- **Over-commenting** — a task diff adding **more than 3 comment lines**, or whose new-comment
+  density clearly exceeds the surrounding file, even when each comment individually adds a
+  *why*. A heuristic count, so a `note`, never a `must-fix` on the count alone. A comment
+  cluster marks code that isn't clear enough: propose the rename or extraction that makes the
+  comments unnecessary, not just their deletion.
 
 ## Smell baseline (Fowler, *Refactoring* ch. 3)
 
