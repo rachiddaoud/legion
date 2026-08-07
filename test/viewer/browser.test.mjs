@@ -146,8 +146,15 @@ function buildWorld() {
       : x)),
   }));
 
-  // f-shipped — a closed outcome (header: hand-written, and why).
-  patch('f-shipped', 'feature.json', (f) => ({ ...f, status: 'delivered', stage: 'finalize', closedAt: NOW }));
+  // f-shipped — a closed outcome (header: hand-written, and why). closedAt is RELATIVE to the
+  // real clock, not the frozen NOW: the insights window is computed against Date.now()
+  // (projection.mjs insights()), so a fixed date here silently fell out of the
+  // RECENT_OUTCOME_DAYS window once the calendar moved past it and the recent-outcomes
+  // assertions started failing on time alone.
+  patch('f-shipped', 'feature.json', (f) => ({
+    ...f, status: 'delivered', stage: 'finalize',
+    closedAt: new Date(Date.now() - 3600_000).toISOString(),
+  }));
 
   // f-visual — everything the Artifacts and Changes tabs render.
   put('f-visual', 'plan.md', [
