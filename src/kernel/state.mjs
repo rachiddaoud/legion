@@ -1209,6 +1209,12 @@ function stageEnter(dossier, { positional }, now) {
   const stage = positional[1];
   if (!STAGES.includes(stage)) throw new Error(`invalid stage '${stage}' — one of ${STAGES.join(', ')}`);
   const f = loadFeature(dossier);
+  // A CLOSED feature accepts no transition — same rule as close() refusing a second close. This is
+  // a refusal tightening, not a clearing mechanism: an amendment acts on an ACTIVE feature; after
+  // close, new work is a new feature.
+  if (f.status === 'delivered' || f.status === 'abandoned') {
+    throw new Error(`feature is closed (status: ${f.status}) — a closed feature accepts no stage transition; new work is a new feature`);
+  }
   const cur = STAGES.indexOf(f.stage);
   if (cur < 0) {
     throw new Error(`feature.json stage '${f.stage}' is not a stage this kernel knows (${STAGES.join(', ')}) — the manifest has been hand-edited; repair it before any transition`);

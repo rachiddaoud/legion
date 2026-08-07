@@ -238,7 +238,9 @@ a recap that moved is a decision the human has not made yet.
 
 **Material scope change later?** The judgement of materiality is yours. Edit the spec, then
 `legion state artifact-record spec <path>` — the kernel cascades the invalidation itself, and
-the plan approval falls with it. You do not decide what falls.
+the plan approval falls with it. You do not decide what falls. **After the plan is approved,
+this is the Amendments route below**: the change lands as an `A<n>` addendum, never a silent
+rewrite.
 
 **On an initiative feature the spec approval binds the interface contract too**: the subject is
 the spec's bytes **and the contract's live bytes** together — the primary through its own recorded `contract` artifact, a secondary through
@@ -414,6 +416,9 @@ exactly how a wrong premise entrenches.
 5. Human re-approval: `legion state decision-record plan`, then
    `legion state stage-complete plan` and `legion state stage-enter build`.
 6. Re-run the workflow — done tasks skip; only the affected work retries.
+
+Steps 3–6 are the canonical re-plan walk: the Amendments section below reuses them by
+reference rather than restating them.
 
 One carve-out, operator-decided: a concern the human **explicitly overrules** — the premise
 stands — is settled as a recorded answer instead,
@@ -592,6 +597,10 @@ just earned.
      the plan approval and the pre-merge approval with it** — that is the cascade working, and
      it is why the re-approval above is required rather than optional.
 
+   **A NEW need** — work the approved scope never implied, not work it implied and missed — is
+   neither shape: it is an **amendment** (the Amendments section below), classified and routed
+   there.
+
    If an import refuses, read which task it names. It is not saying "you may not change the
    plan"; it is saying that task carries **recorded gate evidence** — it is done, or a gate
    already certified a tree for it. A task that was merely attempted and never gated can still
@@ -633,10 +642,84 @@ just earned.
    finalize: the push,
    the MR and the record all happened, so the command prints the composed text for you to paste and
    still exits 0.
+   **A new need surfacing here — the MR already open — is an amendment** (the Amendments
+   section below); its last step is re-running `legion finalize`, whose idempotence handles the
+   push, the re-record and the appended comment.
 3. `legion state close delivered`. It independently re-checks the boundary receipt against
    current HEAD, the hash-validity of the pre-merge approval, and the recorded MR's head SHA. A
-   human merges outside legion.
+   human merges outside legion. **After the close the kernel refuses every stage transition** —
+   a post-close change is a new feature.
 4. If the feature is being dropped instead: `legion state close abandoned`.
+
+## Amendments — a NEW NEED after the plan was approved
+
+**Trigger**: the operator asks for a **change in need** while the feature stands at or past an
+approved plan — build, review, pre-merge, finalize, **including after the MR exists** (`mr`
+recorded in `feature.json`). The mechanism is nothing new: backward `legion state stage-enter`,
+an append-only addendum in the artifact, the cascade, and the forward walk the stages already
+define. What this section adds is the route and the discipline. Three fences first:
+
+- **A defect is not an amendment** — the plan was right, the code is not: that is the pre-merge
+  REJECTION → FIXUP path (defect shape), or an ordinary build round.
+- **A design concern is not an amendment** — the repo contradicts a plan premise: the DESIGN
+  ROUTE in the build stage.
+- **A closed feature takes no amendment** — the kernel refuses every
+  `legion state stage-enter` on a delivered or abandoned feature. New work after close is a new
+  feature.
+
+1. **Classify THIS amendment — express or standard.** Session judgement, **per amendment**; the
+   feature's kernel profile does not move, and never moves down.
+   - **express amendment**: a contained addon — 1–2 appended tasks, no schema/data/auth/remote
+     surface, contradicting no approved decision. Reviews are warm and narrow, **one round**
+     (RR2's express budget applies to the amendment's round).
+   - **standard amendment**: anything wider — a new milestone, WHAT-changes across acceptance
+     rows, a data-model change, or scope the plan's `## Decisions` never considered. Full
+     architect pass, full critic review of the delta, normal round budget.
+   - If the amendment grows the **feature** beyond what its recorded profile guarantees,
+     escalate first — `legion state escalate-profile <profile>` — and the Profile escalation
+     section below governs what is then owed.
+2. **Route it — the same fork pre-merge rejection uses, one level up.**
+   - **Spec route — the new need changes WHAT the feature does.** `legion state stage-enter spec`.
+     Append an **`A<n>` block** to a `## Amendments` section at the **end of `spec.md`** —
+     append-only: date, motivation, scope delta, acceptance rows added or superseded. A
+     superseded row is **named** in the block; the original text is never rewritten. Add one
+     line to the `## Digest` so it keeps passing the read-nothing-else test. Then
+     `legion state artifact-record spec <path>` — the cascade drops the plan and pre-merge
+     approvals itself, exactly as the spec stage's "Material scope change later?" says. Present
+     the `A<n>` block and the digest line, get an explicit yes,
+     `legion state decision-record spec`, `legion state stage-complete spec`,
+     `legion state stage-enter plan`, and continue on the plan route.
+   - **Plan route — only HOW changes, or implementation work is added.** `legion state
+     stage-enter plan` directly. No spec edit and no A-block in the spec — the amendment id is
+     minted in `plan.md`'s Revision note instead.
+3. **The plan addon — the DESIGN ROUTE's steps 2–6, by reference, with the amendment
+   discipline.** Dispatch `legion:architect` in **amendment mode** with the operator's request
+   verbatim and the `A<n>` id (on the plan route, it mints the next `A<n>` itself): append-only —
+   new or amended `D<n>` blocks, a Revision note headed by the amendment id, tasks **appended**
+   (each carrying `notes.amendment: "A<n>"`), and a **new milestone** when the target milestone
+   already closed. Then the DESIGN ROUTE's steps 3–6 exactly: import, critic, human re-approval,
+   `legion state stage-complete plan`, `legion state stage-enter build`, re-run the workflow —
+   done tasks and closed milestones skip.
+
+   **The critic caveat, stated once so nobody argues it mid-flight**: on a standard or full
+   **feature**, `legion state stage-complete plan` requires a passing critic verdict bound to
+   the **new** plan subject, whatever this **amendment's** class — so an express amendment on a
+   standard feature still dispatches the critic, warm, under its iteration-≥2 rules, scoped to
+   the `A<n>` delta. On an express feature the critic stays excused; a recorded fail still
+   blocks, everywhere.
+4. **Walk it forward — nothing here is new machinery.** A build round for the appended tasks →
+   the review stage (close verdicts for the new work; every previously-passing role re-certifies
+   narrowly per RR1 — the tree moved) → pre-merge re-approval (the cascade dropped it; that is
+   the point) → finalize.
+5. **Post-MR: re-run finalize.** When the amendment started at stage finalize with an MR
+   recorded, the last step is re-running `legion finalize --description-file <path>` — it is
+   idempotent by head SHA: the new commits push, the `mr` record moves to the new HEAD, and the
+   amendment trail lands as an **appended MR comment**. The MR body is never rewritten; if the
+   body must change, that is a hand edit, exactly as the finalize stage says for tickets.
+
+An amendment is a **lessons trigger**: an approved scope that had to be amended is a scoped
+entry in `lessons.md` — what the intake or spec missed, and the condition under which to look
+for it next time.
 
 ## Review rules — RR1–RR4 bind every review round, in every stage
 

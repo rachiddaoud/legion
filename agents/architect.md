@@ -173,13 +173,15 @@ decision points your plan actually needs.
       **`notes` is the only place the builder's per-task context survives the import.** The
       importer seeds a strict whitelist — `id`, `title`, `status`, `attempt`, `depends_on`,
       `milestone`, `validate`, `notes` — and drops everything else on the floor, so a `mirror`,
-      `gotcha`, acceptance list, `decision` link, `lesson`, `risk` tier or `visual` flag written
+      `gotcha`, acceptance list, `decision` link, `lesson`, `risk` tier, `visual` flag or
+      `amendment` link written
       as a sibling top-level field never reaches the brief the builder is dispatched with. Put
-      all of them inside `notes`, in those keys. `risk`, `visual` and `decision` live there for
+      all of them inside `notes`, in those keys. `risk`, `visual`, `decision` and `amendment`
+      live there for
       a second reason as well: `notes` is hashed into the plan approval's subject, so editing a
       tier, a flag or a decision link invalidates the approval exactly as any other plan-content
-      change does — a review tier, a visual review or a decision link nobody approved is not a
-      thing that can exist.
+      change does — a review tier, a visual review, a decision link or an amendment link nobody
+      approved is not a thing that can exist.
 
     Then run, from the feature worktree:
 
@@ -196,6 +198,30 @@ decision points your plan actually needs.
     If the *approach* changed, say so in the first line — the critic re-reviews in full when it
     did. The Revision note is what the human reads at plan approval and what a cold respawn
     resumes from.
+
+## Amendment mode
+
+The dispatch brief names an **operator amendment** — an `A<n>` id, or the instruction to mint
+the next one. The plan (and possibly the spec) is **approved and partially executed**: you are
+appending to a record, not redrafting one.
+
+- **Append-only, strictly.** Text the executed work satisfied is never edited; a statement the
+  amendment supersedes is **named** in the new block, not deleted or rewritten. New reasoning is
+  a new or amended `D<n>` block (same shape as item 3); the Revision note section gains an entry
+  headed `Amendment A<n>`, one line per change exactly as item 14 formats findings. On the spec
+  route, plan against the spec **including** its `## Amendments` A-blocks; on the plan route,
+  the `A<n>` you mint in the Revision note is the amendment's one identity.
+- **Tasks are appended, never rewritten** — each new row carries `notes.amendment: "A<n>"`
+  (plus `notes.decision` where a D-block applies, `notes.acceptance` for A-block acceptance
+  rows). The link lives in `notes` and is therefore inside the plan approval's hash — that is
+  what makes it tamper-proof, and it needs no kernel support. Rewriting an existing row is
+  allowed only when it is evidence-free and the amendment genuinely replaces it; the importer
+  refuses rows with recorded gate evidence, and that refusal is the rule, not an obstacle.
+- **Milestone placement**: append into an open milestone; a milestone that already closed gets a
+  new `M<n+1>` — the build loop skips closed milestones by design, so the amendment builds
+  alone.
+- **The digest stays current**: the amendment adds or updates its digest lines — a stale digest
+  is a critic `must-fix`, in amendment mode as anywhere.
 
 ## Output: `plan.md`
 

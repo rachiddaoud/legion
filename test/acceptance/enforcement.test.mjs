@@ -637,6 +637,31 @@ test('6e (T13) reaching finalize once is not evidence: a raised review set refus
   h.assertUnmoved(snapFin, 'a refused finalize');
 });
 
+test('6f a CLOSED feature accepts no stage transition — backward included', () => {
+  // The amendment door (skills/feature/SKILL.md ## Amendments) is backward `stage-enter` on an
+  // ACTIVE feature; after close, new work is a new feature. The ledgers are byte-frozen per
+  // chunk, so this claim lives here rather than in a FIXTURE-LEDGER entry — deliberate.
+  const h = fixture();
+  advanceTo(h, 'review');
+
+  // Positive control, asserted BEFORE the close so the test proves the door was open until it:
+  // backward entry on an active feature is free (5c holds the full round-trip claim).
+  ok(h, 'case6f', 'state', 'stage-enter', 'plan');
+  assert.equal(h.readFeature().stage, 'plan');
+
+  ok(h, 'case6f', 'state', 'close', 'abandoned');
+  assert.equal(h.readFeature().status, 'abandoned');
+
+  const snap = h.snapshot();
+  for (const s of ['spec', 'build', 'review', 'pre-merge', 'finalize']) {
+    const r = h.legion('state', 'stage-enter', s);
+    assert.equal(r.code, 1, `stage-enter ${s} on a closed feature must refuse`);
+    assert.match(r.stderr, /feature is closed \(status: abandoned\)/, 'the refusal must name the status');
+    h.assertUnmoved(snap, `a refused stage-enter ${s} on a closed feature`);
+  }
+  assert.equal(h.readFeature().stage, 'plan', 'no hop may have landed');
+});
+
 // --- 7. (T13) the profile is load-bearing at review -------------------------------------------
 
 test('7 (T13) `stage-complete review` refuses without the profile\'s review set, and an unclassified feature never completes review', () => {

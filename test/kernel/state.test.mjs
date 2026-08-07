@@ -750,3 +750,25 @@ test('reads of an unknown schemaVersion die loudly (both manifests)', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// A closed feature accepts no stage transition — in EITHER direction. Backward entry is the
+// amendment door, and it only exists on an ACTIVE feature; after close, new work is a new
+// feature. The refusal must name the status so the operator knows which close it hit.
+test('stage-enter refuses a closed feature, forward and backward, naming the status', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'legion3-state-unit-'));
+  const feat = (status) => JSON.stringify({ schemaVersion: 1, revision: 0, stage: 'review', status });
+  const enter = (stage) => dispatch('stage-enter', dir, { flags: {}, positional: ['stage-enter', stage] }, 't');
+  try {
+    for (const status of ['delivered', 'abandoned']) {
+      writeFileSync(join(dir, 'feature.json'), feat(status));
+      assert.throws(() => enter('plan'), new RegExp(`feature is closed \\(status: ${status}\\)`), 'backward');
+      assert.throws(() => enter('pre-merge'), new RegExp(`feature is closed \\(status: ${status}\\)`), 'forward');
+      assert.equal(JSON.parse(readFileSync(join(dir, 'feature.json'), 'utf8')).revision, 0, 'nothing written');
+    }
+    // Positive control: the same manifest with status 'active' still takes the backward hop.
+    writeFileSync(join(dir, 'feature.json'), feat('active'));
+    assert.match(enter('plan'), /entered stage plan/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

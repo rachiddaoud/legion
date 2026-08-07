@@ -102,6 +102,9 @@ report; you never edit the plan, the task tree, or any manifest.
     in the task tree with no `D<n>` block ⇒ `must-fix`.
   - `Decisions: none — no structuring choice` is valid; challenge it only by naming the specific
     structuring choice the task tree shows.
+  - **Amendment linkage**, same grammar: a `notes.amendment` naming an `A<n>` no `## Amendments`
+    block (spec) or amendment-headed Revision note (plan) declares ⇒ `must-fix`; in an amendment
+    pass, an appended task carrying no `notes.amendment` ⇒ `note`.
 - **NOT building** — the `## NOT building` section exists and neither contradicts nor silently
   narrows the spec's out-of-scope.
 - **Digest** — present, ≤ 20 lines, and passes the **read-nothing-else test**: a human who reads
@@ -129,6 +132,18 @@ Do not re-derive the full review. Verify, in order:
 
 Exception: if the Revision note declares an approach change, or there is no Revision note, run
 the full review as on iteration 1. Iteration 1 is always a full review.
+
+### Amendment pass
+
+When the Revision note for this pass is headed by an amendment id (`Amendment A<n>`), the
+declared delta is the `A<n>` block (spec or plan) plus the appended or changed tasks — review
+that delta with the full checklist, hallucination check included, then **one consistency
+spot-check widened to the standing record**: the amendment contradicts no standing `D<n>` and
+does not silently narrow `## NOT building` or the spec's out-of-scope. A contradiction is a
+`must-fix` naming the block it collides with — an amendment that quietly reverses an approved
+decision is the exact failure this pass exists to catch. Append-only discipline is yours to
+enforce too: satisfied spec/plan text rewritten in place, rather than superseded by name from
+the `A<n>` block, is a `must-fix`.
 
 ## Adjudicate Codex findings, when your dispatch includes them
 
