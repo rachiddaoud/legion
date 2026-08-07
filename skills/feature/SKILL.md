@@ -125,7 +125,7 @@ report.
    when there is none**. The same op records one that only appears at a later stage — re-running it
    simply overwrites the field.
 3. Classify the **profile** and say why: **express** (a contained change, one or two tasks, no
-   product review), **standard** (the default: full plan, critic, per-task reviews, milestone
+   product review, mini-spec fused into the intake recap), **standard** (the default: full plan, critic, per-task reviews, milestone
    product review), **full** (**every task reviewed by three dimension lenses — correctness, tests,
    design — with the plan's risk tiers ignored**, plus a codex consult at plan and at each milestone
    close). The dimension split is what makes `full` cost more on any machine; the codex consults are
@@ -224,7 +224,44 @@ is to read the changed recap, agree it **with the human in this session**, and r
 agreement here with `legion state decision-record intake`. Never re-derive the reference by hand;
 a recap that moved is a decision the human has not made yet.
 
+**If THIS feature is EXPRESS, the spec stage is FUSED into this gate** — one reading, one yes,
+instead of two approval round-trips for a contained change. Steps 1–6 are unchanged; steps 7–9
+change as follows, and these forms **replace — never precede — the unfused steps above**:
+
+- Before the recap, draft the **mini-spec** into the dossier as the spec artifact. This is the
+  canonical mini-spec format, stated once: a **`## Digest` of ≤ 20 lines** plus the
+  **acceptance rows** — the yardstick every later review and amendment grades against — and a
+  data-model or schema change, if there is one, still **named explicitly**. No spec interview
+  and no long out-of-scope or process sections: on express the mini-spec IS the spec.
+- The recap (step 7) presents the intent **and** the mini-spec digest together; the single
+  explicit yes covers both.
+- Step 8 widens to both artifacts: when the yes carried a correction, revise `intent.md` **and
+  the mini-spec** to the framing the user actually agreed — an acceptance row the human struck
+  out loud must not survive into the approved bytes — and re-record the intent before any
+  decision is recorded, exactly as step 8 says.
+- Step 9 becomes this chain, run **once**: `legion state decision-record intake`,
+  `legion state stage-complete intake`, `legion state stage-enter spec`,
+  `legion state artifact-record spec <path>`, `legion state decision-record spec`,
+  `legion state stage-complete spec`, `legion state stage-enter plan`. The artifact record
+  comes BEFORE its decision record: reversed, `legion state decision-record spec` refuses
+  outright (no spec artifact on record), and a changed re-record landing after the approval
+  cascades it away.
+
+An express initiative **secondary** has no recap to fuse with (intake is by reference): present
+the mini-spec digest alone, get the one yes, and run the same chain minus
+`legion state decision-record intake`. And when `legion state stage-complete intake` refuses
+because the primary's recap moved, the repair above applies **first** — read the changed recap,
+agree it with the human here — and the mini-spec yes is collected **again, against the changed
+recap**, before its chain runs: the spec approval's subject never binds the recap, so this
+ordering is the only thing that keeps a stale-recap yes out of the ledger.
+
 ### spec
+
+**On the EXPRESS profile this stage is normally already satisfied** — the mini-spec was drafted,
+recorded and approved during intake (the fused approval, above) — and it is then traversed with
+no interaction. If it is not — the fused chain was interrupted, or a cascade dropped the spec
+approval — write (or re-present) the spec here **at the mini-spec format defined at intake**,
+nothing more. Everything in this section applies to a mini-spec unchanged.
 
 1. Write the functional spec into the dossier: what changes for the user, business rules,
    process, statuses, loading/empty/error behaviour, **acceptance rows** the product reviewer
@@ -757,7 +794,7 @@ merely doubted.
 
 **RR4 — A RECORDED CONSULT FAIL IS ADJUDICATED ON RECORD, never silently outlived.** The kernel
 counts the review set the **profile** requires, and NO profile's set names the consult lens
-(express requires no role at all — the product sign-off happens at finalize; standard and full
+(express requires no role at all; standard and full
 require the code and product reviewers; the consult is a second lens, never the unique one) — so a
 recorded `codex-consult` fail does not block `legion state stage-complete review`. That is
 deliberate and stays that way: **this is a skill rule, and nothing here is to be added to the
@@ -795,7 +832,11 @@ auth, data migration, money, or more files than the plan assumed. Say why, escal
 `legion state escalate-profile <profile>`, and then **run the stages the higher profile
 requires**, including any you skipped. Escalating without running the added gates is a
 false claim of rigour. **De-escalation is not a move**: reviewer tiers are never lowered
-mid-feature.
+mid-feature. One thing escalation does **not** reopen: a spec already satisfied. An express
+feature's approved mini-spec stands through an escalation — the added gates are the higher
+profile's reviews, not a rewritten spec — unless the operator explicitly asks for a full spec,
+which then lands as an ordinary edit + `legion state artifact-record spec <path>` +
+re-approval, cascade and all.
 
 ## Quality floor (binds you and every agent you dispatch)
 

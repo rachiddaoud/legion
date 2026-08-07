@@ -66,6 +66,9 @@ flowchart TD
     P -.->|reopened ⇒ downstream approvals drop| B
 ```
 
+On **express**, the two top human stops collapse into one: the spec is a mini-spec whose
+approval is fused into the intake recap, so `intake → spec → plan` moves on a single yes.
+
 Approvals are bound to content, not to stages: edit an approved `plan.md` and its approval
 drops automatically. That is the safety net, not a bug.
 
@@ -102,11 +105,11 @@ and only that task retries.
 
 Chosen at intake, escalated (never lowered) the moment evidence says so:
 
-| Profile | Plan critic | Per-task review | Milestone product review | External second opinion |
-|---|---|---|---|---|
-| **express** | skipped | one lens | no | no |
-| **standard** (default) | yes | one lens, plan risk tiers honoured | yes | no |
-| **full** | yes | three dimension lenses — correctness, tests, design — risk tiers ignored | yes | yes, advisory |
+| Profile | Spec | Plan critic | Per-task review | Milestone product review | External second opinion |
+|---|---|---|---|---|---|
+| **express** | mini-spec, approval fused into the intake recap | skipped | one lens | no | no |
+| **standard** (default) | full spec, own approval gate | yes | one lens, plan risk tiers honoured | yes | no |
+| **full** | full spec, own approval gate | yes | three dimension lenses — correctness, tests, design — risk tiers ignored | yes | yes, advisory |
 
 `full` is the profile that costs more on *any* machine: its per-task review is three reviewers with
 narrow, disjoint mandates instead of one reviewer covering everything, and the plan's per-task risk

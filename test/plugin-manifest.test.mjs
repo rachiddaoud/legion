@@ -709,6 +709,44 @@ test('the multi-repo intake form lands the mechanics and fences M1b out', () => 
     'and M1b\'s acceptance is stated as OPEN — a skill that claims it delivered is the one thing this pin exists to catch');
 });
 
+// The express mini-spec (2026-08-07): the spec STAGE stays — it anchors the acceptance
+// yardstick, the Amendments route and the initiative contract — but on express its authoring and
+// approval fuse into the intake recap (one reading, one yes). These pin the protocol rules whose
+// loss ships a broken walk: the fused block SUBORDINATES steps 7–9 rather than following them (a
+// block read as additional runs the intake ops twice, and the second `stage-complete intake` is
+// refused mid-flow), a corrected yes must land in the mini-spec bytes before they are approved,
+// the op ORDER inside the chain (artifact before decision — reversed, `decision-record spec`
+// refuses with no artifact on record, and a changed re-record after the approval cascades it
+// away; loud either way, but a kernel refusal in the middle of the one flow fusion exists to
+// streamline), and the spec section's carve-out (without it a session walks an express feature
+// into a second full spec interview, the very cost the fusion removes).
+test('express fuses the mini-spec into the intake recap, artifact before decision', () => {
+  const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
+  const intake = stageSection(body, 'intake');
+  const iFused = anchor(intake, /EXPRESS, the spec stage is FUSED/, 'the express fused block');
+  const fused = intake.slice(iFused);
+  assert.match(fused, /replace — never precede/,
+    'the fused forms SUBORDINATE steps 7–9 — read as additional, the intake ops run twice');
+  assert.match(fused, /acceptance rows/, 'the mini-spec still carries the acceptance yardstick');
+  assert.match(fused, /named explicitly/, 'and a schema change is still named, never hidden');
+  assert.match(fused, /yes covers both/, 'the single yes covers recap AND mini-spec digest');
+  assert.match(fused, /`intent\.md` \*\*and\s+the mini-spec\*\*/,
+    'a corrected yes is folded into BOTH artifacts before anything is approved');
+  const iArtifact = anchor(fused, 'artifact-record spec', 'the mini-spec artifact record');
+  const iDecision = anchor(fused, 'decision-record spec', 'the mini-spec decision record');
+  assert.ok(iArtifact < iDecision,
+    'the artifact is recorded BEFORE the approval — reversed, the chain breaks mid-flow');
+  assert.match(fused, /minus\s+`legion state decision-record intake`/,
+    'the by-reference secondary keeps its exemption inside the fused chain');
+  assert.match(fused, /again, against the changed\s+recap/,
+    'a recap that moved re-collects the mini-spec yes — its approval subject never binds the recap');
+  const spec = stageSection(body, 'spec');
+  assert.match(spec, /EXPRESS profile this stage is normally already satisfied/,
+    'the spec stage names the express traversal — else express features get a second spec pass');
+  assert.match(spec, /at the mini-spec format defined at intake/,
+    'the repair path points at the ONE canonical format definition, not a drifting copy');
+});
+
 // --- T30: /legion:start, the in-session creation wrapper --------------------------------------
 // PLAN-V3 §Startup's 2026-07-29 S-007 amendment. The skill is prose, so what these assert is the
 // small set of things whose LOSS would make it dangerous rather than merely worse: that it is
