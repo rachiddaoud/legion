@@ -58,23 +58,17 @@
 // never a FAIL, because failing on a host this repository may have nothing to do with is
 // precisely the kind of false alarm this check exists to avoid.
 //
-// THE remote-guards CHECK IS TWO-VALUED, AND THAT IS THE POINT. It reports whether THIS
-// repository carries legion's local pre-push guard — layer 3, defense in
-// depth. It can PASS and it can WARN; it can NEVER FAIL, because the absence of a depth layer is
-// not a red light: layer 1 (the server) is the guarantee and layer 2 (`legion finalize`) is the
-// intended path, and a repository with neither hook nor stub is exactly as safe as the server
-// makes it. Failing here would invert the layering it exists to describe — it would say a machine
-// with a hook is protected and one without is broken, when the truth is that the hook only ever
-// blocks the ORDINARY path to a raw push and the server refuses regardless. Both states therefore
-// carry GUARD_DEPTH in words, and the check sits AFTER branch-protection so a reader meets the
-// guarantee before the depth.
-//
-// WHAT remote-guards DELIBERATELY DOES NOT SAY: anything about the PreToolUse hook (the other
-// half of layer 3, hooks/hooks.json + hooks/bash-remote-write.mjs). Whether Claude Code loaded
-// that hook is a fact about a SESSION, and doctor is a CLI process that cannot observe one. The
-// house rule elsewhere in this file is that an unverifiable claim becomes a WARN that says so;
-// here it is not even claimable, so the honest report is silence. The plugin shipping hooks.json
-// is the evidence, and test/plugin-manifest.test.mjs is what pins it.
+// THE remote-guards CHECK NOW REPORTS A RETIRED LAYER'S LEFTOVERS. Legion's local push guards
+// (the pre-push hook and the plugin's PreToolUse Bash scan) were REMOVED 2026-08-07 by owner
+// decision: the server-side refusal the branch-protection check verifies is the ONLY barrier to
+// a raw push, and a developer is free to push and open MRs by hand. The check keeps its id (it
+// is the machine-readable `--json` contract) and its two-valued shape — PASS and WARN, never
+// FAIL — but its question has inverted: it now exists to catch the MIGRATION HAZARD, a
+// fail-closed stub installed by an older legion whose guard file this plugin no longer ships.
+// Such a stub blocks EVERY ordinary push in its repository (`legion finalize`'s included) until
+// it is removed, and `legion project init` / `legion feature start` are what remove it — doctor
+// is read-only absolutely and only reports. It still cannot FAIL: a leftover stub is a local
+// file problem with a one-command remedy, not a red light about the project's conformance.
 //
 // EVERY CHECK IS FAULT-ISOLATED: an unexpected throw inside one check becomes that check's own
 // fail (or warn, for branch protection, where an unknown is an unknown) instead of killing the
@@ -95,7 +89,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../kernel/args.mjs';
 import { branchPatternMatches } from '../kernel/branches.mjs';
-import { GUARD_SCRIPT, inspectPrePushHook } from '../kernel/githooks.mjs';
+import { inspectPrePushHook } from '../kernel/githooks.mjs';
 import { realRunner } from '../kernel/runner.mjs';
 import { resolveProject } from './feature.mjs';
 import { closingKeyword, resolveTicketConfig } from '../kernel/ticket.mjs';
@@ -444,11 +438,10 @@ export function gitlabProjectPath(remoteUrl) {
   return p !== '' && p.includes('/') ? p : null;
 }
 
-/** GitLab protected-branch wildcard semantics, re-exported here unchanged from kernel/branches.mjs:
- * the local pre-push guard (hooks/pre-push.mjs, layer 3) matches the
- * SAME recorded set and must not carry a second copy — a guard that disagreed with this check about
- * what `release/*` covers would make the layered story two contradictory ones. Importers of
- * `branchPatternMatches` from doctor.mjs are unaffected. */
+/** GitLab protected-branch wildcard semantics, re-exported here unchanged from kernel/branches.mjs
+ * for importers who reach it through doctor. (Until 2026-08-07 the local pre-push guard was the
+ * second consumer, kept in lockstep through this same kernel module; the guard is gone and the
+ * server is now the only enforcement of these semantics.) */
 export { branchPatternMatches };
 
 /** One `glab api` call, parsed. Returns {value} or {error} — never throws, because EVERY
@@ -616,26 +609,24 @@ function checkBranchProtection(run, flags, glabOk) {
   };
 }
 
-// --- remote guards (layer 3, depth) --------------------------------------------------------------
+// --- remote guards (retired layer — leftover-stub migration check) -------------------------------
 
-/** THE framing every remote-guards detail carries, pass and warn alike (header). It deliberately
- * mirrors src/kernel/githooks.mjs's install-time caveat and hooks/pre-push.mjs's refusal footer:
- * the three places an operator meets this layer must make the same claim, and naming the bypasses
- * concretely is what stops "the guard is installed" being read as "raw pushes cannot happen".
- * It points at the branch-protection check by name because that check — layer 1 — is the only
- * thing in this report that verifies a guarantee. */
-const GUARD_DEPTH =
-  'DEFENSE IN DEPTH, never the guarantee: a local git hook blocks the ORDINARY raw push and '
-  + 'nothing more (`git push --no-verify`, a core.hooksPath outside this repo\'s config, or any '
-  + 'client that does not run git hooks walks straight past it) — only the server refusal, the one '
-  + 'the branch-protection check above verifies, is authoritative';
+/** THE framing every remote-guards detail carries, pass and warn alike (header): the local
+ * guards are GONE, and the server refusal — the one the branch-protection check above verifies —
+ * is the only barrier to a raw push. Named here once so the pass and every warn make the same
+ * claim an operator cannot read past. */
+const SERVER_ONLY =
+  'legion\'s local push guards were REMOVED (the pre-push hook and the PreToolUse Bash guard) — '
+  + 'the server-side refusal the branch-protection check above verifies is the ONLY barrier to a '
+  + 'raw push';
 
-/** LAYER 3, REPORTED HONESTLY. PASS = this repository carries
- * legion's own pre-push stub and git will run it. WARN = every other state — absent, foreign,
- * redirected by core.hooksPath, present but unexecutable, or unresolvable — each naming WHICH and
- * the remedy. NEVER fail (header). Resolution mirrors its neighbours, `fromAnyWorktree` included:
- * doctor is run from feature worktrees more than anywhere else, and the hook lives in the shared
- * common dir, so a check that went blind there would be silent exactly where every push happens. */
+/** THE RETIRED LAYER, REPORTED HONESTLY. PASS = no leftover legion stub routes this repository's
+ * pushes into a dead guard (absent, or the operator's own hook — which is none of legion's
+ * business now). WARN = a leftover legion stub is present (git will run it and fail every push —
+ * remedy named), it is inert litter, or the state is unreadable. NEVER fail (header). Resolution
+ * mirrors its neighbours, `fromAnyWorktree` included: doctor is run from feature worktrees more
+ * than anywhere else, and the hook lives in the shared common dir, so a check that went blind
+ * there would be silent exactly where every push happens. */
 function checkRemoteGuards(flags) {
   let resolved;
   try {
@@ -643,36 +634,44 @@ function checkRemoteGuards(flags) {
   } catch (e) {
     return {
       level: 'warn',
-      detail: `cannot resolve a registered project from cwd: ${excerpt(e.message, 200)} — whether a local `
-        + `pre-push guard is installed here is UNKNOWN; ${GUARD_DEPTH}`,
+      detail: `cannot resolve a registered project from cwd: ${excerpt(e.message, 200)} — whether a `
+        + `leftover pre-push stub is present here is UNKNOWN; ${SERVER_ONLY}`,
     };
   }
   const { entry, repoRoot } = resolved;
   const id = `${entry.org}/${entry.name}`;
   const r = inspectPrePushHook(repoRoot);
-  const warn = (detail) => ({ level: 'warn', detail: `${detail}; ${GUARD_DEPTH}` });
+  const warn = (detail) => ({ level: 'warn', detail: `${detail}; ${SERVER_ONLY}` });
   switch (r.status) {
-    case 'installed':
+    case 'clean':
       return {
         level: 'pass',
-        detail: `legion's pre-push guard is installed for ${id} at ${r.path} — ${GUARD_DEPTH}`,
+        detail: `no leftover legion pre-push stub for ${id} — ${SERVER_ONLY}`,
       };
-    case 'absent':
-      return warn(`no local pre-push guard is installed for ${id} (${r.path} does not exist) — `
-        + 're-run `legion project init` in that repository to install it');
     case 'foreign':
-      return warn(`${r.path} holds a pre-push hook that is NOT legion's, and legion never overwrites `
-        + `one, so ${id} has no local guard — compose the two by hand if you want the layer (call `
-        + `${GUARD_SCRIPT} from your hook)`);
-    case 'not-executable':
-      return warn(`legion's pre-push guard is present for ${id} at ${r.path} but carries no executable `
-        + 'bit, so git is silently ignoring it — re-run `legion project init` in that repository to re-arm it');
-    case 'hookspath':
-      return warn(`${r.detail}, and legion neither writes into that directory nor rewrites your git `
-        + `config, so ${id} has no local guard from legion — add ${GUARD_SCRIPT} to that directory by hand `
-        + 'if you want the layer');
+      return {
+        level: 'pass',
+        detail: `${r.path} holds the operator's own pre-push hook (not legion's, untouched) — ${SERVER_ONLY}`,
+      };
+    case 'leftover':
+      // THE REMEDY MUST BE TRUE FOR THE PATH IT NAMES: the remover acts on the DEFAULT hooks dir
+      // only (githooks.mjs decision B), so a stub git reads through a core.hooksPath redirect is
+      // one no legion command will ever delete — prescribing `legion project init` there would
+      // send the operator down the one path guaranteed to change nothing, silently.
+      return warn(`${r.path} is a legion pre-push stub from a version that shipped local guards; its `
+        + `guard file no longer exists, so EVERY ordinary push in ${id} (\`legion finalize\`'s `
+        + 'included) fails inside it — '
+        + (r.redirected
+          ? 'it sits in a core.hooksPath-redirected directory legion never touches: delete the file by hand'
+          : 'run `legion project init` in that repository to remove it, or delete the file by hand'));
+    case 'leftover-inert':
+      return warn(`${r.path} is a leftover legion pre-push stub (${r.detail ?? 'not executable'}) — it `
+        + 'blocks nothing, but '
+        + (r.redirected
+          ? 'it sits in a core.hooksPath-redirected directory legion never touches: clear the litter by hand'
+          : 'run `legion project init` in that repository to clear the litter'));
     default:
-      return warn(`the local pre-push guard state of ${id} could not be read (${r.detail ?? 'unknown'})`);
+      return warn(`the pre-push hook state of ${id} could not be read (${r.detail ?? 'unknown'})`);
   }
 }
 

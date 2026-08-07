@@ -40,7 +40,7 @@
 // is individually guarded and becomes an `{unreadable:true, label, why}` row; the surviving
 // features render normally. The one thing that DOES die loudly is a corrupt projects.json — it
 // is the index of what exists, so "present but unparseable" is UNKNOWN, not "nothing registered"
-// (src/kernel/projectindex.mjs draws the same line). An ABSENT projects.json is an ANSWER —
+// (the line the retired kernel/projectindex.mjs drew too). An ABSENT projects.json is an ANSWER —
 // nothing on this machine is registered — and renders as an empty inventory.
 //
 // THE ORG BOUNDARY IS DISPLAY-ONLY HERE. scanRegisteredFeatures is org-scoped because the
@@ -524,8 +524,8 @@ function receiptShape(receipt) {
   };
 }
 
-/** Best-effort realpath, the same spelling kernel/projectindex.mjs uses and for the same reason:
- * a recorded path that no longer exists compares verbatim rather than throwing. */
+/** Best-effort realpath — a recorded path that no longer exists compares verbatim rather than
+ * throwing. (The retired kernel/projectindex.mjs carried the same spelling for the same reason.) */
 const realish = (p) => { try { return realpathSync(String(p)); } catch { return String(p); } };
 
 /** Artifacts, with DOSSIER-RELATIVE paths — that is what `/api/artifact` accepts, and handing the

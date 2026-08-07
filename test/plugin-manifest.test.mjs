@@ -175,17 +175,20 @@ test('every role subagent exists, parses, and declares its tools', () => {
   }
 });
 
-test('hooks/hooks.json matches the 2.1.219 plugin hook shape — exactly four events, no Stop', () => {
+test('hooks/hooks.json matches the 2.1.219 plugin hook shape — exactly three events, no Stop', () => {
   const manifest = JSON.parse(read('hooks', 'hooks.json'));
   assert.deepEqual(Object.keys(manifest).sort(), ['description', 'hooks'],
     'plugin hooks.json is the wrapper form {description?, hooks:{…}}');
   const events = Object.keys(manifest.hooks).sort();
-  // T26 added PreToolUse (PLAN-V3 §Remote safety layer 3). The set is asserted EXACTLY, so a
-  // fourth-and-a-half event cannot arrive without someone reading this line.
-  assert.deepEqual(events, ['Notification', 'PreToolUse', 'SessionStart', 'SubagentStop']);
+  // The set is asserted EXACTLY, so a new event cannot arrive without someone reading this line.
+  assert.deepEqual(events, ['Notification', 'SessionStart', 'SubagentStop']);
   // PLAN-V3 §Gates forbids a global Stop hook — it would interfere with the approval and
   // orchestration stages. Assert the absence explicitly so it cannot be added casually.
   assert.ok(!('Stop' in manifest.hooks), 'no global Stop hook (PLAN-V3 §Gates)');
+  // T26's PreToolUse Bash guard was REMOVED 2026-08-07 together with the pre-push git hook
+  // (server-only decision — src/kernel/githooks.mjs header). Asserted absent so the local deny
+  // layer cannot come back casually either.
+  assert.ok(!('PreToolUse' in manifest.hooks), 'the Bash remote-write guard was removed — server-only');
   for (const [event, entries] of Object.entries(manifest.hooks)) {
     assert.ok(Array.isArray(entries) && entries.length === 1, `${event}: one matcher entry`);
     for (const entry of entries) {
@@ -212,11 +215,6 @@ test('hooks/hooks.json matches the 2.1.219 plugin hook shape — exactly four ev
     'and the bare type, in case the runtime does not namespace it');
   assert.ok(!new RegExp(manifest.hooks.SubagentStop[0].matcher).test('legion:code-reviewer'),
     'it must NOT catch other legion agents');
-  // PreToolUse's matcher is compared against `tool_name`, and 'Bash' satisfies ^[a-zA-Z0-9_|]+$,
-  // so the build compares it as an EXACT STRING — no regex, no accidental widening to BashOutput.
-  assert.equal(manifest.hooks.PreToolUse[0].matcher, 'Bash');
-  assert.match(manifest.hooks.PreToolUse[0].matcher, /^[a-zA-Z0-9_|]+$/,
-    'an exact-string matcher, or 2.1.219 compiles it as a RegExp instead');
 });
 
 test('every hook command resolves to a real executable and every hook script parses', () => {
@@ -242,7 +240,7 @@ test('every hook command resolves to a real executable and every hook script par
       }
     }
   }
-  assert.equal(scripts.length, 4); // T26: SessionStart, SubagentStop, Notification, PreToolUse
+  assert.equal(scripts.length, 3); // SessionStart, SubagentStop, Notification
   for (const abs of [...scripts, join(ROOT, 'hooks', '_common.mjs')]) {
     const r = spawnSync(process.execPath, ['--check', abs], { encoding: 'utf8' });
     assert.equal(r.status, 0, `node --check ${abs}: ${r.stderr}`);
@@ -496,16 +494,11 @@ function componentFiles() {
     ['hooks', 'session-start.mjs'],
     ['hooks', 'builder-receipt.mjs'],
     ['hooks', 'notify.mjs'],
-    // T26, remote-safety layer 3's plugin half. Its deny messages are written to be READ AND
-    // ACTED ON by the agent whose Bash call was just refused, so they are scanned for the same
-    // reason pre-push.mjs's are.
-    ['hooks', 'bash-remote-write.mjs'],
-    // NOT a Claude Code hook — git runs it (remote-safety layer 3, T25). Scanned here anyway,
-    // and deliberately: its refusal messages are the most command-dense prose the plugin ships,
-    // they are written to be READ AND ACTED ON by the agent whose push was just blocked, and a
-    // refusal that names a command the router does not dispatch teaches exactly the improvisation
-    // the guard exists to stop.
-    ['hooks', 'pre-push.mjs'],
+    // (Until 2026-08-07 the two remote-write guards — hooks/bash-remote-write.mjs and
+    // hooks/pre-push.mjs — were scanned here too; they were removed with the layer, server-only
+    // decision. What survives of that surface is githooks.mjs's removal report lines, which name
+    // kernel commands an operator is told to run, so the scan follows the prose there.)
+    ['src', 'kernel', 'githooks.mjs'],
     ['workflows', 'build-loop.js'],
   ];
 }
@@ -796,11 +789,12 @@ test('/legion:start keeps the amendment ORDER: confirm, create, then become the 
   // is the documented exception; everything else carries the prefix.
   assert.match(body, /cd <worktree> && legion state init/,
     'the cwd discipline must appear as a copyable command, not only as advice');
-  // The residual must name what still holds, or it reads as a shrug. finalize is THE remote-write
-  // path and the widened target-repo guard is what keeps the plugin-layer deny live for this shape.
+  // The residual must name what still holds, or it reads as a shrug. finalize is the intended
+  // remote-write path, and since 2026-08-07 the residual must also state the server-only
+  // layering — claiming a local deny that no longer exists would be the worse failure.
   const residual = body.slice(iResidual);
-  assert.match(residual, /only remote-write path/, 'the residual names finalize as the boundary');
-  assert.match(residual, /TARGET repository/, 'and names the widened guard scope (T29)');
+  assert.match(residual, /only remote-write path/, 'the residual names finalize as the intended path');
+  assert.match(residual, /only barrier/i, 'and states the server-only decision — no local guard layer');
   // Resumes are NOT this skill's path — losing that sentence is how the printed launch command
   // stops being used and every later session re-enters through here.
   assert.match(body, /Resumes are unaffected/, 'the resume path must stay documented');

@@ -388,6 +388,20 @@ can refuse a push the server would have accepted; it can never make a push the s
 `--no-verify` walks past it by design (test/git-hooks.test.mjs asserts that bypass WORKS), and what
 is left underneath is the row above.
 
+#### AMENDED 2026-08-07 — the local guard layer proven above was subsequently REMOVED
+
+Everything above stands unedited; it records real runs of a layer that existed when they ran. On
+2026-08-07, by owner decision, legion removed BOTH local remote-write guards — the pre-push hook
+whose refusal is captured in this subsection and the plugin's PreToolUse Bash guard: a developer
+using legion is free to push and open merge requests by hand, and the server-side refusal proven in
+row 8 (this section's step 3 citation) is the surviving guarantee — now the whole story, not the
+bottom layer of one. `legion project init` / `legion feature start` now REMOVE a leftover stub
+(its fail-closed import would otherwise block every push once the guard file stopped shipping —
+test/git-hooks.test.mjs proves the trap and the removal), and `legion doctor`'s `remote-guards`
+check now reports leftovers instead of installations. The fixture repo's own stub at
+`/Users/…/rachid_test/.git/hooks/pre-push` is such a leftover until a `project init` /
+`feature start` next runs there.
+
 ---
 
 ## Findings raised by this audit

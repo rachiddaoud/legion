@@ -18,8 +18,8 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync,
-  writeFileSync,
+  chmodSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync,
+  statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
@@ -828,103 +828,125 @@ test('every recorded branch is checked: one protected, one not ⇒ fail naming t
   assert.ok(!r.checks[4].detail.includes("'main' is NOT protected"), 'main IS protected in the fixture');
 });
 
-// --- remote-guards: layer 3, reported honestly (T27) --------------------------------------------
-// The check answers ONE question — does this repository carry legion's local pre-push guard —
-// and it answers it in two levels only. There is no fail state anywhere below, on purpose: the
-// absence of a DEPTH layer is not a red light (PLAN-V3 §Remote safety — the server is the
-// guarantee, `legion finalize` is the intended path, this hook is neither). Every scenario's
-// `project init` installs the guard for real, so the pass case is the guard as onboarding leaves
-// it, not a fixture shaped to be found.
+// --- remote-guards: the retired layer's leftovers, reported honestly ----------------------------
+// The local push guards were REMOVED 2026-08-07 (server-only decision — src/kernel/githooks.mjs
+// header). The check keeps its id (the `--json` contract) and its two-valued voice — pass/warn,
+// never fail — but its question inverted: it now catches the MIGRATION HAZARD, a fail-closed stub
+// from an older install whose guard file no longer ships. `project init` no longer installs
+// anything, so the pass case is the fresh state onboarding leaves, and every leftover below is
+// PLANTED by the fixture the way an old legion left it.
 
-/** The pre-push stub `legion project init` installed in a scenario's repository. */
+/** Where the retired installer put its stub — now where fixtures PLANT leftovers. */
 const hookOf = (s) => join(s.repo, '.git', 'hooks', 'pre-push');
 
-/** The depth framing both states must carry: the claim, and the check that carries the guarantee. */
-function assertDepthFraming(detail) {
-  assert.match(detail, /DEFENSE IN DEPTH, never the guarantee/, `missing the framing: ${detail}`);
-  assert.match(detail, /--no-verify/, `the bypass must be named concretely: ${detail}`);
+/** The stub an OLD legion installed: marker line, exec bit, fail-closed import. */
+function plantStub(path) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, [
+    '#!/usr/bin/env node',
+    '// legion-managed-git-hook:pre-push:v1',
+    'const guard = "file:///no/such/legion/hooks/pre-push.mjs";',
+    'import(guard).catch(() => process.exit(1));',
+    '',
+  ].join('\n'));
+  chmodSync(path, 0o755);
+}
+
+/** The server-only framing every remote-guards detail must carry, pass and warn alike: the local
+ * guards are gone, and the check that carries the guarantee is named. */
+function assertServerOnlyFraming(detail) {
+  assert.match(detail, /local push guards were REMOVED/, `missing the framing: ${detail}`);
+  assert.match(detail, /ONLY barrier/, `the server-only claim must be stated: ${detail}`);
   assert.match(detail, /branch-protection check above/, `the guarantee must be named: ${detail}`);
 }
 
-test('the guard `project init` installed ⇒ remote-guards PASSES, naming the hook path', async () => {
+test('a fresh registration carries no stub ⇒ remote-guards PASSES with the server-only framing', async () => {
   const s = scenario();
+  assert.ok(!existsSync(hookOf(s)), '`project init` must not install anything — the layer is retired');
   const r = await inScenario(s, [], DEPS(green()));
   assert.equal(r.code, 0, r.output);
   assert.equal(levels(r)['remote-guards'], 'pass', r.checks[5].detail);
-  assert.ok(r.checks[5].detail.includes(hookOf(s)), `the detail must name the hook path: ${r.checks[5].detail}`);
-  assertDepthFraming(r.checks[5].detail);
+  assert.match(r.checks[5].detail, /no leftover/);
+  assertServerOnlyFraming(r.checks[5].detail);
 });
 
-test('a PASS is still only depth — the wording never claims a raw push cannot happen', async () => {
+test('a LEFTOVER legion stub ⇒ WARN naming the file, the consequence and the remedy — never a fail', async () => {
   const s = scenario();
+  plantStub(hookOf(s));
   const r = await inScenario(s, [], DEPS(green()));
-  const d = r.checks[5].detail;
-  assert.ok(!/prevent/i.test(d), `layer 3 blocks the ordinary path, it prevents nothing: ${d}`);
-  assert.match(d, /only the server refusal/, d);
-});
-
-test('no guard at all ⇒ WARN naming the path and the remedy — never a fail, exit stays 0', async () => {
-  const s = scenario();
-  rmSync(hookOf(s));
-  const r = await inScenario(s, [], DEPS(green()));
-  assert.equal(r.code, 0, 'a missing depth layer is not a red light');
+  assert.equal(r.code, 0, 'a local file problem with a one-command remedy is not a red light');
   assert.equal(levels(r)['remote-guards'], 'warn', r.checks[5].detail);
-  assert.match(r.checks[5].detail, /no local pre-push guard is installed/);
-  assert.ok(r.checks[5].detail.includes(hookOf(s)), r.checks[5].detail);
+  assert.ok(r.checks[5].detail.includes(hookOf(s)), `the exact file must be named: ${r.checks[5].detail}`);
+  assert.match(r.checks[5].detail, /EVERY ordinary push/i, 'the consequence — bricked pushes — must be stated');
+  assert.match(r.checks[5].detail, /legion finalize/, "finalize's own push dies in the stub too");
   assert.match(r.checks[5].detail, /legion project init/, 'the remedy must be nameable');
-  assertDepthFraming(r.checks[5].detail);
+  assert.ok(existsSync(hookOf(s)), 'doctor REPORTS the leftover, it never removes it — read-only absolutely');
+  assertServerOnlyFraming(r.checks[5].detail);
 });
 
-test('a FOREIGN pre-push hook ⇒ WARN that says legion left it alone, with the composition advice', async () => {
+test("a FOREIGN pre-push hook is the operator's business ⇒ PASS, and doctor does not touch it", async () => {
   const s = scenario();
   writeFileSync(hookOf(s), '#!/bin/sh\nexit 0\n');
   const r = await inScenario(s, [], DEPS(green()));
   assert.equal(r.code, 0);
-  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[5].detail);
-  assert.match(r.checks[5].detail, /is NOT legion's/);
-  assert.ok(r.checks[5].detail.includes(join(ROOT, 'hooks', 'pre-push.mjs')),
-    `the composition advice must name the guard to call: ${r.checks[5].detail}`);
+  assert.equal(levels(r)['remote-guards'], 'pass', r.checks[5].detail);
+  assert.match(r.checks[5].detail, /operator's own pre-push hook/);
+  assert.match(r.checks[5].detail, /untouched/);
   assert.equal(readFileSync(hookOf(s), 'utf8'), '#!/bin/sh\nexit 0\n', 'and doctor must not touch it');
+  assertServerOnlyFraming(r.checks[5].detail);
 });
 
-test('legion’s stub present but NOT EXECUTABLE ⇒ WARN, because git silently ignores it', async () => {
-  // src/kernel/githooks.mjs decision E: an archive restore, a failed chmod or a filesystem
-  // without the exec bit leaves a byte-perfect stub git never runs. Reporting that as installed
-  // would be the one claim this check exists not to make — green while nothing runs.
+test('a leftover stub WITHOUT the exec bit is litter, not a blocker ⇒ WARN saying which', async () => {
+  // git silently ignores a hook with no exec bit: this stub blocks nothing, but leaving it around
+  // is how it comes back to life on the next archive restore or chmod sweep.
   const s = scenario();
+  plantStub(hookOf(s));
   chmodSync(hookOf(s), 0o644);
   const r = await inScenario(s, [], DEPS(green()));
   assert.equal(r.code, 0);
   assert.equal(levels(r)['remote-guards'], 'warn', r.checks[5].detail);
-  assert.match(r.checks[5].detail, /no executable bit/);
-  assert.match(r.checks[5].detail, /legion project init/, 'the re-arm path must be named');
-  assert.equal(statSync(hookOf(s)).mode & 0o111, 0, 'doctor REPORTS the dormant guard, it never repairs it');
+  assert.match(r.checks[5].detail, /blocks nothing/);
+  assert.match(r.checks[5].detail, /legion project init/);
+  assertServerOnlyFraming(r.checks[5].detail);
 });
 
-test('core.hooksPath redirects git ⇒ WARN naming the directory, and doctor does not rewrite config', async () => {
+test('the check reads the EFFECTIVE hooks dir — a stub in a core.hooksPath dir is one git runs', async () => {
   const s = scenario();
   const elsewhere = join(TMP, `hookspath-${n++}`);
   mkdirSync(elsewhere, { recursive: true });
   sh(s.repo, 'config', 'core.hooksPath', elsewhere);
+  // A stub at the DEFAULT path is invisible to git under the redirect: clean, git runs nothing.
+  plantStub(hookOf(s));
+  const clean = await inScenario(s, [], DEPS(green()));
+  assert.equal(levels(clean)['remote-guards'], 'pass', clean.checks[5].detail);
+  // A stub in the REDIRECTED dir (hand-copied, per the old composition advice) IS one git runs:
+  // named for the operator to delete — removal never reaches into a redirected dir.
+  plantStub(join(elsewhere, 'pre-push'));
   const r = await inScenario(s, [], DEPS(green()));
-  assert.equal(r.code, 0);
   assert.equal(levels(r)['remote-guards'], 'warn', r.checks[5].detail);
-  assert.match(r.checks[5].detail, /core\.hooksPath points git at/);
-  assert.ok(r.checks[5].detail.includes(elsewhere), r.checks[5].detail);
+  assert.ok(r.checks[5].detail.includes(join(elsewhere, 'pre-push')), r.checks[5].detail);
+  assert.ok(existsSync(join(elsewhere, 'pre-push')), 'reported, never removed');
   assert.equal(sh(s.repo, 'config', '--get', 'core.hooksPath'), elsewhere, 'doctor never rewrites the setting');
+  // THE REMEDY MUST BE TRUE: `legion project init` only ever removes from the DEFAULT hooks dir,
+  // so prescribing it for a redirected-dir leftover would send the operator down the one path
+  // guaranteed to change nothing. The detail must say "by hand" and must NOT name project init.
+  assert.match(r.checks[5].detail, /delete the file by hand/, r.checks[5].detail);
+  assert.doesNotMatch(r.checks[5].detail, /legion project init/,
+    'the remedy for a redirected-dir leftover is never a legion command');
 });
 
-test('from INSIDE a linked feature worktree the guard is still found — worktrees share one hooks dir', async () => {
+test('from INSIDE a linked feature worktree a leftover is still found — worktrees share one hooks dir', async () => {
   const s = scenario();
+  plantStub(hookOf(s));
   const wt = worktreeOf(s.repo);
   const r = await inDir(wt, s.home, [], DEPS(green()));
   assert.equal(r.code, 0, r.output);
-  assert.equal(levels(r)['remote-guards'], 'pass', r.checks[5].detail);
+  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[5].detail);
   assert.ok(r.checks[5].detail.includes(hookOf(s)),
-    `the guard lives in the COMMON dir, not under the worktree: ${r.checks[5].detail}`);
+    `the stub lives in the COMMON dir, not under the worktree: ${r.checks[5].detail}`);
 });
 
-test('no project resolves from cwd ⇒ WARN saying the guard state is UNKNOWN, like its neighbour', async () => {
+test('no project resolves from cwd ⇒ WARN saying the stub state is UNKNOWN, like its neighbour', async () => {
   const s = scenario();
   const outside = join(TMP, `outside-guards-${n++}`);
   mkdirSync(outside, { recursive: true });
@@ -934,17 +956,17 @@ test('no project resolves from cwd ⇒ WARN saying the guard state is UNKNOWN, l
   assert.equal(levels(r)['branch-protection'], 'warn', 'the neighbouring check answers the same way');
   assert.match(r.checks[5].detail, /cannot resolve a registered project from cwd/);
   assert.match(r.checks[5].detail, /UNKNOWN/);
-  assertDepthFraming(r.checks[5].detail);
+  assertServerOnlyFraming(r.checks[5].detail);
 });
 
-test('EVERY guard state is pass-or-warn — the check has no fail branch at all', async () => {
-  // The table, exhaustively: nothing this check can observe about a DEPTH layer justifies a red
-  // doctor, and a future edit that adds a fail here has to delete this test to land.
+test('EVERY leftover state is pass-or-warn — the check has no fail branch at all', async () => {
+  // The table, exhaustively: nothing this check can observe about a retired layer's litter
+  // justifies a red doctor, and a future edit that adds a fail here has to delete this test.
   const cases = [
-    ['installed', (s) => {}],
-    ['absent', (s) => rmSync(hookOf(s))],
+    ['clean', (s) => {}],
+    ['leftover', (s) => plantStub(hookOf(s))],
     ['foreign', (s) => writeFileSync(hookOf(s), '#!/bin/sh\nexit 0\n')],
-    ['not-executable', (s) => chmodSync(hookOf(s), 0o644)],
+    ['leftover-inert', (s) => { plantStub(hookOf(s)); chmodSync(hookOf(s), 0o644); }],
     ['no hooks directory at all', (s) => rmSync(join(s.repo, '.git', 'hooks'), { recursive: true, force: true })],
   ];
   for (const [name, mutate] of cases) {
@@ -955,36 +977,27 @@ test('EVERY guard state is pass-or-warn — the check has no fail branch at all'
     assert.equal(c.check, 'remote-guards');
     assert.ok(c.level !== 'fail', `${name} must never fail doctor: ${c.detail}`);
     assert.equal(r.code, 0, `${name}: exit 0, nothing else is red in this fixture`);
-    assertDepthFraming(c.detail);
+    assertServerOnlyFraming(c.detail);
   }
 });
 
 test('remote-guards probes NOTHING external — it asks the filesystem, never `claude` or `glab`', async () => {
   const s = scenario();
-  rmSync(hookOf(s));
+  plantStub(hookOf(s));
   const run = green();
   const before = run.calls.length;
   await inScenario(s, [], DEPS(run));
-  // Only the four probes the OTHER checks make: claude --version, glab auth status, glab api
+  // Only the five probes the OTHER checks make: claude --version, glab auth status, glab api
   // user, glab api projects/… ×2 (project + one protected_branches page).
   assert.equal(run.calls.length - before, 5, run.calls.map((c) => c.key).join(' | '));
-  assert.ok(!run.calls.some((c) => c.key.includes('pre-push')), 'the guard is read, never executed');
-});
-
-test('doctor says NOTHING about the PreToolUse hook — a session fact a CLI cannot verify', async () => {
-  // The other half of layer 3 is loaded (or not) by a Claude Code SESSION. doctor is a process
-  // that cannot observe one, so it makes no claim at all rather than a check it cannot run.
-  const s = scenario();
-  const r = await inScenario(s, ['--json'], DEPS(green()));
-  assert.ok(!/PreToolUse/i.test(r.output), `doctor must not claim what it cannot verify: ${r.output}`);
-  for (const c of r.checks) assert.ok(!/hooks\.json/.test(c.detail), c.detail);
+  assert.ok(!run.calls.some((c) => c.key.includes('pre-push')), 'the stub is read, never executed');
 });
 
 test('branch-protection keeps its own three-valued voice while remote-guards warns beside it', async () => {
   // The two checks are about the same layering and must not blur: a VERIFIED server refusal
-  // stays a pass even with no local guard, and the missing guard stays a warn.
+  // stays a pass even with a leftover stub bricking local pushes, and the leftover stays a warn.
   const s = scenario();
-  rmSync(hookOf(s));
+  plantStub(hookOf(s));
   const r = await inScenario(s, [], DEPS(green()));
   assert.equal(levels(r)['branch-protection'], 'pass', r.checks[4].detail);
   assert.match(r.checks[4].detail, /server-side protection VERIFIED/);

@@ -457,3 +457,28 @@ test('--ticket-project and --notify are recorded; omitted stays null', () => {
   assert.match(r2.stdout, /up to date/);
   assert.equal(readCfg(home, 'default', 'fix-proj').ticketProject, 'ABC');
 });
+
+test("re-init MERGES over the index entry — a project's features[] survives it", () => {
+  // THE 2026-08-07 CLOBBER, pinned: `feature start` writes features[] into the project's index
+  // entry, and a re-init that rebuilt the entry from its own four fields silently unregistered
+  // every feature of the project. The invariant is merge-not-replace: keys this command does not
+  // own must ride through a re-init untouched.
+  const { home, repo } = scenario();
+  assert.equal(legion(home, 'init', '--root', repo).status, 0);
+  const st = spawnSync(process.execPath, [BIN, 'feature', 'start', 'f1', '--base', 'main'],
+    { cwd: repo, encoding: 'utf8', env: { ...process.env, LEGION_HOME: home } });
+  assert.equal(st.status, 0, st.stderr);
+  const before = readIndex(home);
+  const entry = before.projects.find((p) => p.name === 'fix-proj');
+  assert.equal(entry.features?.length, 1, 'the fixture needs a registered feature to protect');
+
+  const r = legion(home, 'init', '--root', repo);
+  assert.equal(r.status, 0, r.stderr);
+  const after = readIndex(home);
+  const kept = after.projects.find((p) => p.name === 'fix-proj');
+  assert.equal(kept.features?.length, 1, 're-init must not unregister the feature');
+  assert.deepEqual(kept.features, entry.features, 'and must not rewrite it either');
+  // With every owned field unchanged and the foreign key preserved, this re-init is a TRUE no-op:
+  // the index version must not move.
+  assert.equal(after.version, before.version, 'a merge that changes nothing must not bump the CAS');
+});

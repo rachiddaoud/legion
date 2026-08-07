@@ -179,7 +179,7 @@ Two things to say out loud rather than paper over:
   it is the accurate description of this project until the operator declares gates
   (`legion project init --gates <path.json>`, whose file shape the README documents). Report the
   warning verbatim; do not reassure past it. Registration also pins `protectedBranches` to the
-  derived default branch and installs the `pre-push` guard — read those lines out too.
+  derived default branch — read that line out too.
 - **`project init` is the answer to exactly one refusal.** Not a git repository at all, a
   repository with no commits, a base branch that resolves to no commit, a name already taken,
   `initialization_failed` — none of those are fixed by registering a project. Read them out and
@@ -262,15 +262,15 @@ merge request. Nothing in the plugin layer prevents that, and this skill does no
 otherwise. What holds:
 
 - **The server is the guarantee** — protected branches and the agent identity's permissions.
-- **`legion finalize` remains the only remote-write path**, and the `pre-push` hook still refuses
-  a hand-rolled push from either checkout.
-- The **PreToolUse guard now scopes by the command's TARGET repository** rather than by the
-  session's launch cwd, which is precisely what keeps the plugin-layer deny alive for this session
-  shape — before that widening a main-root session got no deny at all.
-- **You** keep the discipline the isolation used to keep for you: edits belong in the worktree.
+- **`legion finalize` remains the only remote-write path legion itself takes** — the one command
+  that verifies the evidence chain and opens the MR against the pinned base. It is the intended
+  path, not an enforced one: the local guards (the `pre-push` hook and the PreToolUse Bash scan)
+  were removed 2026-08-07, and a hand-rolled push meets nothing local.
+- **You** keep the discipline the isolation used to keep for you: edits belong in the worktree,
+  and feature branches leave through finalize.
 
-None of this is new safety, and it is layer 3 — depth over the ordinary path, not a boundary.
-`legion doctor` is where the real boundary is verified.
+There is no local guard layer: the server refusal `legion doctor` verifies is the only barrier,
+and the discipline is yours.
 
 **Resumes are unaffected.** This skill is for the moment a feature is *created*. Later sessions
 resume the ordinary way, from the launch command `feature start` printed —

@@ -22,7 +22,6 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { finalizeCore, pushEnv } from '../../src/cli/finalize.mjs';
-import { FINALIZE_PUSH_ENV } from '../../src/kernel/githooks.mjs';
 import { readJson } from '../../src/kernel/fsatomic.mjs';
 import { applyHardenedGitEnv } from '../../src/kernel/git.mjs';
 
@@ -1203,40 +1202,23 @@ test('the push seam uses a fully-qualified refspec and never --force (source gua
   assert.match(code, /GIT_TERMINAL_PROMPT: '0'/, 'a missing credential must fail, never hang');
 });
 
-// --- T25: the layer-3 marker rides the PUSH's environment and nothing else ----------------------
-// finalize's push is a REAL `git push` under the operator's config, so the pre-push guard legion
-// installs (src/kernel/githooks.mjs) fires on it and rule 3 would block the one sanctioned way a
-// feature branch leaves the machine. The marker is what identifies that push. That it WORKS is
-// proven against a real local bare repository in test/git-hooks.test.mjs; what is proven HERE is
-// the scoping — the property the fake can see, and the one that would rot silently.
+// --- the push subprocess environment: prompt-hardened, and NO retired marker --------------------
+// Until 2026-08-07 pushEnv also carried LEGION_FINALIZE_PUSH=1, the marker the retired local
+// pre-push guard keyed its allow rule on. The guards were removed (server-only decision —
+// src/kernel/githooks.mjs header); what is pinned here is that the marker stayed removed and the
+// one property that still matters — a missing credential fails loudly — survived it.
 
-test('the marker is on the push subprocess env, never on this process and never on glab', async () => {
-  // (1) the builder itself: base preserved, both variables set.
+test('pushEnv hardens the prompt, preserves the base, and carries no retired marker', () => {
   const built = pushEnv({ PATH: '/nowhere', KEEP: 'yes' });
-  assert.equal(built[FINALIZE_PUSH_ENV], '1', 'the push must announce itself to legion\'s own guard');
   assert.equal(built.GIT_TERMINAL_PROMPT, '0');
   assert.equal(built.KEEP, 'yes', 'the caller\'s environment must survive');
-  assert.equal(process.env[FINALIZE_PUSH_ENV], undefined,
-    'building the push env must not leak the marker into this process');
+  assert.ok(!('LEGION_FINALIZE_PUSH' in built),
+    'the marker died with the guard it announced this push to');
 
-  // (2) a WHOLE successful finalize through the fake: the marker must not appear process-wide at
-  // any point, because glab and every other subprocess inherit process.env — anything else
-  // finalize shells out to would then be able to claim it is the push.
-  const s = scenario();
-  commitInWorktree(s, { 'src/a.mjs': 'export const a = 1;\n' });
-  ladder(s);
-  const io = makeIo(glabServer(s));
-  const r = await finalize(s, io);
-  assert.equal(r.code, 0, r.stderr);
-  assert.ok(io.calls.some((c) => c.kind === 'glab'), 'the run must have exercised the non-push seam');
-  assert.equal(process.env[FINALIZE_PUSH_ENV], undefined,
-    'the marker is set on the push SUBPROCESS only — never process-wide');
-
-  // (3) the scoping in source: exactly one place composes it, and it is the push's env.
+  // In source too: nothing may set the marker anywhere — process-wide or on any subprocess.
   const src = readFileSync(join(ROOT, 'src', 'cli', 'finalize.mjs'), 'utf8');
   const code = src.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
-  assert.ok(!new RegExp(`process\\.env\\[?['"\`]?${FINALIZE_PUSH_ENV}`).test(code),
-    'finalize must never write the marker onto process.env');
+  assert.ok(!/LEGION_FINALIZE_PUSH/.test(code), 'the marker must not come back in code');
   assert.equal((code.match(/pushEnv\(/g) ?? []).length, 2,
     'pushEnv is defined once and called once — from gitPush and nowhere else');
 });

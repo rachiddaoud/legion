@@ -3,8 +3,10 @@
 //
 // WHAT IT GUARANTEES, AND WHAT IT DOES NOT. Safety is layered on purpose:
 // the HARD boundary is server-side (GitLab protected branches + the agent identity's
-// permissions, verified by `legion doctor`); finalize is the INTENDED PATH; local git hooks
-// and the plugin's PreToolUse hook are defense in depth. Everything this file checks is
+// permissions, verified by `legion doctor`); finalize is the INTENDED PATH — and since
+// 2026-08-07 those are the ONLY two layers: the local guards (the pre-push hook and the
+// plugin's PreToolUse hook) were removed by owner decision, so a developer is free to push and
+// open MRs by hand. Everything this file checks is
 // therefore DEFENSE IN DEPTH: it can refuse a push the server would have accepted, it can
 // never make a push the server accepts safe. Where server protection is unverified the
 // guarantee is BEST-EFFORT and doctor says so — stated here rather than implied, because a
@@ -98,16 +100,11 @@
 //     removes the credential helper and url.insteadOf — a legitimate push would then fail to
 //     authenticate or hang on a prompt. It is a MUTATION of the user's repo, which is exactly
 //     what gitUserRepo is for, and it is allowlisted in test/kernel/git-seam.audit.test.mjs.
-// THAT PUSH ALSO CARRIES A MARKER: running under the user's config
-// means running the user's HOOKS, and the pre-push guard legion installs into every managed
-// repository (src/kernel/githooks.mjs) would otherwise block the push out of a feature worktree
-// that is the one sanctioned way a branch leaves the machine — so LEGION_FINALIZE_PUSH=1 is set
-// on the push SUBPROCESS's environment (pushEnv below), never on this process, so that nothing
-// else finalize shells out to can claim to be the push. The marker is SPOOFABLE by construction
-// and that costs nothing: anything able to export a variable is equally able to pass
-// `--no-verify`, so it grants no capability that was not already there — it is a coordination
-// token between two halves of legion, not an authentication of one, and the server remains the
-// only guarantee.
+// RUNNING UNDER THE USER'S CONFIG ALSO MEANS RUNNING THE USER'S HOOKS. Legion no longer
+// installs one (the pre-push guard was removed 2026-08-07, server-only decision —
+// src/kernel/githooks.mjs header; `project init` / `feature start` now remove leftovers from
+// older installs), so the only pre-push hooks this push can meet are the operator's own, and
+// they are theirs to keep or clear.
 // glab inherits the same hazard by a different route: it resolves the GitLab project from the
 // git remote of its cwd, so an ambient GIT_DIR would open the MR against another repository.
 // Its environment is therefore stripped of GIT_REDIRECT_VARS too (and nothing else — GITLAB_
@@ -205,7 +202,6 @@ import { basename, join } from 'node:path';
 import { parseArgs } from '../kernel/args.mjs';
 import { readJson } from '../kernel/fsatomic.mjs';
 import { git, gitTry, gitUserRepo, worktreeDirt } from '../kernel/git.mjs';
-import { FINALIZE_PUSH_ENV } from '../kernel/githooks.mjs';
 import { runCapture } from '../kernel/runner.mjs';
 import { approvalValid, bumpWrite, receiptProvenance, reviewBindingHolds, unsatisfiedPrefix } from '../kernel/state.mjs';
 // THE shared ticket surface (kernel/ticket.mjs): the same validator `feature start --ticket` and
@@ -231,16 +227,15 @@ const GLAB_MAX_BUFFER = 64 * 1024 * 1024;
 
 // --- the injectable seam (all remote effects live behind these two functions) ---------------
 
-/** THE PUSH SUBPROCESS'S ENVIRONMENT, and the only place either variable is set (header: the
- * marker). A pure builder over a base env rather than an inline object literal so the two
- * properties that matter are assertable without pushing anything: the marker IS on the push, and
- * it is NOT on this process (nothing here writes process.env).
+/** THE PUSH SUBPROCESS'S ENVIRONMENT. A pure builder over a base env rather than an inline
+ * object literal so the property that matters is assertable without pushing anything, and it is
+ * set on the push SUBPROCESS only, never on this process (nothing here writes process.env).
  *   GIT_TERMINAL_PROMPT=0 — a missing credential must fail loudly, never hang a headless run.
  *                          Not a redirection var, so gitUserRepo's env keeps it.
- *   LEGION_FINALIZE_PUSH=1 — tells legion's own pre-push guard that this IS the sanctioned push
- *                          (hooks/pre-push.mjs rule 1). Spoofable, deliberately; see the header. */
+ * (Until 2026-08-07 this also carried LEGION_FINALIZE_PUSH=1, the marker the retired pre-push
+ * guard keyed its allow rule on; the guard is gone and the marker died with it.) */
 export function pushEnv(base = process.env) {
-  return { ...base, GIT_TERMINAL_PROMPT: '0', [FINALIZE_PUSH_ENV]: '1' };
+  return { ...base, GIT_TERMINAL_PROMPT: '0' };
 }
 
 /** The REAL runner: the only place in the kernel that talks to a remote. */
@@ -250,13 +245,13 @@ export function realIo() {
      * FULLY-QUALIFIED REFSPEC so no `push.default`/HEAD ambiguity in the operator's config can
      * push something other than the branch we just verified; NEVER --force (a force-push can
      * destroy review history and is not finalize's business); the environment is pushEnv's — see
-     * its docblock for both variables and why the marker is set HERE and nowhere else. */
+     * its docblock. */
     gitPush(worktree, remote, branch) {
       // MUTATION under the user's git config (kernel/git.mjs header E): the push needs their
       // credential helper / url.insteadOf, which hardened config (GIT_CONFIG_GLOBAL=/dev/null)
       // strips. Repo/index REDIRECTION is still removed, which is the hazard that matters.
-      // Running under the user's config also means running their HOOKS — including legion's own
-      // pre-push guard, which pushEnv's marker is what this push identifies itself to.
+      // Running under the user's config also means running their HOOKS — their own; legion no
+      // longer installs one.
       return gitUserRepo(['push', '--set-upstream', remote, `refs/heads/${branch}:refs/heads/${branch}`], worktree,
         { env: pushEnv(process.env) });
     },

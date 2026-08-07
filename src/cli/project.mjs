@@ -51,7 +51,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../kernel/args.mjs';
 import { git, gitTry } from '../kernel/git.mjs';
 import { updateJsonCas } from '../kernel/casfile.mjs';
-import { ensurePrePushHook, hookReportLine } from '../kernel/githooks.mjs';
+import { removePrePushStub, removalReportLine } from '../kernel/githooks.mjs';
 import { readJson, writeAtomic, writeJson } from '../kernel/fsatomic.mjs';
 import {
   ensureDir, legionHome, projectDir, projectConfigPath, projectsIndexPath, safeSegment,
@@ -283,8 +283,13 @@ export async function run(argv) {
       if (doc === null) return { schemaVersion: 1, projects: [entry] }; // version owned by casfile
       const projects = [...(doc.projects ?? [])];
       const i = projects.findIndex((p) => p.org === org && p.name === name);
-      if (i >= 0 && JSON.stringify(projects[i]) === JSON.stringify(entry)) return null; // true no-op
-      if (i >= 0) projects[i] = entry; else projects.push(entry);
+      // MERGE over the existing entry, never replace it: the entry also carries keys this command
+      // does not own — `features[]` is `legion feature start`'s — and a re-init that rebuilt the
+      // entry from its own four fields silently unregistered every feature of the project
+      // (it did exactly that on 2026-08-07; the reconcile above preserves, so must this).
+      const next = i >= 0 ? { ...projects[i], ...entry } : entry;
+      if (i >= 0 && JSON.stringify(projects[i]) === JSON.stringify(next)) return null; // true no-op
+      if (i >= 0) projects[i] = next; else projects.push(next);
       return { ...doc, projects };
     });
   } catch (e) {
@@ -299,16 +304,16 @@ export async function run(argv) {
       { cause: e },
     );
   }
-  // --- remote-safety layer 3, AFTER the commit point ---
-  // Installed here and nowhere earlier for the reason stated above: everything before
-  // registration is rolled back on failure, and a hook written into the operator's repository is
-  // not something this file rolls back. It is also why ensurePrePushHook never throws — a repo
-  // that cannot take the guard is still an initialized project, and DEPTH THAT CANNOT BE ADDED
-  // MUST NOT FAIL ONBOARDING. The line it prints carries the caveat (kernel/githooks.mjs
-  // hookReportLine): this layer blocks the ordinary raw push, it does not prevent one.
-  const hook = ensurePrePushHook(repoRoot);
+  // --- retired remote-safety layer 3: REMOVE any leftover stub, AFTER the commit point ---
+  // The local push guards were removed 2026-08-07 (server-only decision — kernel/githooks.mjs
+  // header). This call is the migration path: a repository registered by an older legion carries
+  // a fail-closed stub whose guard file no longer ships, and until it is deleted every ordinary
+  // push there fails inside it. Placed after the commit point for the install-era reason in
+  // reverse: touching the operator's repository is not something registration rolls back. It
+  // never throws — a repo whose stub cannot be removed is still an initialized project.
+  const stub = removePrePushStub(repoRoot);
   process.stdout.write(say.join(''));
   process.stdout.write(`  registered in ${projectsIndexPath()}\n`);
-  process.stdout.write(hookReportLine(hook));
+  process.stdout.write(removalReportLine(stub));
   return 0;
 }

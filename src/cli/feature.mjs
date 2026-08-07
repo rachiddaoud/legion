@@ -202,7 +202,7 @@ import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, requireFlags } from '../kernel/args.mjs';
 import { git, gitTry, gitUserRepo, mainWorktreeRoot, worktreeDirt } from '../kernel/git.mjs';
-import { ensurePrePushHook, hookReportLine } from '../kernel/githooks.mjs';
+import { removePrePushStub, removalReportLine } from '../kernel/githooks.mjs';
 import { updateJsonCas } from '../kernel/casfile.mjs';
 import { readJson, writeJson } from '../kernel/fsatomic.mjs';
 import { ensureDir, featureDir, featuresDir, projectsIndexPath, safeSegment } from '../kernel/paths.mjs';
@@ -936,14 +936,15 @@ async function start(flags, positional) {
     return { ...doc, projects };
   });
 
-  // RE-ENSURE the pre-push guard (src/kernel/githooks.mjs).
-  // HERE — after the worktree exists and the feature is registered — for the reason the
-  // header states: every refusal above this point leaves no trace, and a hook file written into
-  // the operator's repository would be one. `feature start` re-ensures rather than installs
-  // because the guard belongs to the REPOSITORY (linked worktrees share its hooks directory), so
-  // this is the upgrade path for a project initialized by an older legion. It never throws: a
-  // repository that cannot take the guard still gets its feature.
-  const hook = ensurePrePushHook(repoRoot);
+  // REMOVE any leftover pre-push stub (src/kernel/githooks.mjs — the guards were retired
+  // 2026-08-07, server-only decision). This is THE upgrade path for a repository registered by
+  // an older legion: its installed stub is fail-closed and its guard file no longer ships, so
+  // every push there — this feature's finalize included — fails inside it until removed. HERE,
+  // after the worktree exists and the feature is registered, for the install-era reason in
+  // reverse: every refusal above this point leaves no trace in the operator's repository, and a
+  // deleted hook file would be one. It never throws: a repository whose stub cannot be removed
+  // still gets its feature.
+  const stub = removePrePushStub(repoRoot);
 
   try {
     runBootstrap(cfg, entry.configPath, worktree);
@@ -982,7 +983,7 @@ async function start(flags, positional) {
     // comments an issue that belongs to someone else's work, and nothing downstream can catch it —
     // it is DATA, so this line is the only review it will ever get.
     (ticket !== null ? `  ticket:   ${ticket}\n` : '') +
-    hookReportLine(hook) +
+    removalReportLine(stub) +
     `  gate policy pinned: task ${pin.commandPolicyHash.task} (${pin.commandPolicy.task.length} cmd), ` +
     `boundary ${pin.commandPolicyHash.boundary} (${pin.commandPolicy.boundary.length} cmd)\n` +
     (weakTiers.length > 0
