@@ -229,9 +229,10 @@ instead of two approval round-trips for a contained change. Steps 1–6 are unch
 change as follows, and these forms **replace — never precede — the unfused steps above**:
 
 - Before the recap, draft the **mini-spec** into the dossier as the spec artifact. This is the
-  canonical mini-spec format, stated once: a **`## Digest` of ≤ 20 lines** plus the
+  canonical mini-spec format, stated once: a **`## Digest` of ≤ 20 lines of prose** plus the
   **acceptance rows** — the yardstick every later review and amendment grades against — and a
-  data-model or schema change, if there is one, still **named explicitly**. No spec interview
+  data-model or schema change, if there is one, still **named explicitly**, with the table or
+  diagram the quality floor triggers, as legal in a mini-spec as anywhere. No spec interview
   and no long out-of-scope or process sections: on express the mini-spec IS the spec.
 - The recap (step 7) presents the intent **and** the mini-spec digest together; the single
   explicit yes covers both.
@@ -267,8 +268,9 @@ nothing more. Everything in this section applies to a mini-spec unchanged.
    process, statuses, loading/empty/error behaviour, **acceptance rows** the product reviewer
    will grade against, out-of-scope, any data-model or schema change **named explicitly** —
    never hidden as an implementation detail — and any evidence artifact.
-2. It opens with a **`## Digest` of ≤ 20 lines** that passes the read-nothing-else test — the
-   human at the gate may read nothing else.
+2. It opens with a **`## Digest` of ≤ 20 lines of prose** that passes the read-nothing-else
+   test — the human at the gate may read nothing else; a visual the quality floor triggers (a
+   schema table or diagram) is exempt from the count.
 3. `legion state artifact-record spec <path>`, present the digest, get an explicit yes, then
    `legion state decision-record spec`, `legion state stage-complete spec`,
    `legion state stage-enter plan`.
@@ -840,14 +842,20 @@ re-approval, cascade and all.
 
 ## Quality floor (binds you and every agent you dispatch)
 
-- **Digests everywhere.** Every spec and plan opens with a `## Digest` of ≤ 20 lines that passes
-  the read-nothing-else test. Nothing else in the document summarises.
+- **Digests everywhere.** Every spec and plan opens with a `## Digest` of ≤ 20 lines **of
+  prose** that passes the read-nothing-else test — a triggered visual (next bullet) rides
+  outside the count. Nothing else in the document summarises.
 - **Say everything once.** One canonical statement per rule, referenced by id elsewhere. Tables
   and bullets over prose; no hedging, no re-justification.
-- **Visuals are conditional.** A table, flow, state diagram or tree appears only where it
-  explains a relationship better than short prose — text-native unless the approval surface
-  renders richer, at most one per digest, never decoration, and never the only place a
-  business rule is stated.
+- **Visuals are conditional — and, on trigger, mandatory.** The digest budget is prose; one
+  table or mermaid diagram (the viewer renders mermaid) is exempt from the count. Structure
+  that prose serialises badly demands its form: a state machine with branching or loops
+  (≥ 3 states, non-linear transitions) → a mermaid state diagram · a flow crossing ≥ 3 actors
+  or components → a sequence diagram · a relational schema change (new entity, join table,
+  split or merge) → an ER diagram · a column-level schema change → a compact
+  `field | type | purpose` table, which is the canonical statement of the schema delta and
+  does not compete for the one diagram slot. Linear structures stay prose. Never decoration,
+  and never the only place a business rule is stated.
 - **Task sizing.** ~200–600 LOC of diff per task, 3–5 tasks per feature. Too-small is flagged as
   firmly as too-big — every extra task costs a full builder + gate + review cycle.
 - **Tests at plan-declared seams only**, mocks at **system boundaries only**, expected values from

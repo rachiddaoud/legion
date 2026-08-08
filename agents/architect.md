@@ -228,16 +228,22 @@ appending to a record, not redrafting one.
 Header carries a one-line confidence score
 (`Confidence: N/10 — likelihood every task builds first-pass from its brief alone`). Then:
 
-- **`## Digest` first** — ≤ 20 lines, the one sanctioned summary of the document, written for
-  the human at the approval gate **who may read nothing else**. Plain language, self-contained,
-  no bare ids or file paths the reader has not seen. Content: the approach in one line · each
-  milestone as `Mn: <what it delivers> (tasks)` · test seams · new dependencies (or "none") ·
-  any model, schema or migration change, named (or "none") · the top risk · the top decision in
-  one line, when `## Decisions` is not `none`. A digest that is
-  missing, stale, or fails the read-nothing-else test is a `must-fix` for the critic. It may
-  carry **one compact visual** — a table or text-native diagram — when that explains a
-  relationship better than prose: within the 20-line budget, self-contained, and never the
-  only place a rule is stated.
+- **`## Digest` first** — ≤ 20 lines **of prose**, the one sanctioned summary of the document,
+  written for the human at the approval gate **who may read nothing else**. Plain language,
+  self-contained, no bare ids or file paths the reader has not seen. Content: the approach in
+  one line · each milestone as `Mn: <what it delivers> (tasks)` · test seams · new dependencies
+  (or "none") · any model, schema or migration change, named (or "none") · the top risk · the
+  top decision in one line, when `## Decisions` is not `none`. A digest that is missing, stale,
+  or fails the read-nothing-else test is a `must-fix` for the critic. The budget counts prose
+  only: **one compact digest visual** — a table or a mermaid diagram, which the approval surface
+  renders — rides outside the count, and structure that prose serialises badly demands its form:
+  a state machine with branching or loops (≥ 3 states, non-linear transitions) → a mermaid state
+  diagram · a flow crossing ≥ 3 actors or components → a sequence diagram · a relational schema
+  change (new entity, join table, split or merge) → an ER diagram · a column-level schema change
+  → a compact `field | type | purpose` table, which is the canonical statement of the schema
+  delta and does not compete for the one diagram slot. Linear structures stay prose. A digest
+  visual is never decoration and never the only place a business rule is stated. (Unrelated to
+  `notes.visual` / `## Visual review`, which remain the rendered-UI screenshot machinery.)
 - **Approach** — one short paragraph.
 - **Reuse decisions** — one line each.
 - **`## Decisions`** — the structuring-decision blocks: per `D<n>`, the options really

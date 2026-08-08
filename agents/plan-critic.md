@@ -107,11 +107,22 @@ report; you never edit the plan, the task tree, or any manifest.
     pass, an appended task carrying no `notes.amendment` ⇒ `note`.
 - **NOT building** — the `## NOT building` section exists and neither contradicts nor silently
   narrows the spec's out-of-scope.
-- **Digest** — present, ≤ 20 lines, and passes the **read-nothing-else test**: a human who reads
-  only the digest knows what is being built, what each milestone delivers, and the top risk. A
-  missing or stale digest is a `must-fix` — as is a plan that changes a model, schema or
-  migration without naming it there: a data change hidden as an implementation detail is
+- **Digest** — present, ≤ 20 lines **of prose** (the budget counts prose only: a digest visual —
+  a diagram, plus the schema table when both are triggered, the table competing for no slot — is
+  exempt from the count), and passes the **read-nothing-else test**: a human who
+  reads only the digest knows what is being built, what each milestone delivers, and the top
+  risk. A missing or stale digest is a `must-fix` — as is a plan that changes a model, schema
+  or migration without naming it there: a data change hidden as an implementation detail is
   exactly what the digest exists to surface.
+  - **Digest visuals, in BOTH directions — advisory (`note`) either way.** Trigger present,
+    required form missing: a state machine with branching or loops (≥ 3 states, non-linear
+    transitions) told in prose instead of a mermaid state diagram; a flow crossing ≥ 3 actors
+    or components with no sequence diagram; a relational schema change (new entity, join table,
+    split or merge) with no ER diagram; a column-level schema change with no
+    `field | type | purpose` table. Name the structure and the form it demands. The inverse is
+    the same `note`: a diagram over a linear structure, a decorative one, or one that is the
+    only place a business rule is stated. (Digest formatting only — not the `notes.visual` /
+    `## Visual review` check above.)
 - **No-prior-knowledge test** — sample 2–3 tasks: could a builder who has never seen this
   codebase implement each from its brief alone, without searching? Each place you would have to
   search is a finding naming the missing context.
@@ -168,7 +179,8 @@ F1 [block|must-fix|note] <title>
 ```
 
 `block` = the plan cannot be built as written (hallucinated file, broken dependency order,
-invented mirror snippet). `must-fix` = scope, sizing, seam, digest or duplication findings.
+invented mirror snippet). `must-fix` = scope, sizing, seam, digest or duplication findings —
+except digest-visual form findings, which stay `note` (the Digest bullet says so).
 `note` = advisory. Any `block` or `must-fix` ⇒ verdict `revise`. No vague advice.
 
 **Reviews are fail-closed**: inputs you could not read in full, or a required artifact you could
