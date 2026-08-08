@@ -188,8 +188,10 @@ export interface TaskDetail {
   receipt: Receipt;
 }
 
-/** `inside:false` = recorded outside the dossier: real, rendered as a path, NOT servable. */
-export interface ArtifactRef { path: string | null; inside: boolean; hash: string | null; at: string | null }
+/** `inside:false` = recorded outside the dossier: real, rendered as a path, NOT servable.
+ *  `recorded:false` = a conventional draft file found in the dossier that no op has recorded —
+ *  hash and at are null, and nothing about its bytes is claimed. */
+export interface ArtifactRef { path: string | null; inside: boolean; hash: string | null; at: string | null; recorded: boolean }
 
 /** RECORDED, never valid. There is deliberately no `valid` key — see `approvalsCaveat`. */
 export interface ApprovalRef { at: string | null; subjectHash: string | null }

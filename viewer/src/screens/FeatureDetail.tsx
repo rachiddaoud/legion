@@ -276,8 +276,9 @@ function ArtifactDigest({ source, id, kind, path }: {
 }
 
 function ArtifactsTab({ view, id, source }: { view: FeatureView; id: FeatureId; source: ViewerDataSource }) {
-  // The server emits artifacts in the kernel's lifecycle order (projection.mjs artifactsOf) —
-  // the picker renders that order and holds no kind list of its own.
+  // The server emits artifacts in the kernel's lifecycle order (projection.mjs artifactsOf),
+  // recorded entries and conventional drafts alike — the picker renders that order and holds
+  // no kind list of its own.
   const kinds = Object.keys(view.artifacts);
   const [picked, setPicked] = useState<string | null>(null);
   const sel = picked !== null && kinds.includes(picked) ? picked
@@ -287,18 +288,20 @@ function ArtifactsTab({ view, id, source }: { view: FeatureView; id: FeatureId; 
   return (
     <>
       <Section title="Artifacts">
-        {sel === null || a === null ? <div className="card"><p className="muted" style={{ margin: 0 }}>No artifact is recorded for this feature.</p></div> : (
+        {sel === null || a === null ? <div className="card"><p className="muted" style={{ margin: 0 }}>No artifact is recorded or drafted for this feature.</p></div> : (
           <>
             <div className="searchrow" role="tablist" aria-label="pick an artifact">
               {kinds.map((k) => (
-                <button key={k} role="tab" aria-selected={k === sel} className={`btn ${k === sel ? 'btn-option' : ''}`} onClick={() => setPicked(k)}>{k}</button>
+                <button key={k} role="tab" aria-selected={k === sel} className={`btn ${k === sel ? 'btn-option' : ''}`} onClick={() => setPicked(k)}>{k}{view.artifacts[k].recorded ? '' : ' · draft'}</button>
               ))}
             </div>
             <div className="card">
               <div className="mission-head">
                 <p className="mission-sub" style={{ margin: 0 }}>
-                  <span className="mono">{path || '(no path recorded)'}</span> · recorded <RelTime iso={a.at} /> ·
-                  hash <span className="mono">{a.hash ? a.hash.slice(0, 12) : '—'}</span>
+                  <span className="mono">{path || '(no path recorded)'}</span>
+                  {a.recorded
+                    ? <> · recorded <RelTime iso={a.at} /> · hash <span className="mono">{a.hash ? a.hash.slice(0, 12) : '—'}</span></>
+                    : <> · draft — not yet recorded</>}
                 </p>
                 <div className="mission-right">
                   {a.inside

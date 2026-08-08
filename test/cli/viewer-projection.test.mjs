@@ -34,9 +34,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixture, planTask, NOW } from '../helpers/fixture.mjs';
 import {
-  APPROVALS_CAVEAT, ATTENTION_KINDS, KERNEL_STATUSES, QUIET_AFTER_HOURS, RECENT_OUTCOME_DAYS,
-  VIEWER_STATUSES, featureSummaries, featureView, groupByInitiative, insights,
+  APPROVALS_CAVEAT, ATTENTION_KINDS, DRAFT_FILENAMES, KERNEL_STATUSES, QUIET_AFTER_HOURS,
+  RECENT_OUTCOME_DAYS, VIEWER_STATUSES, featureSummaries, featureView, groupByInitiative, insights,
 } from '../../src/cli/_viewer/projection.mjs';
+import { ARTIFACT_KINDS } from '../../src/kernel/state.mjs';
 import { ACTIVITY_KINDS, featureActivity } from '../../src/cli/_viewer/activity.mjs';
 // The ONE sanctioned export added to src/cli/feature.mjs this task (T39 spec A): the diff to that
 // file is the `export` keyword and nothing else. Importing it here is what pins that it IS
@@ -291,6 +292,62 @@ test('approvals render RECORDED; validity comes from CALLING the kernel and dies
     assert.match(after.lifecycleNow.why, /no hash-valid intake approval/);
     assert.deepEqual(after.lifecycleNow.nextUnsatisfied.stage, 'intake');
   } finally { h.cleanup(); }
+});
+
+test('a conventional draft file renders recorded:false; a record always wins its kind', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    // On disk, never recorded: existence on this request is the only claim — no hash, no at.
+    h.writeArtifact('spec.md', '# spec draft\n');
+    const drafted = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1' }));
+    assert.deepEqual(drafted.artifacts.spec,
+      { path: 'spec.md', inside: true, hash: null, at: null, recorded: false });
+
+    // Record the kind at a DIFFERENT, free-form path: the manifest is the ledger, the disk is
+    // not — the record takes the kind and the still-present draft file stops mattering.
+    const real = h.writeArtifact('specs-final.md', '# the recorded spec\n');
+    assert.equal(h.legion('state', 'artifact-record', 'spec', real).code, 0);
+    const recorded = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1' }));
+    assert.equal(recorded.artifacts.spec.recorded, true);
+    assert.equal(recorded.artifacts.spec.path, 'specs-final.md');
+    assert.ok(recorded.artifacts.spec.hash);
+    assert.equal(recorded.artifacts.spec.at, NOW);
+  } finally { h.cleanup(); }
+});
+
+test('drafts slot into ARTIFACT_KINDS lifecycle order beside recorded kinds', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    h.seedPlan([planTask('T1')]); // records `plan` through the real import
+    h.writeArtifact('intent.md', '# intent draft\n'); // draft, never recorded
+    const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1' }));
+    assert.deepEqual(Object.keys(v.artifacts), ['intent', 'plan']);
+    assert.equal(v.artifacts.intent.recorded, false);
+    assert.equal(v.artifacts.plan.recorded, true);
+  } finally { h.cleanup(); }
+});
+
+test('an unknown recorded kind appends after known kinds and drafts, verbatim', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    h.writeArtifact('spec.md', '# spec draft\n');
+    // Only a hand-edit can produce an unknown kind — artifact-record validates against
+    // ARTIFACT_KINDS — so this is a forgery, exactly what writeTasks exists for.
+    const rogue = h.writeArtifact('rogue.md', '# rogue\n');
+    h.writeTasks((doc) => ({ ...doc, artifacts: { ...doc.artifacts, sidecar: { path: rogue, hash: 'h', at: NOW } } }));
+    const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1' }));
+    assert.deepEqual(Object.keys(v.artifacts), ['spec', 'sidecar']);
+    assert.equal(v.artifacts.sidecar.recorded, true);
+    assert.equal(v.artifacts.sidecar.path, 'rogue.md');
+  } finally { h.cleanup(); }
+});
+
+test('DRAFT_FILENAMES keys are ARTIFACT_KINDS members — a display convention, not a second vocabulary', () => {
+  for (const kind of Object.keys(DRAFT_FILENAMES)) {
+    assert.ok(ARTIFACT_KINDS.includes(kind), `'${kind}' is not a kernel artifact kind`);
+  }
+  // No draft convention for review/preview — their absence here is deliberate (projection docblock).
+  assert.ok(!('review' in DRAFT_FILENAMES) && !('preview' in DRAFT_FILENAMES));
 });
 
 test('lifecycleNow is unavailable — never green — before the plan is imported', () => {

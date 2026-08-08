@@ -4,7 +4,8 @@
 //
 // SINGLE-OPERATOR, READ-ONLY, DISPOSABLE. Nothing in this file writes: no manifest, no lock, no
 // cache, no database, no file under LEGION_HOME. It reads projects.json and the two manifests of
-// each dossier, stats two files for a freshness fact, and returns plain objects. legion works
+// each dossier, stats two files for a freshness fact (the detail view additionally probes the
+// conventional draft filenames, DRAFT_FILENAMES below), and returns plain objects. legion works
 // identically with the viewer closed or deleted, which is the whole point of decision 12 — so a
 // mutation reached from here would not be a bug, it would be the prohibition broken.
 //
@@ -30,7 +31,10 @@
 // CALLS approvalValid/stageSatisfied/unsatisfiedPrefix from src/kernel/state.mjs, live, on this
 // request, under `lifecycleNow` — a block named for the fact that it is computed now and stored
 // nowhere. Re-implementing any of those three here would be the drift the kernel's own header
-// forbids: two definitions of "satisfied" is one definition too many.
+// forbids: two definitions of "satisfied" is one definition too many. A DRAFT is one step
+// earlier still: `artifacts[kind].recorded: false` marks a conventional filename found in the
+// dossier that no op has recorded — no hash, no timestamp, no claim beyond existence on this
+// request.
 //
 // A WEAK RECEIPT IS NEVER A FULL ONE. `declaredCommands === 0` is a real but TIER-0-ONLY
 // certificate (PLAN-V3 §Gates / R11); every receipt shape below carries `weak` so the UI cannot
@@ -98,6 +102,17 @@ export const RECENT_OUTCOME_DAYS = 7;
 export const APPROVALS_CAVEAT =
   'recorded != valid — an artifact edit invalidates deterministically; the kernel decides at use '
   + 'time, and its refusal is the answer.';
+
+/** Conventional DRAFT filenames, per kind — a viewer display convention, deliberately NOT a
+ * kernel export: `artifact-record` accepts any path and enforces no filename, so the kernel must
+ * not appear to own one. Keys are ARTIFACT_KINDS members (viewer-projection.test.mjs pins that
+ * agreement, which is how kind drift still fails loudly against state.mjs). `review` and
+ * `preview` have no stable draft filename, so they have no row — the absence of a convention is
+ * stated, not guessed around. */
+export const DRAFT_FILENAMES = {
+  intent: 'intent.md', spec: 'spec.md', plan: 'plan.md',
+  'repo-brief': 'repo-brief.md', contract: 'contract.md',
+};
 
 const MS_PER_HOUR = 3_600_000;
 
@@ -539,19 +554,18 @@ const realish = (p) => { try { return realpathSync(String(p)); } catch { return 
  * disagree character-for-character while naming the same file. Comparing one spelling only would
  * mark every artifact of such a home `inside: false` and quietly stop serving it. Nothing is
  * guessed and nothing is rewritten: the FIRST containment that holds wins, and if neither does,
- * the absolute path is rendered as-is. */
+ * the absolute path is rendered as-is.
+ *
+ * DRAFTS: a kind with no record whose DRAFT_FILENAMES file exists in the dossier renders as
+ * `{recorded: false, hash: null, at: null}` — existence on this request is the only claim made.
+ * A record always wins its kind, whatever path it names: the manifest is the ledger, the disk
+ * is not. Kinds without a draft convention (review, preview) appear only once recorded. The
+ * probes are per-file existsSync calls, individually guarded (H06); this runs in featureView
+ * only, so the inventory poll keeps its two-reads-per-feature budget. */
 function artifactsOf(tasks, dossier) {
   const roots = [...new Set([dossier, realish(dossier)])];
-  const out = {};
-  // Lifecycle order, the kernel's own (ARTIFACT_KINDS) — recorded order is write order, which is
-  // meaningless to a reader; unknown kinds append after, verbatim. The client renders this order
-  // and holds no kind list of its own (frontend contract: no second vocabulary).
-  const recorded = Object.entries(tasks?.artifacts ?? {});
-  const ordered = [
-    ...ARTIFACT_KINDS.map((k) => recorded.find(([kind]) => kind === k)).filter(Boolean),
-    ...recorded.filter(([kind]) => !ARTIFACT_KINDS.includes(kind)),
-  ];
-  for (const [kind, a] of ordered) {
+  const recorded = new Map(Object.entries(tasks?.artifacts ?? {}));
+  const shape = (a) => {
     const abs = typeof a?.path === 'string' ? a.path : null;
     let rel = null;
     for (const root of roots) {
@@ -562,7 +576,25 @@ function artifactsOf(tasks, dossier) {
         break;
       }
     }
-    out[kind] = { path: rel ?? abs, inside: rel !== null, hash: a?.hash ?? null, at: a?.at ?? null };
+    return { path: rel ?? abs, inside: rel !== null, hash: a?.hash ?? null, at: a?.at ?? null, recorded: true };
+  };
+  const out = {};
+  // Lifecycle order, the kernel's own (ARTIFACT_KINDS) — recorded order is write order, which is
+  // meaningless to a reader; unknown kinds append after, verbatim. The client renders this order
+  // and holds no kind list of its own (frontend contract: no second vocabulary). Drafts slot
+  // into the same order; a draft path is composed dossier-relative by construction, so the
+  // dual-root containment dance applies to recorded entries only.
+  for (const kind of ARTIFACT_KINDS) {
+    if (recorded.has(kind)) { out[kind] = shape(recorded.get(kind)); continue; }
+    const name = DRAFT_FILENAMES[kind];
+    if (name === undefined) continue;
+    let present = false;
+    // isFile, not existsSync: a directory named like a draft would render as one and 404 on read.
+    try { present = statSync(join(dossier, name)).isFile(); } catch { present = false; }
+    if (present) out[kind] = { path: name, inside: true, hash: null, at: null, recorded: false };
+  }
+  for (const [kind, a] of recorded) {
+    if (!ARTIFACT_KINDS.includes(kind)) out[kind] = shape(a);
   }
   return out;
 }

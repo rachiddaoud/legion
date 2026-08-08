@@ -289,6 +289,9 @@ test('every FeatureView field the client declares matches the LIVE /api/feature 
     const intent = h.writeArtifact('intent.md', '# intent\nthe agreed shape\n');
     assert.equal(h.legion('state', 'artifact-record', 'intent', intent).code, 0);
     assert.equal(h.legion('state', 'decision-record', 'intake').code, 0);
+    // An unrecorded draft too, so the payload carries a `recorded: false` ArtifactRef through
+    // the field-by-field check (the ONE artifact shape covers records and drafts alike).
+    h.writeArtifact('spec.md', '# spec draft\n');
     h.seedPlan([
       planTask('T1', { milestone: 'M1' }),
       planTask('T2', { milestone: 'M1' }),

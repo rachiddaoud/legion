@@ -107,9 +107,10 @@ function view(s: FeatureSummary, over: Partial<FeatureView> = {}): FeatureView {
       },
     ],
     artifacts: {
-      intent: { path: 'intent.md', inside: true, hash: 'h-intent-1', at: T(28) },
-      spec: { path: 'specs/spec.md', inside: true, hash: 'h-spec-1', at: T(22) },
-      plan: { path: 'plan.md', inside: true, hash: 'h-plan-1', at: T(14) },
+      intent: { path: 'intent.md', inside: true, hash: 'h-intent-1', at: T(28), recorded: true },
+      spec: { path: 'specs/spec.md', inside: true, hash: 'h-spec-1', at: T(22), recorded: true },
+      plan: { path: 'plan.md', inside: true, hash: 'h-plan-1', at: T(14), recorded: true },
+      'repo-brief': { path: 'repo-brief.md', inside: true, hash: null, at: null, recorded: false },
     },
     approvals: {
       intake: { at: T(27), subjectHash: 'sub-intake-aaaa' },
@@ -405,4 +406,5 @@ export const FIXTURE_ARTIFACTS: Record<string, string> = {
   'specs/spec.md': '## Digest\n\nThe viewer renders the ONE server projection verbatim.\n\n| rule | where |\n|---|---|\n| one status vocabulary | `_viewer/projection.mjs` |\n| one stats formula | `insights()` |\n',
   'plan.md': '## Digest\n\nMV1 server → MV2 frontend → MV3 docs.\n\n```mermaid\ngraph TD;\n  T39[T39 projection] --> T40[T40 server];\n  T40 --> T41[T41 frontend];\n  T41 --> T42[T42 browser];\n```\n',
   'review-visual.md': '## Visual review\n\nOperations at 1280px:\n\n![operations](visual/M1/operations@1280.png)\n\nVerdict: pass.\n',
+  'repo-brief.md': '# Repo brief (draft)\n\nStill being written — on disk, not yet recorded.\n',
 };

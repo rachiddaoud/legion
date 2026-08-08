@@ -181,6 +181,7 @@ function buildWorld() {
     '# Visual review\n\nThe dashboard at 1280:\n\n![dashboard at 1280](visual/M1/home@1280.png)\n');
   at('f-visual', 'state', 'artifact-record', 'review', join(dossierOf('f-visual'), 'review-visual.md'));
   at('f-visual', 'state', 'artifact-record', 'intent', put('f-visual', 'intent.md', '# intent\nthe agreed shape\n'));
+  put('f-visual', 'spec.md', '# Spec draft\n\nStill being discussed — on disk, never recorded.\n');
   at('f-visual', 'state', 'decision-record', 'intake');
   at('f-visual', 'state', 'escalate-profile', 'standard');
   at('f-visual', 'state', 'session-record', '--session-id', 'sess-c13-t42');
@@ -402,6 +403,17 @@ test('FeatureDetail/Artifacts: plan.md renders as markdown with its mermaid diag
       (el) => el.complete && el.naturalWidth > 0,
       await img.elementHandle(), { timeout: 15_000 },
     );
+  });
+});
+
+test('FeatureDetail/Artifacts: an unrecorded spec.md renders as a draft, labeled as one', { skip }, async () => {
+  await withUi(detail('f-visual'), async (page) => {
+    await openTab(page, 'Artifacts');
+
+    // The picker names the draft as one — and it is a real tab whose body renders from disk.
+    await page.locator('[role="tab"]', { hasText: 'spec · draft' }).click();
+    await page.locator('.mission-sub', { hasText: 'draft — not yet recorded' }).waitFor();
+    await page.locator('.digest .md h1', { hasText: 'Spec draft' }).waitFor();
   });
 });
 
