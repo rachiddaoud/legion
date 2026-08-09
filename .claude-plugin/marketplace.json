@@ -8,7 +8,7 @@
     {
       "name": "legion",
       "source": "./",
-      "description": "Deterministic safety kernel + one-session-per-feature orchestration: /legion:start and /legion:feature skills, role agents, lifecycle hooks, the build workflow, and bin/legion. Install once; plain `claude` then loads legion everywhere. The installed copy is a snapshot — refresh it after upgrading the checkout."
+      "description": "Deterministic safety kernel + one-session-per-feature orchestration: /legion:start and /legion:feature skills, role agents, lifecycle hooks, the build workflow, and bin/legion. Install once; plain `claude` then loads legion everywhere. Versioned by git commit — `claude plugin update` (or marketplace auto-update) refreshes it after every pull."
     }
   ]
 }

@@ -16,8 +16,28 @@ cd <this repo> && ./bin/legion setup
 ```
 
 Registers this checkout as a Claude Code plugin marketplace, installs the plugin from it, puts
-`legion` on your PATH, then runs `legion doctor`. **Re-run it after upgrading the checkout** —
-the installed plugin is a snapshot, not a symlink.
+`legion` on your PATH, then runs `legion doctor`.
+
+### Update
+
+Enable auto-update once — `/plugin` → *Marketplaces* → *legion*, or in `~/.claude/settings.json`:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "legion": {
+      "source": { "source": "directory", "path": "<this repo>" },
+      "autoUpdate": true
+    }
+  }
+}
+```
+
+Then updates apply on restart, nothing to run. Manual update:
+
+```sh
+claude plugin update legion@legion
+```
 
 ## Start a feature
 
