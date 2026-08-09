@@ -29,7 +29,7 @@
 //   - the ONE stats formula: exact numbers over a forged two-feature population.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixture, planTask, NOW } from '../helpers/fixture.mjs';
@@ -324,6 +324,27 @@ test('drafts slot into ARTIFACT_KINDS lifecycle order beside recorded kinds', ()
     assert.deepEqual(Object.keys(v.artifacts), ['intent', 'plan']);
     assert.equal(v.artifacts.intent.recorded, false);
     assert.equal(v.artifacts.plan.recorded, true);
+  } finally { h.cleanup(); }
+});
+
+test('mockups/*.html surface as mock: draft rows — a recorded kind naming the same file wins', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    // The mock convention records nothing (skills/feature SKILL.md), so without this scan the
+    // one artifact the human approved a surface from would never appear in the viewer.
+    mkdirSync(join(h.dossier, 'mockups'), { recursive: true });
+    writeFileSync(join(h.dossier, 'mockups', 'modal.html'), '<h1>mock</h1>\n');
+    writeFileSync(join(h.dossier, 'mockups', 'notes.txt'), 'not a mock\n'); // wrong extension: skipped
+    const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1' }));
+    assert.deepEqual(v.artifacts['mock:modal'],
+      { path: 'mockups/modal.html', inside: true, hash: null, at: null, recorded: false });
+    assert.ok(!('mock:notes' in v.artifacts));
+
+    // Recorded under a real kind at the SAME path: the ledger's row is the only row.
+    assert.equal(h.legion('state', 'artifact-record', 'preview', join(h.dossier, 'mockups', 'modal.html')).code, 0);
+    const rec = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1' }));
+    assert.equal(rec.artifacts.preview.recorded, true);
+    assert.ok(!('mock:modal' in rec.artifacts), 'no duplicate row for the recorded mock');
   } finally { h.cleanup(); }
 });
 

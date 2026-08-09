@@ -235,7 +235,10 @@ change as follows, and these forms **replace — never precede — the unfused s
   diagram the quality floor triggers, as legal in a mini-spec as anywhere. No spec interview
   and no long out-of-scope or process sections: on express the mini-spec IS the spec.
 - The recap (step 7) presents the intent **and** the mini-spec digest together; the single
-  explicit yes covers both.
+  explicit yes covers both. A change that ships user-visible UI adds one line to that recap:
+  an HTML mock (`mockups/<slug>.html`, the spec-stage rule below) can be drafted before the
+  yes — ask for it, or answer yes to pass. Asking produces the file, re-presents recap plus
+  mock link, and THAT yes covers everything; a plain yes adds no gate and no file.
 - Step 8 widens to both artifacts: when the yes carried a correction, revise `intent.md` **and
   the mini-spec** to the framing the user actually agreed — an acceptance row the human struck
   out loud must not survive into the approved bytes — and re-record the intent before any
@@ -271,7 +274,18 @@ nothing more. Everything in this section applies to a mini-spec unchanged.
 2. It opens with a **`## Digest` of ≤ 20 lines of prose** that passes the read-nothing-else
    test — the human at the gate may read nothing else; a visual the quality floor triggers (a
    schema table or diagram) is exempt from the count.
-3. `legion state artifact-record spec <path>`, present the digest, get an explicit yes, then
+3. **A user-visible surface triggers a mock offer.** When the spec describes UI the human will
+   see — a new screen, a modal, a layout rework, a new component — offer, before asking for the
+   yes, to draft an HTML mock of it. Accepted: write `mockups/<slug>.html` into the dossier —
+   ONE self-contained file under 2 MiB (the serve cap; inline `data:` images count), styles and
+   script inline, no external resource and **no storage APIs** (the viewer serves it in a
+   sandboxed opaque origin: the CSP blocks every outbound load, `localStorage` THROWS and kills
+   the script; forms, popups and modals work) — link it from the digest, and the yes covers the
+   mock **as presented**: the kernel hashes only the spec bytes, so an edited mock is
+   re-presented to the human, never silently swapped under an old yes. Declined: nothing is
+   written. The mock is a dossier draft like `visual/` and `specs/`, never `artifact-record`ed;
+   the viewer surfaces `mockups/*.html` as draft rows on its own.
+4. `legion state artifact-record spec <path>`, present the digest, get an explicit yes, then
    `legion state decision-record spec`, `legion state stage-complete spec`,
    `legion state stage-enter plan`.
 
@@ -297,7 +311,8 @@ unreadable fails **closed**, refusing the spec ops in both siblings until it is 
 
 1. Dispatch **`legion:architect`** with the spec path, the dossier, the recorded answers, and
    the project's `lessons.md` path when the file exists (it reads the file whole and routes the
-   relevant entries into task `notes`).
+   relevant entries into task `notes`). A mock under `mockups/` is named in the dispatch too:
+   the human approved that surface, so the plan's UI tasks target it, not a reinvention.
    It writes `plan.md` + `plan.tasks.json` and runs `legion plan check --feature <name>` until
    clean. A plan that check rejects **never reaches the builder** — it goes back to the
    architect.

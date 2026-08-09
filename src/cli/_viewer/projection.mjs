@@ -58,7 +58,7 @@
 // percentile is a position in a tiny sorted list, and saying `n: 3` beside it is the only honest
 // way to show one. Cost and tokens are absent because no source for them exists (decision 9) —
 // not rendered as zero, not rendered as a placeholder.
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { readJson } from '../../kernel/fsatomic.mjs';
 import { featureDir, projectsIndexPath } from '../../kernel/paths.mjs';
@@ -595,6 +595,20 @@ function artifactsOf(tasks, dossier) {
   }
   for (const [kind, a] of recorded) {
     if (!ARTIFACT_KINDS.includes(kind)) out[kind] = shape(a);
+  }
+  // Dossier mocks. The mock convention (skills/feature SKILL.md) records nothing, and mock
+  // filenames are free-form — so unlike drafts there is no per-kind filename to probe; the
+  // mockups/ directory itself is the convention, scanned here. A recorded kind already naming
+  // the same file wins its row — the manifest is the ledger, same rule as above.
+  const claimed = new Set(Object.values(out).map((a) => a.path));
+  let mockNames = [];
+  try { mockNames = readdirSync(join(dossier, 'mockups')).filter((n) => /\.html$/i.test(n) && !n.startsWith('.')).sort(); } catch { mockNames = []; }
+  for (const name of mockNames) {
+    const rel = `mockups/${name}`;
+    if (claimed.has(rel)) continue;
+    let present = false;
+    try { present = statSync(join(dossier, rel)).isFile(); } catch { present = false; }
+    if (present) out[`mock:${name.replace(/\.html$/i, '')}`] = { path: rel, inside: true, hash: null, at: null, recorded: false };
   }
   return out;
 }

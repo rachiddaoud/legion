@@ -69,6 +69,10 @@ export const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp'];
 /** @param {string} path @returns {boolean} */
 export const isServableImage = (path) => IMAGE_EXTENSIONS.some((e) => String(path ?? '').toLowerCase().endsWith(e));
 
+/** A dossier mock. Only `.html` — the server's ARTIFACT_TYPES has no `.htm` — and the server
+ * answers it under a sandbox CSP (opaque origin), which is why the UI may safely iframe it. */
+export const isHtml = (path) => /\.html$/i.test(String(path ?? ''));
+
 /** Markdown is the only artifact kind rendered as a DIGEST rather than as a link. Everything else
  * (a .json contract, a .png screenshot) is offered as a link, because rendering JSON as prose or a
  * PNG as text would be a worse lie than making the operator click. */

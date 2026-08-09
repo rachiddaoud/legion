@@ -253,6 +253,7 @@ button { font: inherit; }
 .md pre { background: var(--console-bg); color: var(--console-fg); padding: 0.7rem 0.9rem; border-radius: var(--radius-md); overflow-x: auto; }
 .md pre code { background: none; padding: 0; }
 .md-img, .preview-img { max-width: 100%; height: auto; border-radius: var(--radius-md); border: 1px solid var(--border); }
+.preview-frame { width: 100%; height: 70vh; border-radius: var(--radius-md); border: 1px solid var(--border); background: #fff; }
 .mermaid-holder { overflow-x: auto; background: var(--surface); border-radius: var(--radius-md); padding: 0.5rem; }
 .mermaid-holder svg { max-width: 100%; }
 

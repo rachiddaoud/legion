@@ -14,7 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  IMAGE_EXTENSIONS, artifactUrl, isMarkdown, isServableImage, resolveArtifactPath,
+  IMAGE_EXTENSIONS, artifactUrl, isHtml, isMarkdown, isServableImage, resolveArtifactPath,
 } from '../../viewer/src/lib/artifact-url.mjs';
 
 const ID = { org: 'intech', project: 'cv-mf', name: 'cv41-viewer' };
@@ -82,4 +82,24 @@ test('isMarkdown decides what is rendered as a digest and what is offered as a l
   assert.ok(!isMarkdown('contract.json'), 'JSON rendered as prose would be a worse lie than a link');
   assert.ok(!isMarkdown('shot.png'));
   assert.ok(!isMarkdown(null));
+});
+
+test('isHtml decides what is framed as a sandboxed mock — .html only, like the server', () => {
+  assert.ok(isHtml('mockups/mission-modal-mock.html'));
+  assert.ok(isHtml('MOCK.HTML'), 'the extension test is case-insensitive');
+  assert.ok(!isHtml('mock.htm'), 'the server serves .html only — .htm would 415');
+  assert.ok(!isHtml('plan.md'));
+  assert.ok(!isHtml(null));
+});
+
+test('the mock iframe never grants allow-same-origin — the token that would collapse the design', async () => {
+  // A source pin, not a render test: no assertion anywhere else covers the iframe ATTRIBUTE, and
+  // adding allow-same-origin there (the obvious "fix" for a mock that cannot use localStorage)
+  // hands model-authored HTML the viewer's API while every behavioural test stays green.
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../../viewer/src/screens/FeatureDetail.tsx', import.meta.url), 'utf8');
+  const m = src.match(/<iframe[^>]*\ssandbox="([^"]*)"/);
+  assert.ok(m, 'the mock preview iframe carries an explicit sandbox attribute');
+  assert.match(m[1], /\ballow-scripts\b/);
+  assert.doesNotMatch(m[1], /allow-same-origin/);
 });

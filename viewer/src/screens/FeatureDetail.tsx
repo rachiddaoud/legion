@@ -35,7 +35,7 @@ import {
   ReceiptDetail, RelTime, Section, Spine, StatusPill, exactTime,
 } from '../components/ui';
 import { Markdown } from '../components/Markdown';
-import { artifactUrl, isMarkdown, isServableImage, resolveArtifactPath } from '../lib/artifact-url.mjs';
+import { artifactUrl, isHtml, isMarkdown, isServableImage, resolveArtifactPath } from '../lib/artifact-url.mjs';
 import { clipNote, clipRows, diffSummary, fileStatus, parsePatch } from '../lib/diff-view.mjs';
 import { getHighlighter, langOfPath } from '../lib/highlight';
 import { safeHref } from '../lib/safe-href.mjs';
@@ -315,6 +315,13 @@ function ArtifactsTab({ view, id, source }: { view: FeatureView; id: FeatureId; 
                 <ArtifactDigest source={source} id={id} kind={sel} path={path} />
               ) : isServableImage(path) ? (
                 <img className="preview-img" src={artifactUrl(id, path)} alt={`${sel} artifact`} loading="lazy" />
+              ) : isHtml(path) ? (
+                // sandbox here AND in the server's CSP on the response — two layers, because
+                // "open raw" bypasses this attribute entirely; never allow-same-origin, the one
+                // token that would hand model-authored HTML the viewer's API. key remounts the
+                // frame per document — mutating src on a live iframe pushes joint history
+                // entries and hijacks Back.
+                <iframe key={path} className="preview-frame" sandbox="allow-scripts allow-forms allow-popups allow-modals" src={artifactUrl(id, path)} title={`${sel} mock`} />
               ) : (
                 <p className="muted" style={{ margin: 0 }}>Not markdown or a servable image — open it raw above.</p>
               )}

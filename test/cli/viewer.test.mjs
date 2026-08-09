@@ -359,6 +359,9 @@ test('/api/artifact serves allowlisted dossier files and refuses every escape', 
     h.writeArtifact('big.md', 'x'.repeat(2 * 1024 * 1024 + 1));
     mkdirSync(join(h.dossier, 'visual'), { recursive: true });
     writeFileSync(join(h.dossier, 'visual', 'shot.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
+    mkdirSync(join(h.dossier, 'mockups'), { recursive: true });
+    writeFileSync(join(h.dossier, 'mockups', 'modal.html'), '<h1>mock</h1><script>1</script>\n');
+    h.writeArtifact('stray.html', '<h1>not a mock</h1>\n');
     // A symlink INSIDE the dossier pointing OUT of it — the case a normalize()-only guard misses.
     symlinkSync(join(outside, 'secret.md'), join(h.dossier, 'escape.md'));
 
@@ -375,6 +378,20 @@ test('/api/artifact serves allowlisted dossier files and refuses every escape', 
         const png = await fetch(`${s.base}/api/artifact?${id}&path=visual/shot.png`);
         assert.equal(png.status, 200);
         assert.equal(png.headers.get('content-type'), 'image/png');
+        // An html mock is served, but under the SANDBOX csp — never the viewer's own policy,
+        // which would let a model-authored page script against this API same-origin.
+        const html = await fetch(`${s.base}/api/artifact?${id}&path=mockups/modal.html`);
+        assert.equal(html.status, 200);
+        assert.equal(html.headers.get('content-type'), 'text/html; charset=utf-8');
+        const mockCsp = html.headers.get('content-security-policy');
+        assert.match(mockCsp, /sandbox allow-scripts/);
+        // The two load-bearing properties, pinned by NAME: no egress (a mock built from injected
+        // text must not be able to SEND dossier content anywhere), and no allow-same-origin —
+        // the one token whose addition would hand model-authored HTML this API. Both would
+        // otherwise slip through a well-meaning "fix" with every other assertion green.
+        assert.match(mockCsp, /default-src 'none'/);
+        assert.match(mockCsp, /connect-src 'none'/);
+        assert.doesNotMatch(mockCsp, /allow-same-origin/);
 
         const refused = [
           ['path=../../../../etc/passwd', 400, /escapes the dossier/],
@@ -384,6 +401,7 @@ test('/api/artifact serves allowlisted dossier files and refuses every escape', 
           ['path=.hidden.md', 400, /dotfiles are not served/],
           ['path=escape.md', 403, /resolves outside the dossier/],
           ['path=secret.key', 415, /not a servable artifact type/],
+          ['path=stray.html', 415, /served from mockups\/ only/],
           ['path=big.md', 413, /over the 2097152-byte cap/],
           ['path=nope.md', 404, /no artifact 'nope\.md'/],
           ['', 400, /missing required query parameter 'path'/],

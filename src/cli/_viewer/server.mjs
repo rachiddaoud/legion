@@ -45,6 +45,10 @@
 //   - EXTENSION ALLOWLIST + SIZE CAPS on artifacts. `.svg` is deliberately NOT servable as an
 //     artifact (an SVG is a script container and artifacts are model-authored), while dist may
 //     legitimately contain build-emitted SVG — two different trust levels, two different tables.
+//     `.html` (dossier mocks, mockups/ only) IS servable, but only under SANDBOX_CSP: the
+//     `sandbox` directive without allow-same-origin gives the document an opaque origin (cannot
+//     READ this API) and its fetch directives deny egress (cannot SEND anything anywhere) — a
+//     third trust level between the two, with the mono-file mock rule enforced, not just stated.
 //   - CSP + nosniff on everything. `form-action` is 'none': there is no form and no endpoint that
 //     could accept one, so the header should say so.
 import { createServer } from 'node:http';
@@ -74,18 +78,37 @@ export const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'uns
   + "img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; "
   + "base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
+/** The CSP for a `.html` artifact (a dossier mock), TWO defenses that fail independently:
+ * `sandbox` WITHOUT allow-same-origin puts the document in an opaque origin — its scripts run
+ * (mocks are interactive; forms/popups/modals allowed, all safe without same-origin — but note
+ * storage APIs THROW there) so it cannot READ this API; and the fetch directives deny egress
+ * outright (`default-src 'none'`, inline script/style and data: assets only), so a mock built
+ * from injected text cannot SEND dossier content anywhere either. This is the mono-file mock
+ * rule (skills/feature SKILL.md) made mechanical. `frame-ancestors 'self'` (not 'none') so the
+ * viewer's own iframe may embed it. */
+export const SANDBOX_CSP = "default-src 'none'; script-src 'unsafe-inline'; "
+  + "style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; "
+  + "connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; "
+  + "frame-ancestors 'self'; sandbox allow-scripts allow-forms allow-popups allow-modals";
+
 const LOOPBACK = /^(127(\.\d{1,3}){3}|localhost|\[::1\]|::1|\[::ffff:127(\.\d{1,3}){3}\])$/i;
 const hostnameOf = (hostHeader) => String(hostHeader || '').replace(/:\d+$/, '');
 
-/** THE artifact allowlist — model- and operator-authored dossier files. No `.svg` (header). */
+/** THE artifact allowlist — model- and operator-authored dossier files. No `.svg` (header).
+ * The per-extension TRUST decision lives here and nowhere else: an entry without `csp` is served
+ * under the viewer's own CSP; `.html` carries SANDBOX_CSP and an `under` prefix (dossier mocks
+ * live in mockups/ — an .html that lands anywhere else in a dossier is refused, so this change
+ * never widens what the rest of the dossier may execute). The client mirrors the extension set
+ * in viewer/src/lib/artifact-url.mjs (isHtml/IMAGE_EXTENSIONS), pinned by its tests. */
 const ARTIFACT_TYPES = {
-  '.md': 'text/markdown; charset=utf-8',
-  '.txt': 'text/plain; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
+  '.md': { type: 'text/markdown; charset=utf-8' },
+  '.txt': { type: 'text/plain; charset=utf-8' },
+  '.json': { type: 'application/json; charset=utf-8' },
+  '.html': { type: 'text/html; charset=utf-8', csp: SANDBOX_CSP, under: 'mockups/' },
+  '.png': { type: 'image/png' },
+  '.jpg': { type: 'image/jpeg' },
+  '.jpeg': { type: 'image/jpeg' },
+  '.webp': { type: 'image/webp' },
 };
 const TEXT_CAP = 2 * 1024 * 1024;
 const IMAGE_CAP = 10 * 1024 * 1024;
@@ -361,15 +384,19 @@ export function createViewerServer({ distDir = null, org = null, host = '127.0.0
           json(res, 403, { error: `'${rel.rel}' resolves outside the dossier (a symlink out, or an unresolvable path) — refused` });
           return;
         }
-        const type = ARTIFACT_TYPES[extname(real).toLowerCase()];
-        if (type === undefined) {
+        const entry = ARTIFACT_TYPES[extname(real).toLowerCase()];
+        if (entry === undefined) {
           json(res, 415, { error: `'${extname(real) || '(no extension)'}' is not a servable artifact type — ${Object.keys(ARTIFACT_TYPES).join(' ')} only` });
           return;
         }
-        const cap = isImage(type) ? IMAGE_CAP : TEXT_CAP;
+        if (entry.under !== undefined && !rel.rel.startsWith(entry.under)) {
+          json(res, 415, { error: `'${extname(real)}' artifacts are served from ${entry.under} only — '${rel.rel}' is outside it` });
+          return;
+        }
+        const cap = isImage(entry.type) ? IMAGE_CAP : TEXT_CAP;
         const size = statSync(real).size;
         if (size > cap) {
-          json(res, 413, { error: `'${rel.rel}' is ${size} bytes, over the ${cap}-byte cap for ${isImage(type) ? 'images' : 'text'} — open it from the dossier instead` });
+          json(res, 413, { error: `'${rel.rel}' is ${size} bytes, over the ${cap}-byte cap for ${isImage(entry.type) ? 'images' : 'text'} — open it from the dossier instead` });
           return;
         }
         // READ BEFORE writeHead — the ORDERING is the fault-isolation invariant (see the catch),
@@ -378,7 +405,7 @@ export function createViewerServer({ distDir = null, org = null, host = '127.0.0
         // headers are out the catch cannot answer at all; reading first keeps a failed read an
         // honest 500 instead of an ERR_HTTP_HEADERS_SENT thrown from inside the catch.
         const bytes = readFileSync(real);
-        res.writeHead(200, { ...BASE_HEADERS, 'content-type': type, 'content-security-policy': CSP });
+        res.writeHead(200, { ...BASE_HEADERS, 'content-type': entry.type, 'content-security-policy': entry.csp ?? CSP });
         res.end(bytes);
         return;
       }
