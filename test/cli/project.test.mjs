@@ -49,7 +49,7 @@ function scenario({ pkg = { name: 'fix-proj' }, remote = true } = {}) {
   else writeFileSync(join(repo, 'README.md'), 'fixture\n');
   sh(repo, 'add', '-A');
   sh(repo, '-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-m', 'init');
-  if (remote) sh(repo, 'remote', 'add', 'origin', 'https://example.invalid/r.git');
+  if (remote) sh(repo, 'remote', 'add', 'origin', typeof remote === 'string' ? remote : 'https://example.invalid/r.git');
   return { home, repo: realpathSync(repo) };
 }
 
@@ -78,6 +78,9 @@ test('init on a fixture repo derives evidence and registers in the index', () =>
   assert.deepEqual(cfg.protectedBranches, ['main']);
   assert.deepEqual(cfg.gates, {});
   assert.deepEqual(cfg.bootstrap, []);
+  // UNSET unless --forge was passed: a concrete value here would outrank org.json and make an
+  // org-wide forge unreachable — the same `null = unset` convention the ticket fields obey.
+  assert.equal(cfg.forge, null);
   assert.equal(cfg.ticketProject, null);
   assert.equal(cfg.notify, null);
   assert.ok(cfg.legionVersion, 'legionVersion recorded');
@@ -481,4 +484,69 @@ test("re-init MERGES over the index entry — a project's features[] survives it
   // With every owned field unchanged and the foreign key preserved, this re-init is a TRUE no-op:
   // the index version must not move.
   assert.equal(after.version, before.version, 'a merge that changes nothing must not bump the CAS');
+});
+
+// --- the forge field (2026-08-15 — the second forge) ---------------------------------------------
+
+test('a github.com remote is ANNOUNCED as github at fresh init, and recorded nowhere', () => {
+  // Visibility without precedence: the operator is told what will be driven and why, while the
+  // field stays unset so org.json remains a live level (resolveForge re-detects at every use).
+  const { home, repo } = scenario({ remote: 'git@github.com:acme/fix-proj.git' });
+  const r = legion(home, 'init', '--root', repo);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readCfg(home, 'default', 'fix-proj').forge, null, 'detection is not a recorded choice');
+  assert.match(r.stdout, /forge: github \(detected from github\.com at every use, recorded nowhere\)/);
+});
+
+test('--forge overrides detection (the GHES escape hatch) and an invalid value refuses pre-write', () => {
+  const { home, repo } = scenario({ remote: 'git@github.acme.invalid:acme/fix-proj.git' });
+  const r = legion(home, 'init', '--root', repo, '--forge', 'github');
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readCfg(home, 'default', 'fix-proj').forge, 'github', 'an EXPLICIT choice is recorded');
+  assert.match(r.stdout, /forge: github \(recorded from --forge\)/);
+
+  const { home: home2, repo: repo2 } = scenario();
+  const bad = legion(home2, 'init', '--root', repo2, '--forge', 'bitbucket');
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /--forge: invalid forge "bitbucket".*gitlab\|github/s);
+  assert.ok(!existsSync(join(home2, 'orgs')), 'a bad --forge must cost nothing and write nothing');
+});
+
+test('a remote-less repo announces the default forge and still records nothing', () => {
+  const { home, repo } = scenario({ remote: false });
+  const r = legion(home, 'init', '--root', repo);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readCfg(home, 'default', 'fix-proj').forge, null);
+  assert.match(r.stdout, /forge: gitlab \(the default — no origin remote to detect from/);
+});
+
+test('re-init reconciles forge ONLY when --forge is passed, and names a disagreement otherwise', () => {
+  // The recorded value is operator-owned: a re-init must not re-derive it (that would clobber
+  // the GHES override detection cannot see) — it INFORMS about the disagreement instead.
+  const { home, repo } = scenario({ remote: 'git@github.com:acme/fix-proj.git' });
+  assert.equal(legion(home, 'init', '--root', repo, '--forge', 'gitlab').status, 0);
+  const r = legion(home, 'init', '--root', repo);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readCfg(home, 'default', 'fix-proj').forge, 'gitlab', 'unflagged re-init must not rewrite');
+  assert.match(r.stdout, /note: recorded forge 'gitlab' differs from what github\.com suggests \('github'\)/);
+  assert.match(r.stdout, /pass --forge github if not/);
+
+  const flagged = legion(home, 'init', '--root', repo, '--forge', 'github');
+  assert.equal(flagged.status, 0, flagged.stderr);
+  const cfg = readCfg(home, 'default', 'fix-proj');
+  assert.equal(cfg.forge, 'github', '--forge reconciles');
+  assert.match(flagged.stdout, /forge: "gitlab" -> "github"/, 'the reconcile diff names the move');
+});
+
+test('re-init leaves a pre-forge-field project.json without the field — read-time detection covers it', () => {
+  const { home, repo } = scenario();
+  assert.equal(legion(home, 'init', '--root', repo).status, 0);
+  const cfgPath = join(home, 'orgs', 'default', 'projects', 'fix-proj', 'project.json');
+  const legacy = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  delete legacy.forge; // a config written before 2026-08-15
+  writeFileSync(cfgPath, JSON.stringify(legacy, null, 2) + '\n');
+  const r = legion(home, 'init', '--root', repo);
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(!('forge' in readCfg(home, 'default', 'fix-proj')),
+    'an unflagged re-init must not add the field — resolveForge falls back to URL detection');
 });

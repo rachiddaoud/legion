@@ -1,7 +1,8 @@
 # legion
 
 Legion runs a software feature end to end inside Claude Code — interview, spec, plan, build,
-review, merge request — with a human approving at every gate that matters.
+review, merge/pull request — with a human approving at every gate that matters. It drives
+GitLab through `glab` and GitHub through `gh`, picked per project from the origin remote.
 
 What makes it more than a long prompt: a small zero-dependency CLI kernel (`legion`) owns every
 state change, every piece of evidence and every gate. Agents propose; the kernel decides. It
@@ -72,7 +73,7 @@ flowchart TD
     B[build<br/><i>milestone by milestone</i>]
     R[review<br/><i>feature-level settlement</i>]
     M[pre-merge<br/><i>all evidence, shown</i>]
-    F[finalize<br/><i>opens the MR</i>]
+    F[finalize<br/><i>opens the MR/PR</i>]
 
     I -->|human agrees the recap| S
     S -->|human agrees the digest| P
@@ -159,8 +160,19 @@ times per stage. Allowlist them in `~/.claude/settings.json`:
 Deliberately not on that list: `legion feature start|abandon|clean` and `legion finalize` — they
 create, destroy, or write to the remote, and they stay rare enough to be worth a prompt.
 
-**When something refuses:** `legion doctor` checks git, node, the home layout and branch
-protection, and prints a remedy per probe.
+**When something refuses:** `legion doctor` checks git, node, the home layout, your forge CLI's
+authentication and branch protection, and prints a remedy per probe.
+
+**Which forge:** detected from the origin remote at every use — `github.com` (and `*.ghe.com`)
+means GitHub and `gh`, anything else means GitLab and `glab`. `legion project init` prints what
+it detected, and `legion doctor`'s `forge` row shows the effective value plus which level decided
+it. A self-hosted GitHub Enterprise Server is indistinguishable from a self-managed GitLab by
+URL, so override it there — per project with `legion project init --forge github`, or org-wide
+with `{"forge": "github"}` in `~/.legion/orgs/<org>/org.json`. Only an explicit choice is
+recorded; detection is never written down, so an org-wide setting stays in force.
+Install and authenticate the CLI your forge uses (`glab auth login` /
+[`gh auth login`](https://cli.github.com)); `legion finalize` and doctor's branch-protection
+check both need it.
 
 **To watch what happened:** `/legion:viewer` opens a read-only dashboard over the manifests,
 artifacts and feature git history. Legion behaves identically with it closed.

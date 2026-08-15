@@ -53,7 +53,7 @@ let n = 0;
  * `ticket` (T37) is passed through to `feature start --ticket` — the REAL flag, so the manifest
  * field under test is written by the real writer and never hand-planted. Absent, the feature is
  * ticket-less and every fixture built before T37 is unchanged. */
-function scenario(project = 'fix-proj', { ticket = null } = {}) {
+function scenario(project = 'fix-proj', { ticket = null, remote = null } = {}) {
   const base = join(TMP, `s${n++}`);
   const home = join(base, 'home');
   const repo = join(base, 'repo');
@@ -65,7 +65,9 @@ function scenario(project = 'fix-proj', { ticket = null } = {}) {
   gitc(repo, 'commit', '-m', 'init');
   // A remote finalize can find. It is never fetched from or pushed to: the push is faked, and
   // the only real read is `git remote get-url origin`, finalize's pre-write existence check.
-  sh(repo, 'remote', 'add', 'origin', `git@gitlab.invalid:acme/${project}.git`);
+  // `remote` also decides the FORGE: `project init` detects it from this URL, so a github.com
+  // origin makes every finalize below drive gh with no extra config (2026-08-15).
+  sh(repo, 'remote', 'add', 'origin', remote ?? `git@gitlab.invalid:acme/${project}.git`);
   const env = { ...process.env, LEGION_HOME: home };
   let r = spawnSync(NODE, [BIN, 'project', 'init', '--root', repo], { encoding: 'utf8', env });
   assert.equal(r.status, 0, r.stderr);
@@ -205,19 +207,25 @@ function seedDoneTask(s) {
 
 // --- the injected runner --------------------------------------------------------------------
 
-/** A recording fake. `glab` defaults to "create says nothing, view returns a canned MR". */
-function makeIo(responder) {
+/** A recording fake. `glab` defaults to "create says nothing, view returns a canned MR".
+ * `cli` selects WHICH forge CLI the responder answers on (2026-08-15): the seam grew a second
+ * argv passthrough, and a fake that answered both would let a test pass while finalize drove
+ * the WRONG CLI — so the unused one throws, exactly as a missing binary would. */
+function makeIo(responder, cli = 'glab') {
   const io = {
     calls: [],
     gitPush(worktree, remote, branch) {
       io.calls.push({ kind: 'gitPush', worktree, remote, branch });
       return '';
     },
-    glab(args, cwd) {
-      io.calls.push({ kind: 'glab', args, cwd });
-      return responder ? responder(args, cwd) : '';
-    },
   };
+  for (const name of ['glab', 'gh']) {
+    io[name] = (args, cwd) => {
+      io.calls.push({ kind: name, args, cwd });
+      if (name !== cli) throw new Error(`${name} was invoked, but this project's forge drives ${cli}`);
+      return responder ? responder(args, cwd) : '';
+    };
+  }
   return io;
 }
 
@@ -267,6 +275,51 @@ function glabServer(s, { open = false, over = {}, onView, onCreate, onNote, onIs
       return '';
     }
     throw new Error(`unexpected glab ${args.join(' ')}`);
+  };
+}
+
+/** A fake GITHUB (2026-08-15), gh's semantics rather than glab's, because the two differ in the
+ * one place finalize has to care about: `gh pr view <branch>` RESOLVES A CLOSED OR MERGED PR
+ * where glab's `mr view` exits nonzero, so "the CLI answered" is not the same fact as "a PR is
+ * open". `state` is what the payload reports; `exists: false` makes view exit nonzero (gh's
+ * no-PR-for-branch behaviour). `gh pr create` rejects a duplicate OPEN PR as GitHub does — and
+ * ACCEPTS one when the previous PR is closed, which is the behaviour the closed-PR test pins. */
+function ghServer(s, { open = false, state = 'OPEN', over = {}, onView, onCreate, onNote, onIssueNote } = {}) {
+  let exists = open;
+  let prState = state;
+  const sha = headOf(s);
+  const body = () => JSON.stringify({
+    number: 42,
+    url: 'https://github.com/acme/fix-proj/pull/42',
+    baseRefName: 'main',
+    headRefName: 'feat/f1',
+    headRefOid: sha,
+    state: prState,
+    ...over,
+  });
+  return (args) => {
+    if (args[0] === 'issue') {
+      if (args[1] !== 'comment') throw new Error(`unexpected gh ${args.join(' ')}`);
+      onIssueNote?.();
+      return '';
+    }
+    if (args[1] === 'create') {
+      if (exists && prState === 'OPEN') throw new Error('gh: a pull request for branch "feat/f1" into branch "main" already exists');
+      exists = true;
+      prState = 'OPEN'; // a create always yields an OPEN PR, even where a closed one preceded it
+      onCreate?.();
+      return '';
+    }
+    if (args[1] === 'view') {
+      if (!exists) throw new Error('gh: no pull requests found for branch "feat/f1"');
+      const sub = onView?.();
+      return typeof sub === 'string' ? sub : body();
+    }
+    if (args[1] === 'comment') {
+      onNote?.();
+      return '';
+    }
+    throw new Error(`unexpected gh ${args.join(' ')}`);
   };
 }
 
@@ -518,6 +571,8 @@ test('happy path: push once, one MR against the PINNED base, read back, recorded
     targetBranch: 'main',
     headSha: head,
     at: NOW_ISO,
+    // The rendering marker (2026-08-15): which notation the id takes, `!42` here.
+    forge: 'gitlab',
   });
   assert.equal(after.revision, before.revision + 1, 'exactly one revision-bumping write');
   assert.equal(after.updatedAt, NOW_ISO);
@@ -994,7 +1049,7 @@ test('a hand-edited GARBAGE ticket field refuses before any remote call, naming 
 for (const [label, opts, expect] of [
   ['glab throws', { onView: () => { throw new Error('glab: connection refused'); } }, /connection refused/],
   ['glab returns garbage', { onView: () => 'not json at all' }, /could not parse/],
-  ['the MR targets the wrong branch', { over: { target_branch: 'release' } }, /target_branch is "release", expected the PINNED base "main"/],
+  ['the MR targets the wrong branch', { over: { target_branch: 'release' } }, /the target branch is "release", expected the PINNED base "main"/],
 ]) {
   test(`read-back failure (${label}) exits nonzero, reports the push, records NO mr`, async () => {
     const s = scenario();
@@ -1025,8 +1080,8 @@ test('a read-back missing iid/url is a failure, not a partial record', async () 
   const io = makeIo(glabServer(s, { over: { iid: '42', web_url: undefined } }));
   const r = await finalize(s, io);
   assert.equal(r.code, 1, r.stdout);
-  assert.match(r.stderr, /iid must be an integer/);
-  assert.match(r.stderr, /web_url must be a non-empty string/);
+  assert.match(r.stderr, /the MR id must be an integer/);
+  assert.match(r.stderr, /the url must be a non-empty string/);
   assert.ok(!('mr' in featureJson(s)));
 });
 
@@ -1037,7 +1092,7 @@ test('a read-back whose sha is not the pushed HEAD is a failure', async () => {
   const io = makeIo(glabServer(s, { over: { sha: '0'.repeat(40) } }));
   const r = await finalize(s, io);
   assert.equal(r.code, 1, r.stdout);
-  assert.match(r.stderr, /sha is "0{40}", expected the pushed HEAD/);
+  assert.match(r.stderr, /the head sha is "0{40}", expected the pushed HEAD/);
   assert.ok(!('mr' in featureJson(s)));
 });
 
@@ -1221,4 +1276,291 @@ test('pushEnv hardens the prompt, preserves the base, and carries no retired mar
   assert.ok(!/LEGION_FINALIZE_PUSH/.test(code), 'the marker must not come back in code');
   assert.equal((code.match(/pushEnv\(/g) ?? []).length, 2,
     'pushEnv is defined once and called once — from gitPush and nowhere else');
+});
+
+// --- GITHUB (2026-08-15 — the second forge) ------------------------------------------------------
+// The claim under test is NOT "gh works" (a fake cannot prove that) but "the SAME flow, driving
+// the OTHER CLI, composes the argvs GitHub's semantics require and records the same shape". The
+// gitlab cases above are unchanged and still pass — that is half the evidence; these are the
+// other half. `makeIo(..., 'gh')` throws if glab is touched, so drift toward the wrong CLI is a
+// failure rather than a silent double-support.
+
+const GH_REMOTE = 'git@github.com:acme/fix-proj.git';
+/** A finalizable GitHub feature: a github.com origin, so `project init` records forge github. */
+function ghScenario(opts = {}) {
+  const s = scenario('fix-proj', { ...opts, remote: GH_REMOTE });
+  commitInWorktree(s, { 'src/a.mjs': 'export const a = 1;\n' });
+  return s;
+}
+
+test('github: push once, one PR against the PINNED base, read back, recorded with # notation', async () => {
+  const s = ghScenario();
+  ladder(s);
+  const head = headOf(s);
+  const before = featureJson(s);
+  const io = makeIo(ghServer(s), 'gh');
+
+  const r = await finalize(s, io, [...NOW, '--description-file', descriptionFile(s)]);
+  assert.equal(r.code, 0, r.stderr);
+
+  // THE CALL ORDER IS THE CONTRACT, exactly as on gitlab: push → look up → create → read back →
+  // comment. Nothing before the push, and the comment strictly after the record.
+  assert.deepEqual(io.calls.map((c) => `${c.kind} ${c.args ? c.args.slice(0, 2).join(' ') : ''}`.trim()), [
+    'gitPush', 'gh pr view', 'gh pr create', 'gh pr view', 'gh pr comment',
+  ]);
+  for (const c of io.calls) assert.equal(c.cwd ?? c.worktree, s.worktree, 'every call runs in the worktree');
+
+  // The create argv: gh's OWN flag spelling, and the target is the PINNED base, never a flag.
+  const create = io.calls.find((c) => c.args?.[1] === 'create');
+  assert.deepEqual(create.args.slice(0, 6), ['pr', 'create', '--head', 'feat/f1', '--base', 'main']);
+  assert.equal(create.args[create.args.indexOf('--title') + 1], 'f1');
+  const body = create.args[create.args.indexOf('--body') + 1];
+  assert.match(body, /How to review it/, "the session's prose is the body");
+  assert.match(body, /Opened by legion finalize · evidence trail in the feature dossier\.$/);
+  assert.ok(!HASHLIKE.test(body), 'no hashes in a PR body, on either forge');
+
+  // The read-back is gh's --json projection, and the fields it asks for are the ones validated.
+  assert.deepEqual(io.calls[1].args, ['pr', 'view', 'feat/f1', '--json', 'number,url,baseRefName,headRefName,headRefOid,state']);
+
+  // The record: same SHAPE as gitlab (close delivered reads headSha out of it), forge marker github.
+  assert.deepEqual(featureJson(s).mr, {
+    iid: 42,
+    url: 'https://github.com/acme/fix-proj/pull/42',
+    targetBranch: 'main',
+    headSha: head,
+    at: NOW_ISO,
+    forge: 'github',
+  });
+  assert.equal(featureJson(s).revision, before.revision + 1, 'exactly one revision-bumping write');
+  assert.match(r.stdout, /recorded PR #42 → https:\/\/github\.com\/acme\/fix-proj\/pull\/42/);
+  assert.ok(!r.stdout.includes('!42'), "GitLab's !iid notation must never appear for a PR");
+});
+
+test('github: a CLOSED PR for the branch does NOT suppress create — an open one does', async () => {
+  // THE ONE REAL SEMANTIC DIFFERENCE (src/cli/finalize.mjs probeOpenMr): `gh pr view <branch>`
+  // resolves closed and merged PRs too. Reading that as "already open" would refuse to open the
+  // PR this finalize exists to open, and the feature would be stranded with no kernel path.
+  const s = ghScenario();
+  ladder(s);
+  const io = makeIo(ghServer(s, { open: true, state: 'CLOSED' }), 'gh');
+  assert.equal((await finalize(s, io)).code, 0);
+  assert.ok(io.calls.some((c) => c.args?.[1] === 'create'), 'a closed PR must not suppress create');
+  assert.equal(featureJson(s).mr.iid, 42);
+
+  // …while an OPEN one is exactly what the look-first probe exists to find: no second create.
+  const s2 = ghScenario();
+  ladder(s2);
+  const io2 = makeIo(ghServer(s2, { open: true, state: 'OPEN' }), 'gh');
+  const r2 = await finalize(s2, io2);
+  assert.equal(r2.code, 0, r2.stderr);
+  assert.ok(!io2.calls.some((c) => c.args?.[1] === 'create'), 'an open PR must suppress create');
+  assert.match(r2.stdout, /a PR is already open for feat\/f1 — skipping create, recording it/);
+});
+
+test('github: a re-run at the same head is idempotent and prints # notation; a moved head re-reads by number', async () => {
+  const s = ghScenario();
+  ladder(s);
+  assert.equal((await finalize(s, makeIo(ghServer(s), 'gh'))).code, 0);
+
+  const idem = makeIo(ghServer(s, { open: true }), 'gh');
+  const r = await finalize(s, idem);
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(idem.calls, [], 'an idempotent re-run reaches the remote never');
+  assert.match(r.stdout, /PR #42 already recorded for HEAD/);
+  assert.match(r.stdout, /no push, no PR, no write/);
+
+  // A fixup moves HEAD: the recorded PR is re-read BY NUMBER, never created a second time.
+  commitInWorktree(s, { 'src/b.mjs': 'export const b = 2;\n' }, 'fixup');
+  refresh(s);
+  const io2 = makeIo(ghServer(s, { open: true }), 'gh');
+  const r2 = await finalize(s, io2);
+  assert.equal(r2.code, 0, r2.stderr);
+  assert.deepEqual(io2.calls.map((c) => `${c.kind} ${c.args ? c.args.slice(0, 3).join(' ') : ''}`.trim()), [
+    'gitPush', 'gh pr view 42', 'gh pr comment 42',
+  ]);
+  assert.equal(featureJson(s).mr.headSha, headOf(s), 'the record follows the new head');
+});
+
+test('github: the ticket track posts `gh issue comment` and renders the closing line in the PR body', async () => {
+  const s = ghScenario({ ticket: '#7' });
+  ladder(s);
+  const io = makeIo(ghServer(s), 'gh');
+  const r = await finalize(s, io);
+  assert.equal(r.code, 0, r.stderr);
+
+  const create = io.calls.find((c) => c.args?.[1] === 'create');
+  const body = create.args[create.args.indexOf('--body') + 1];
+  assert.match(body, /^Closes #7$/m, 'the closing keyword works on GitHub as it does on GitLab');
+
+  const notes = io.calls.filter((c) => c.args?.[0] === 'issue');
+  assert.equal(notes.length, 1, 'exactly one issue comment per finalize event');
+  assert.deepEqual(notes[0].args.slice(0, 3), ['issue', 'comment', '7']);
+  assert.equal(notes[0].args[3], '--body');
+  assert.match(notes[0].args[4], /pull request https:\/\/github\.com\/acme\/fix-proj\/pull\/42/);
+  assert.ok(!notes[0].args.includes('--repo'), 'no repo flag when the issues live in the code repo');
+});
+
+test('github: a failure after the push reports the PR noun, the gh remedy and CHECK GITHUB', async () => {
+  const s = ghScenario();
+  ladder(s);
+  const io = makeIo(ghServer(s, { onView: () => { throw new Error('gh: connection refused'); } }), 'gh');
+  const r = await finalize(s, io);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /finalize FAILED AFTER THE REMOTE WRITE: gh: connection refused/);
+  assert.match(r.stderr, /branch pushed to origin: YES/);
+  assert.match(r.stderr, /pull request opened: {7}YES/);
+  assert.match(r.stderr, /recorded in feature\.json: {2}NO/);
+  assert.match(r.stderr, /CHECK GITHUB BY HAND: an open PR may exist/);
+  assert.match(r.stderr, /once gh works/);
+  assert.ok(!('mr' in featureJson(s)), 'a failed read-back must never leave a record');
+});
+
+test('github: a read-back that does not match the feature is refused field by field', async () => {
+  const s = ghScenario();
+  ladder(s);
+  const io = makeIo(ghServer(s, { over: { number: '42', url: '', baseRefName: 'release' } }), 'gh');
+  const r = await finalize(s, io);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /the PR read back from GitHub does not match this feature/);
+  assert.match(r.stderr, /the PR id must be an integer/);
+  assert.match(r.stderr, /the url must be a non-empty string/);
+  assert.match(r.stderr, /the target branch is "release", expected the PINNED base "main"/);
+  assert.ok(!('mr' in featureJson(s)));
+});
+
+test('the forge is resolved from CONFIG, not the remote alone — and a broken config refuses pre-remote', async () => {
+  // project.json's recorded field beats detection: a github.com remote with `forge: gitlab`
+  // recorded (the self-hosted-override shape, inverted) must drive glab.
+  const s = ghScenario();
+  ladder(s);
+  const cfg = readJson(s.configPath);
+  writeFileSync(s.configPath, `${JSON.stringify({ ...cfg, forge: 'gitlab' }, null, 2)}\n`);
+  const io = makeIo(glabServer(s), 'glab');
+  assert.equal((await finalize(s, io)).code, 0, 'the recorded forge decides');
+  assert.equal(featureJson(s).mr.forge, 'gitlab');
+
+  // A garbage value refuses BEFORE the remote — the ticket rule, applied to the forge.
+  const s2 = ghScenario();
+  ladder(s2);
+  const cfg2 = readJson(s2.configPath);
+  writeFileSync(s2.configPath, `${JSON.stringify({ ...cfg2, forge: 'bitbucket' }, null, 2)}\n`);
+  const io2 = makeIo(ghServer(s2), 'gh');
+  const r2 = await finalize(s2, io2);
+  assert.equal(r2.code, 1);
+  assert.match(r2.stderr, /finalize REFUSED — nothing was pushed: the project's forge could not be resolved/);
+  assert.match(r2.stderr, /invalid forge "bitbucket"/);
+  assert.deepEqual(io2.calls, [], 'a refusal must reach the remote never');
+});
+
+test('a corrupt org.json now refuses a TICKET-LESS finalize too — the 2026-08-15 narrowing, pinned', async () => {
+  // BEHAVIOUR CHANGE, deliberate and recorded in src/cli/finalize.mjs's header: forge resolution
+  // reads org.json on every run, so the "a ticket-less finalize reads no org.json" property is
+  // gone. It fails CLOSED (nothing pushed), which is why the change was acceptable — this test
+  // exists so nobody re-discovers it as a surprise.
+  const s = ghScenario(); // NO ticket
+  ladder(s);
+  writeFileSync(join(s.home, 'orgs', 'default', 'org.json'), '{ not json\n');
+  const io = makeIo(ghServer(s), 'gh');
+  const r = await finalize(s, io);
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /finalize REFUSED — nothing was pushed: the project's forge could not be resolved/);
+  assert.match(r.stderr, /org\.json/);
+  assert.match(r.stderr, /NOT treated as absent/);
+  assert.deepEqual(io.calls, [], 'nothing reached the remote');
+});
+
+// --- the dual-lens review's findings, pinned (2026-08-15) ----------------------------------------
+// Every case below is a defect a reviewer found in the first GitHub implementation. They are kept
+// as tests rather than as header prose because each one passed a green suite before it was fixed.
+
+test('github: a recorded PR that is no longer OPEN is refused, never re-recorded as the delivery', async () => {
+  // It used to be re-read and ANNOUNCED as "already open" — a sentence the payload contradicted —
+  // and `close delivered` would then accept a closed PR as the verified delivery.
+  const s = ghScenario();
+  ladder(s);
+  assert.equal((await finalize(s, makeIo(ghServer(s), 'gh'))).code, 0);
+  const recorded = featureJson(s).mr;
+
+  commitInWorktree(s, { 'src/b.mjs': 'export const b = 2;\n' }, 'fixup');
+  refresh(s);
+  const io = makeIo(ghServer(s, { open: true, state: 'CLOSED' }), 'gh');
+  const r = await finalize(s, io);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /the recorded PR #42 is no longer OPEN on GitHub/);
+  assert.match(r.stderr, /clear the `mr` field of feature\.json/);
+  assert.deepEqual(featureJson(s).mr, recorded, 'the stale record is left exactly as it was');
+});
+
+test('github: a read-back with no headRefOid is refused — the local HEAD is never asserted as verified', async () => {
+  const s = ghScenario();
+  ladder(s);
+  const io = makeIo(ghServer(s, { over: { headRefOid: undefined } }), 'gh');
+  const r = await finalize(s, io);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /GitHub returned no head sha, so the PR cannot be shown to contain the pushed HEAD/);
+  assert.ok(!('mr' in featureJson(s)));
+});
+
+test('gitlab keeps its documented sha optionality — the requirement is per forge, not global', async () => {
+  const s = scenario();
+  commitInWorktree(s, { 'src/a.mjs': 'export const a = 1;\n' });
+  ladder(s);
+  const io = makeIo(glabServer(s, { over: { sha: undefined } }), 'glab');
+  const r = await finalize(s, io);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(featureJson(s).mr.iid, 42, 'glab version variance stays tolerated, as before');
+});
+
+test('an id recorded on ONE forge is never re-interpreted against another', async () => {
+  const s = ghScenario();
+  ladder(s);
+  assert.equal((await finalize(s, makeIo(ghServer(s), 'gh'))).code, 0);
+  assert.equal(featureJson(s).mr.forge, 'github');
+
+  // The project is re-pointed at GitLab; the recorded #42 names an object on the other server.
+  const cfg = readJson(s.configPath);
+  writeFileSync(s.configPath, `${JSON.stringify({ ...cfg, forge: 'gitlab' }, null, 2)}\n`);
+  commitInWorktree(s, { 'src/c.mjs': 'export const c = 3;\n' }, 'fixup');
+  refresh(s);
+  const io = makeIo(glabServer(s), 'glab');
+  const r = await finalize(s, io);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /has a github PR recorded/);
+  assert.match(r.stderr, /this project now resolves to 'gitlab'/);
+  assert.deepEqual(io.calls, [], 'a refusal must reach the remote never');
+});
+
+test('github: a ticket project with more than owner/repo is refused BEFORE the push', async () => {
+  // `gh --repo` parses [HOST/]OWNER/REPO, so `group/sub/repo` would post the issue comment at a
+  // host named "group". The ref validator is deliberately loose (GitLab nests); the forge-specific
+  // narrowing belongs here, pre-remote.
+  const s = ghScenario({ ticket: 'group/sub/repo#7' });
+  ladder(s);
+  const io = makeIo(ghServer(s), 'gh');
+  const r = await finalize(s, io);
+  assert.equal(r.code, 1, r.stdout);
+  assert.match(r.stderr, /finalize REFUSED — nothing was pushed/);
+  assert.match(r.stderr, /has 3 path segments, but GitHub addresses issues as owner\/repo/);
+  assert.match(r.stderr, /would read 'group' as a HOSTNAME/);
+  assert.deepEqual(io.calls, []);
+
+  // …and the same nested path stays legal on GitLab, where projects genuinely nest.
+  const s2 = scenario('fix-proj', { ticket: 'group/sub/repo#7' });
+  commitInWorktree(s2, { 'src/a.mjs': 'export const a = 1;\n' });
+  ladder(s2);
+  const io2 = makeIo(glabServer(s2), 'glab');
+  assert.equal((await finalize(s2, io2)).code, 0);
+  assert.ok(io2.calls.some((c) => c.args?.[0] === 'issue' && c.args.includes('group/sub/repo')));
+});
+
+test('a GitHub project whose project.json vanished still drives gh — the remote decides, not the default', async () => {
+  // resolveForge's last resort before DEFAULT_FORGE is URL detection, and finalize now hands it
+  // the origin URL: without that, a missing project.json silently selected glab at a GitHub remote.
+  const s = ghScenario();
+  ladder(s);
+  rmSync(s.configPath);
+  const io = makeIo(ghServer(s), 'gh');
+  const r = await finalize(s, io);
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(featureJson(s).mr.forge, 'github');
 });

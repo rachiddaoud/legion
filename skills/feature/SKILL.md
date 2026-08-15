@@ -664,7 +664,12 @@ just earned.
 
 ### finalize
 
-1. **Write the MR overview first**, to `mr-description.md` in the dossier. It is prose for the
+*Forge:* legion opens a **merge request** on GitLab (via `glab`) or a **pull request** on
+GitHub (via `gh`), chosen per project from the recorded `forge`. Everything below is written in
+MR terms and reads identically for a PR — only the noun and the notation change (`!42` versus
+`#42`). `legion doctor`'s `forge` info line says which one this project uses.
+
+1. **Write the MR/PR overview first**, to `mr-description.md` in the dossier. It is prose for the
    human who will review and merge — **no hashes, no receipt fields, no stage lists**; the kernel
    already verified all of that and the evidence trail lives in the dossier. Three parts, in order:
    - **What changed and why** — from the intent and spec digests, in the reviewer's language, not
@@ -681,9 +686,10 @@ just earned.
    push by hand, never open an MR by hand, never work around a refusal here.
 
    **When the feature carries a ticket, that same call does two more things** — the
-   closing-reference line joins the kernel's tail on the MR body (`Closes group/project#123`, or a
-   bare `#123` when the issues live in this repository's own project), which is what makes GitLab
-   link the issue and, under a closing keyword, auto-close it on merge; and it posts **one
+   closing-reference line joins the kernel's tail on the MR body (`Closes group/project#123` /
+   `Closes owner/repo#123`, or a bare `#123` when the issues live in this repository's own
+   project), which is what makes the forge link the issue and, under a closing keyword,
+   auto-close it on merge; and it posts **one
    append-only comment on the issue** per finalize event, carrying the MR link, under exactly the
    MR comment's mechanics. The keyword and the issue project are resolved from org and project
    config **at the moment the body is composed** — and the body is composed only when the MR is

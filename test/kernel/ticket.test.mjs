@@ -21,8 +21,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  TICKET_CLOSING_STYLES, TICKET_CONFIG_DEFAULTS, TICKET_CONFIG_KEYS,
-  closingKeyword, resolveTicketConfig, validateClosingStyle, validateTicketFields,
+  ORG_CONFIG_KEYS, TICKET_CLOSING_STYLES, TICKET_CONFIG_DEFAULTS, TICKET_CONFIG_KEYS,
+  closingKeyword, resolveForge, resolveTicketConfig, validateClosingStyle, validateConfigFields,
   validateTicketProject, validateTicketRef,
 } from '../../src/kernel/ticket.mjs';
 
@@ -207,8 +207,9 @@ test('a present org.json with an unknown KEY refuses by name — a typo must not
   const { org, project, orgPath } = idents();
   writeJson(orgPath, { ticketCloseStyle: 'fixes' }); // the plausible typo
   assert.throws(() => resolveTicketConfig(org, project),
-    /unknown key\(s\) ticketCloseStyle .* configures exactly ticketProject and ticketClosingStyle/s);
+    /unknown key\(s\) ticketCloseStyle .* configures exactly ticketProject, ticketClosingStyle, forge/s);
   assert.deepEqual(TICKET_CONFIG_KEYS, ['ticketProject', 'ticketClosingStyle']);
+  assert.deepEqual(ORG_CONFIG_KEYS, ['ticketProject', 'ticketClosingStyle', 'forge']);
 });
 
 test('a present org.json with an INVALID value refuses, naming the file and the field', () => {
@@ -244,7 +245,70 @@ test('project.json is NOT key-strict — it carries a dozen unrelated keys by de
     ticketClosingStyle: 'refs',
   });
   assert.deepEqual(resolveTicketConfig(org, project).ticketClosingStyle, { value: 'refs', from: 'project' });
-  // …while validateTicketFields with strictKeys IS org.json's rule, and only org.json's.
-  assert.throws(() => validateTicketFields({ gates: {} }, '/x/org.json', { strictKeys: true }), /unknown key/);
-  assert.doesNotThrow(() => validateTicketFields({ gates: {} }, '/x/project.json'));
+  // …while validateConfigFields with strictKeys IS org.json's rule, and only org.json's.
+  assert.throws(() => validateConfigFields({ gates: {} }, '/x/org.json', { strictKeys: true }), /unknown key/);
+  assert.doesNotThrow(() => validateConfigFields({ gates: {} }, '/x/project.json'));
+});
+
+// --- resolveForge (2026-08-15 — the second forge) ------------------------------------------------
+// The same read-time, per-level, loud-on-broken contract as the ticket config above, plus the
+// URL-detection fallback that keeps every pre-forge-field project resolving exactly as before.
+
+test('an ORG-WIDE forge survives a project.json that `legion project init` actually writes', () => {
+  // THE HOLE THIS PINS (2026-08-15): init used to record a concrete detected `forge`, which sits
+  // ABOVE org.json — so for every project registered after that change the documented org-wide
+  // override was dead config, and the precedence test below could not see it because it wrote a
+  // project.json shape init no longer produced. The fixture here is init's REAL output: every
+  // operator-owned field scaffolded as null.
+  const { org, project, orgPath, projectPath } = idents();
+  writeJson(orgPath, { forge: 'github' }); // the GHES-on-its-own-domain hatch, org-wide
+  writeJson(projectPath, {
+    schemaVersion: 1, org, name: project, remoteUrl: 'git@ghes.acme.invalid:acme/svc.git',
+    forge: null, ticketProject: null, ticketClosingStyle: null, notify: null,
+  });
+  // Detection cannot see GHES and would say 'gitlab'; the org override is what must win.
+  assert.deepEqual(resolveForge(org, project), { value: 'github', from: 'org' });
+});
+
+test('resolveForge precedence: project.json forge wins over org.json, org over detection, detection over default', () => {
+  const { org, project, orgPath, projectPath } = idents();
+  // Nothing anywhere: the plugin default.
+  assert.deepEqual(resolveForge(org, project), { value: 'gitlab', from: 'default' });
+  // A recorded github remote, no forge field anywhere (the pre-existing-file case): detection.
+  writeJson(projectPath, { schemaVersion: 1, remoteUrl: 'git@github.com:acme/proj.git' });
+  assert.deepEqual(resolveForge(org, project), { value: 'github', from: 'remote url (github.com)' });
+  // An org override beats detection (the GHES-on-its-own-domain escape hatch, org-wide).
+  writeJson(orgPath, { forge: 'gitlab' });
+  assert.deepEqual(resolveForge(org, project), { value: 'gitlab', from: 'org' });
+  // A project field beats the org.
+  writeJson(projectPath, { schemaVersion: 1, remoteUrl: 'git@github.com:acme/proj.git', forge: 'github' });
+  assert.deepEqual(resolveForge(org, project), { value: 'github', from: 'project' });
+});
+
+test('resolveForge falls back to a caller-supplied remoteUrl only when project.json records none', () => {
+  const { org, project, projectPath } = idents();
+  // No project.json at all: the caller's URL decides.
+  assert.deepEqual(
+    resolveForge(org, project, { remoteUrl: 'https://github.com/acme/proj.git' }),
+    { value: 'github', from: 'remote url (github.com)' },
+  );
+  // project.json's own recorded remote wins over the caller's.
+  writeJson(projectPath, { schemaVersion: 1, remoteUrl: 'git@gitlab.invalid:acme/proj.git' });
+  assert.deepEqual(
+    resolveForge(org, project, { remoteUrl: 'https://github.com/acme/proj.git' }),
+    { value: 'gitlab', from: 'remote url (gitlab.invalid)' },
+  );
+});
+
+test('resolveForge refuses loudly on a broken level — never reads it as absent', () => {
+  const { org, project, orgPath, projectPath } = idents();
+  writeFileSync(orgPath, '{ not json\n');
+  assert.throws(() => resolveForge(org, project), (e) => e.message.includes(orgPath));
+  writeJson(orgPath, { forge: 'bitbucket' });
+  assert.throws(() => resolveForge(org, project), /forge: invalid forge "bitbucket"/);
+  writeJson(orgPath, { forje: 'github' }); // org.json stays key-strict for the new key too
+  assert.throws(() => resolveForge(org, project), /unknown key\(s\) forje/);
+  rmSync(orgPath);
+  writeJson(projectPath, { schemaVersion: 1, forge: 'gh' }); // the plausible wrong spelling
+  assert.throws(() => resolveForge(org, project), /invalid forge "gh".*gitlab\|github/s);
 });

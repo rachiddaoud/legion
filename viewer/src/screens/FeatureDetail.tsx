@@ -29,7 +29,7 @@ import type {
   ActivityKind, CommitsResponse, DiffFileRow, DiffResponse, FeatureId, FeatureDetailView, FeatureView,
   Loaded, TaskDetail, UnreadableRow, ViewerDataSource,
 } from '../data/types';
-import { ACTIVITY_KINDS, isUnreadable } from '../data/types';
+import { ACTIVITY_KINDS, isUnreadable, mrRef } from '../data/types';
 import {
   ApprovalsCaveat, AttentionRow, Empty, LifecycleNowPanel, Loading, RawStatusNote, ReceiptBadge,
   ReceiptDetail, RelTime, Section, Spine, StatusPill, exactTime,
@@ -632,10 +632,10 @@ function ChangesTab({ view, id, source }: { view: FeatureView; id: FeatureId; so
           <dl className="kv">
             <div><dt>branch</dt><dd className="mono">{view.branch ?? '—'}</dd></div>
             <div><dt>base</dt><dd className="mono">{view.baseBranch ?? '—'} @ {view.baseSha ? view.baseSha.slice(0, 12) : '—'}</dd></div>
-            <div><dt>merge request</dt><dd>{view.mr
+            <div><dt>{view.mr?.forge === 'github' ? 'pull request' : 'merge request'}</dt><dd>{view.mr
               ? (mrHref
-                ? <a className="mono" href={mrHref} target="_blank" rel="noopener noreferrer">!{view.mr.iid} {mrHref}</a>
-                : <span className="mono">!{view.mr.iid} (the recorded url is not an http(s) address, so it is not linked)</span>)
+                ? <a className="mono" href={mrHref} target="_blank" rel="noopener noreferrer">{mrRef(view.mr)} {mrHref}</a>
+                : <span className="mono">{mrRef(view.mr)} (the recorded url is not an http(s) address, so it is not linked)</span>)
               : <span className="muted">none recorded</span>}</dd></div>
             <div><dt>ticket</dt><dd className="mono">{view.ticket ?? '—'}</dd></div>
           </dl>

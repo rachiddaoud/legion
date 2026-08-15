@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  doctorCore, cmpSemver, gitlabProjectPath, branchPatternMatches, glabHost, parseGlabAuthHosts,
+  doctorCore, cmpSemver, gitlabProjectPath, githubRepoPath, branchPatternMatches, remoteHost, parseForgeAuthHosts,
   CHECK_IDS, MIN_CLAUDE_VERSION,
 } from '../../src/cli/doctor.mjs';
 import { readJson } from '../../src/kernel/fsatomic.mjs';
@@ -129,11 +129,16 @@ const MAINTAINER_ONLY = [{
 }];
 
 /** A fully-healthy environment: claude 2.9.9, glab authed, we are a DEVELOPER (30) on a project
- * whose `main` admits only maintainers (40) — i.e. verified-protected. */
+ * whose `main` admits only maintainers (40) — i.e. verified-protected.
+ * `gh` is ENOENT by default: the fixture repo's remote is gitlab.invalid, so this is a GitLab
+ * shop with no GitHub CLI installed — the honest baseline, and the one that keeps every
+ * pre-2026-08-15 case meaning what it meant. The unscoped path probes both CLIs, so the response
+ * has to exist even where only glab's answer is under test. */
 function green(over = {}) {
   return makeRun({
     'claude --version': { stdout: '2.9.9 (Claude Code)\n' },
     'glab auth status': { stderr: 'gitlab.invalid\n  ✓ Logged in as legion-bot\n' },
+    'gh auth status': { spawnError: 'ENOENT' },
     'glab api user': { stdout: JSON.stringify({ id: 7, username: 'legion-bot' }) },
     [PROJ]: { stdout: JSON.stringify({ permissions: { project_access: { access_level: 30 }, group_access: null } }) },
     [`${PROJ}/protected_branches`]: { stdout: JSON.stringify(MAINTAINER_ONLY) },
@@ -190,7 +195,7 @@ test('an old node flips ONLY the node check, and the exit code with it', async (
   const r = await inScenario(s, [], DEPS(green(), { nodeVersion: 'v18.20.0' }));
   assert.equal(r.code, 1);
   assert.deepEqual(levels(r), {
-    node: 'fail', 'claude-version': 'pass', 'plugin-manifest': 'pass', 'glab-auth': 'pass',
+    node: 'fail', 'claude-version': 'pass', 'plugin-manifest': 'pass', 'forge-auth': 'pass',
     'branch-protection': 'pass', 'remote-guards': 'pass',
   });
   assert.match(r.checks[0].detail, /below the required >= 22/);
@@ -319,7 +324,7 @@ test('a plugin root missing hooks/ fails ONLY the manifest check', async () => {
   const r = await inScenario(s, [], DEPS(green(), { pluginRoot: broken }));
   assert.equal(r.code, 1);
   assert.deepEqual(levels(r), {
-    node: 'pass', 'claude-version': 'pass', 'plugin-manifest': 'fail', 'glab-auth': 'pass',
+    node: 'pass', 'claude-version': 'pass', 'plugin-manifest': 'fail', 'forge-auth': 'pass',
     'branch-protection': 'pass', 'remote-guards': 'pass',
   });
   assert.match(r.checks[2].detail, /component directory hooks\/ is missing/);
@@ -368,14 +373,14 @@ test('a declared component path that DOES exist is accepted', async () => {
   assert.equal(levels(r)['plugin-manifest'], 'pass', r.checks[2].detail);
 });
 
-// --- glab ------------------------------------------------------------------------------------------
+// --- the forge CLI ----------------------------------------------------------------------------------
 
-test('glab missing ⇒ glab-auth FAILS and branch-protection WARNS (not fails), exit 1', async () => {
+test('glab missing ⇒ forge-auth FAILS and branch-protection WARNS (not fails), exit 1', async () => {
   const s = scenario();
   const run = green({ 'glab auth status': { spawnError: 'ENOENT' } });
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(r.code, 1, 'driven by glab-auth alone');
-  assert.equal(levels(r)['glab-auth'], 'fail');
+  assert.equal(r.code, 1, 'driven by forge-auth alone');
+  assert.equal(levels(r)['forge-auth'], 'fail');
   assert.equal(levels(r)['branch-protection'], 'warn',
     'unreachable server means UNVERIFIED, never "unprotected"');
   assert.match(r.checks[3].detail, /glab not found on PATH/);
@@ -389,24 +394,29 @@ test('glab installed but unauthenticated ⇒ same shape, with the login remediat
   const s = scenario();
   const r = await inScenario(s, [], DEPS(green({ 'glab auth status': { code: 1, stderr: 'not logged in' } })));
   assert.equal(r.code, 1);
-  assert.equal(levels(r)['glab-auth'], 'fail');
+  assert.equal(levels(r)['forge-auth'], 'fail');
   assert.match(r.checks[3].detail, /not authenticated .*glab auth login/);
   assert.equal(levels(r)['branch-protection'], 'warn');
 });
 
-// --- host-aware glab auth (M0 finding 3) --------------------------------------------------------
+// --- host-aware forge auth (M0 finding 3) --------------------------------------------------------
 
-test('glabHost derives the host from every remote form, and refuses to guess', () => {
-  assert.equal(glabHost('git@gitlab.invalid:acme/fix-proj.git'), 'gitlab.invalid', 'scp-like');
-  assert.equal(glabHost('https://gitlab.invalid/acme/sub/fix-proj.git'), 'gitlab.invalid', 'https');
-  assert.equal(glabHost('ssh://git@gitlab.invalid:2222/acme/fix-proj.git'), 'gitlab.invalid', 'ssh with a port');
-  assert.equal(glabHost('ssh://git@gitlab.invalid/acme/fix-proj.git'), 'gitlab.invalid', 'ssh without a port');
-  assert.equal(glabHost('https://user:tok@gitlab.invalid:8443/a/b.git'), 'gitlab.invalid', 'userinfo and port both stripped');
-  assert.equal(glabHost('HTTPS://GitLab.Invalid/a/b.git'), 'gitlab.invalid', 'hosts are case-insensitive');
-  assert.equal(glabHost('https://gitlab/a/b.git'), 'gitlab', 'a single-label internal host is still unambiguous');
-  for (const bad of [null, undefined, 42, '', '   ', '/local/path/repo.git', 'not a url', 'file:///somewhere/odd', './rel/path']) {
-    assert.equal(glabHost(bad), null, `must not guess a host from ${JSON.stringify(bad)}`);
-  }
+test('remoteHost is re-exported here unchanged — its table lives in test/kernel/forge.test.mjs', () => {
+  // The function moved to kernel/forge.mjs on 2026-08-15 (it was `glabHost`) because deriving a
+  // host from a remote was never GitLab-specific. Doctor re-exports it, so importers that reach
+  // it through this module keep working; the exhaustive form table moved with the function.
+  assert.equal(remoteHost('git@gitlab.invalid:acme/fix-proj.git'), 'gitlab.invalid');
+  assert.equal(remoteHost('git@github.com:acme/fix-proj.git'), 'github.com');
+  assert.equal(remoteHost('/local/path/repo.git'), null, 'still refuses to guess');
+});
+
+test('githubRepoPath narrows to exactly owner/repo — a nested path is not a GitHub repo', () => {
+  assert.equal(githubRepoPath('git@github.com:acme/fix-proj.git'), 'acme/fix-proj');
+  assert.equal(githubRepoPath('https://github.com/acme/fix-proj'), 'acme/fix-proj');
+  // GitLab nests arbitrarily; `repos/{owner}/{repo}` does not, so a three-segment path must not
+  // be handed to the API — it would query a different repository.
+  assert.equal(githubRepoPath('https://gitlab.invalid/acme/sub/fix-proj.git'), null);
+  assert.equal(githubRepoPath('/local/path/repo.git'), null);
 });
 
 /** The M0 configuration, in shape: a token-less gitlab.com entry left over from a `glab auth
@@ -427,20 +437,20 @@ const M0_STATUS = {
   ].join('\n'),
 };
 
-test('parseGlabAuthHosts reads the per-host blocks and never invents a host', () => {
-  assert.deepEqual(parseGlabAuthHosts(M0_STATUS.stderr), [
+test('parseForgeAuthHosts reads the per-host blocks and never invents a host', () => {
+  assert.deepEqual(parseForgeAuthHosts(M0_STATUS.stderr), [
     { host: 'gitlab.com', authenticated: false },
     { host: 'gitlab.acme.dev', authenticated: true },
   ]);
   // A block with neither marker is UNKNOWN, which is not authenticated.
-  assert.deepEqual(parseGlabAuthHosts('gitlab.invalid\n  something new upstream prints\n'),
+  assert.deepEqual(parseForgeAuthHosts('gitlab.invalid\n  something new upstream prints\n'),
     [{ host: 'gitlab.invalid', authenticated: false }]);
   // A ✓ block that ALSO carries an error line is not authenticated.
-  assert.deepEqual(parseGlabAuthHosts('gitlab.invalid\n  ✓ Logged in\n  x token expired\n'),
+  assert.deepEqual(parseForgeAuthHosts('gitlab.invalid\n  ✓ Logged in\n  x token expired\n'),
     [{ host: 'gitlab.invalid', authenticated: false }]);
   // Unindented prose is not a host, and indented lines with no open block are dropped.
   for (const noise of ['', 'No hosts configured\n', 'Warning:\n  ✓ nope\n', '  ✓ orphaned line\n']) {
-    assert.deepEqual(parseGlabAuthHosts(noise), [], `must read no hosts out of ${JSON.stringify(noise)}`);
+    assert.deepEqual(parseForgeAuthHosts(noise), [], `must read no hosts out of ${JSON.stringify(noise)}`);
   }
 });
 
@@ -460,7 +470,7 @@ test('THE M0 REGRESSION: a token-less gitlab.com must not fail a green target ho
     'glab auth status --hostname gitlab.acme.dev': { stderr: '✓ Logged in to gitlab.acme.dev as legion-bot\n' },
   });
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(levels(r)['glab-auth'], 'pass', r.checks[3].detail);
+  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[3].detail);
   assert.equal(r.code, 0, r.output);
   assert.match(r.checks[3].detail, /authenticated for gitlab\.acme\.dev/);
   assert.match(r.checks[3].detail, /default\/fix-proj/, 'the pass must name the project whose host it judged');
@@ -479,7 +489,7 @@ test('the scoped check still FAILS when the token missing is the PROJECT’s hos
     'glab auth status --hostname gitlab.com': { code: 1, stderr: 'x gitlab.com: 401 (Unauthorized)\n- No token provided' },
   });
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(levels(r)['glab-auth'], 'fail');
+  assert.equal(levels(r)['forge-auth'], 'fail');
   assert.equal(r.code, 1);
   assert.match(r.checks[3].detail, /not authenticated for gitlab\.com/);
   assert.match(r.checks[3].detail, /glab auth login --hostname gitlab\.com/);
@@ -494,7 +504,7 @@ test('the scoped probe runs from inside a feature worktree too — the cwd every
     'glab auth status --hostname gitlab.acme.dev': { stderr: '✓ Logged in\n' },
   });
   const r = await inDir(wt, s.home, [], DEPS(run));
-  assert.equal(levels(r)['glab-auth'], 'pass', r.checks[3].detail);
+  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[3].detail);
   assert.ok(run.calls.some((c) => c.args.join(' ') === 'auth status --hostname gitlab.acme.dev'),
     'resolution is fromAnyWorktree, so the check must not silently unscope itself in a worktree');
 });
@@ -507,23 +517,26 @@ test('NO project resolves ⇒ per-host truth as a WARN, never a FAIL, exit 0', a
   mkdirSync(outside, { recursive: true });
   const run = green({ 'glab auth status': M0_STATUS });
   const r = await inDir(outside, s.home, [], DEPS(run));
-  assert.equal(levels(r)['glab-auth'], 'warn');
+  assert.equal(levels(r)['forge-auth'], 'warn');
   assert.equal(r.code, 0, `an unscoped unknown must not fail the command: ${r.output}`);
   assert.match(r.checks[3].detail, /authenticated for gitlab\.acme\.dev and NOT for gitlab\.com/);
   assert.match(r.checks[3].detail, /no registered project resolves from this cwd/);
-  assert.match(r.checks[3].detail, /cannot tell which host matters/);
-  assert.deepEqual(run.calls.filter((c) => c.args[0] === 'auth').map((c) => c.args), [['auth', 'status']],
+  assert.match(r.checks[3].detail, /cannot tell which host or forge matters/);
+  assert.deepEqual(run.calls.filter((c) => c.file === 'glab' && c.args[0] === 'auth').map((c) => c.args), [['auth', 'status']],
     'with no host to scope to there is nothing to pass --hostname');
 });
 
 test('NO project, every configured host authenticated ⇒ pass that says nothing was scoped', async () => {
+  // BOTH CLIs installed and healthy: the only unscoped shape that can honestly pass, since a
+  // pass here claims "authenticated for whichever forge turns out to matter".
   const s = scenario();
   const outside = join(TMP, `no-project-green-${n++}`);
   mkdirSync(outside, { recursive: true });
   const r = await inDir(outside, s.home, [], DEPS(green({
     'glab auth status': { stderr: 'gitlab.invalid\n  ✓ Logged in to gitlab.invalid as legion-bot\n' },
+    'gh auth status': { stderr: 'github.com\n  ✓ Logged in to github.com account legion-bot\n' },
   })));
-  assert.equal(levels(r)['glab-auth'], 'pass', r.checks[3].detail);
+  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[3].detail);
   assert.match(r.checks[3].detail, /gitlab\.invalid/);
   assert.match(r.checks[3].detail, /no single host was verified as the target/);
 });
@@ -542,8 +555,8 @@ test('NO project, non-zero exit but an all-good parse ⇒ WARN, never a pass on 
       stderr: 'gitlab.com\n  ✓ Logged in to gitlab.com as legion-bot\ngitlab\n  x gitlab: 401 (Unauthorized)\n',
     },
   })));
-  assert.deepEqual(parseGlabAuthHosts('gitlab\n  x gitlab: 401\n'), [], 'the premise: a single-label host is dropped');
-  assert.equal(levels(r)['glab-auth'], 'warn', r.checks[3].detail);
+  assert.deepEqual(parseForgeAuthHosts('gitlab\n  x gitlab: 401\n'), [], 'the premise: a single-label host is dropped');
+  assert.equal(levels(r)['forge-auth'], 'warn', r.checks[3].detail);
   assert.equal(r.code, 0, `the exit code may withhold a pass, never inherit a fail: ${r.output}`);
   assert.match(r.checks[3].detail, /exited 1/);
   assert.match(r.checks[3].detail, /gitlab\.com/, 'the hosts it COULD read are still named');
@@ -557,7 +570,7 @@ test('NO project and output no parser can read ⇒ warn stating exactly that, no
   const r = await inDir(outside, s.home, [], DEPS(green({
     'glab auth status': { code: 1, stderr: 'You are not logged into any GitLab hosts.\n' },
   })));
-  assert.equal(levels(r)['glab-auth'], 'warn');
+  assert.equal(levels(r)['forge-auth'], 'warn');
   assert.equal(r.code, 0);
   assert.match(r.checks[3].detail, /no per-host state could be read/);
   assert.match(r.checks[3].detail, /not logged into any GitLab hosts/, 'the raw output is quoted for the human');
@@ -567,20 +580,51 @@ test('a project whose recorded remote names no host falls back to the unscoped p
   const s = withRemote(scenario(), 'file:///somewhere/odd');
   const run = green({ 'glab auth status': M0_STATUS });
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(levels(r)['glab-auth'], 'warn');
+  assert.equal(levels(r)['forge-auth'], 'warn');
   assert.match(r.checks[3].detail, /records no host-bearing remote \("file:\/\/\/somewhere\/odd"\)/);
-  assert.deepEqual(run.calls.filter((c) => c.args[0] === 'auth').map((c) => c.args), [['auth', 'status']],
+  assert.deepEqual(run.calls.filter((c) => c.file === 'glab' && c.args[0] === 'auth').map((c) => c.args), [['auth', 'status']],
     'a host we could not derive is never guessed at');
 });
 
-test('glab missing is a FAIL on both paths — that one is not a scoping question', async () => {
-  const s = scenario();
-  const outside = join(TMP, `no-project-noglab-${n++}`);
-  mkdirSync(outside, { recursive: true });
-  const r = await inDir(outside, s.home, [], DEPS(green({ 'glab auth status': { spawnError: 'ENOENT' } })));
-  assert.equal(levels(r)['glab-auth'], 'fail');
+test('the SCOPED path fails when the project\'s own CLI is missing — that one is not a scoping question', async () => {
+  const s = scenario(); // a gitlab.invalid remote ⇒ glab is THE cli for this project
+  const r = await inScenario(s, [], DEPS(green({ 'glab auth status': { spawnError: 'ENOENT' } })));
+  assert.equal(levels(r)['forge-auth'], 'fail');
   assert.equal(r.code, 1);
   assert.match(r.checks[3].detail, /glab not found on PATH/);
+});
+
+test('UNSCOPED, one CLI missing and the other healthy ⇒ warn, never a fail (2026-08-15)', async () => {
+  // Before the second forge this was a hard FAIL on a missing glab. For a GitHub-only operator
+  // that is a red row about a tool they will never run — the false alarm the host-scoping work
+  // removed, in a new costume. Only "NEITHER CLI exists" is a fail now.
+  const s = scenario();
+  const outside = join(TMP, `no-project-gh-only-${n++}`);
+  mkdirSync(outside, { recursive: true });
+  const r = await inDir(outside, s.home, [], DEPS(green({
+    'glab auth status': { spawnError: 'ENOENT' },
+    'gh auth status': { stderr: 'github.com\n  ✓ Logged in to github.com account legion-bot\n' },
+  })));
+  // WARN, not pass (the title always said so; the assertion did not until 2026-08-15): an absent
+  // CLI withholds the pass, because the project this cwd cannot resolve may be the one that
+  // needs it. Only "neither installed" is a fail.
+  assert.equal(levels(r)['forge-auth'], 'warn', r.checks[3].detail);
+  assert.equal(r.code, 0);
+  assert.match(r.checks[3].detail, /gh authenticated for every configured host \(github\.com\)/);
+  assert.match(r.checks[3].detail, /glab is not installed/, 'the missing CLI is named, not hidden');
+});
+
+test('UNSCOPED with NEITHER glab nor gh installed ⇒ the one remaining FAIL', async () => {
+  const s = scenario();
+  const outside = join(TMP, `no-project-nocli-${n++}`);
+  mkdirSync(outside, { recursive: true });
+  const r = await inDir(outside, s.home, [], DEPS(green({
+    'glab auth status': { spawnError: 'ENOENT' },
+    'gh auth status': { spawnError: 'ENOENT' },
+  })));
+  assert.equal(levels(r)['forge-auth'], 'fail');
+  assert.equal(r.code, 1);
+  assert.match(r.checks[3].detail, /neither glab nor gh was found on PATH/);
 });
 
 // --- branch protection ------------------------------------------------------------------------------
@@ -1118,4 +1162,233 @@ test('a list too long to finish reading is UNVERIFIED, never a verdict in either
   assert.equal(levels(r)['branch-protection'], 'warn', r.checks[4].detail);
   assert.match(r.checks[4].detail, /could not be read completely/);
   assert.equal(r.code, 0, 'unverifiable is warn, so doctor still exits 0');
+});
+
+// --- GITHUB (2026-08-15 — the second forge) ------------------------------------------------------
+
+/** A github.com project: the remote decides the forge, so nothing else has to be configured. */
+const GH_REPO = 'gh api repos/acme/fix-proj';
+function ghGreen(over = {}) {
+  return green({
+    'gh auth status --hostname github.com': { stderr: '✓ Logged in to github.com account legion-bot\n' },
+    // A READ-ONLY identity (`push:false`), which is the ONLY shape in which the non-admin pass
+    // branch is reachable — see checkGithubBranchProtection's docblock. The ordinary write-access
+    // agent is the WARN case further down, and that asymmetry is the honest verdict, not a gap.
+    [GH_REPO]: { stdout: JSON.stringify({ permissions: { admin: false, push: false, pull: true } }) },
+    [`${GH_REPO}/branches/main`]: { stdout: JSON.stringify({ name: 'main', protected: true }) },
+    [`${GH_REPO}/rules/branches/main`]: { stdout: JSON.stringify([{ type: 'pull_request' }]) },
+    ...over,
+  });
+}
+/** A GitHub project fixture. The base scenario's `project init` ran against a gitlab.invalid
+ * remote, so it RECORDED `forge: gitlab` — and a recorded field rightly outranks detection.
+ * Dropping the key is what makes this a github project by DETECTION, which is both the shape a
+ * pre-2026-08-15 project.json has and the path the info-line test asserts on. */
+function withGithubRemote(s) {
+  const { forge, ...cfg } = readJson(s.configPath);
+  writeJson(s.configPath, { ...cfg, remoteUrl: 'git@github.com:acme/fix-proj.git' });
+  return s;
+}
+const ghScenarioDoctor = (over = {}) => [withGithubRemote(scenario()), ghGreen(over)];
+
+test('github: the auth check probes gh — never glab — for a github.com project', async () => {
+  const [s, run] = ghScenarioDoctor();
+  const r = await inScenario(s, [], DEPS(run));
+  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[3].detail);
+  assert.match(r.checks[3].detail, /gh authenticated for github\.com/);
+  assert.deepEqual(
+    run.calls.filter((c) => c.args[0] === 'auth').map((c) => [c.file, ...c.args]),
+    [['gh', 'auth', 'status', '--hostname', 'github.com']],
+    'the forge decides the CLI: glab must not be probed at all for a GitHub project',
+  );
+});
+
+test('github: an unauthenticated gh FAILS scoped, naming the gh remedy', async () => {
+  const [s, run] = ghScenarioDoctor({
+    'gh auth status --hostname github.com': { code: 1, stderr: 'You are not logged into any GitHub hosts.\n' },
+  });
+  const r = await inScenario(s, [], DEPS(run));
+  assert.equal(levels(r)['forge-auth'], 'fail');
+  assert.equal(r.code, 1);
+  assert.match(r.checks[3].detail, /gh is installed but not authenticated for github\.com/);
+  assert.match(r.checks[3].detail, /gh auth login --hostname github\.com/);
+  // …and protection is then UNVERIFIABLE, never "unprotected".
+  assert.equal(levels(r)['branch-protection'], 'warn');
+  assert.match(r.checks[4].detail, /gh is not verified authenticated \(see the forge-auth check\)/);
+});
+
+test('github: a missing gh FAILS with the GitHub install remedy, not the GitLab one', async () => {
+  const [s, run] = ghScenarioDoctor({ 'gh auth status --hostname github.com': { spawnError: 'ENOENT' } });
+  const r = await inScenario(s, [], DEPS(run));
+  assert.equal(levels(r)['forge-auth'], 'fail');
+  assert.match(r.checks[3].detail, /gh not found on PATH/);
+  assert.match(r.checks[3].detail, /https:\/\/cli\.github\.com/);
+});
+
+test('github: protected + the identity cannot push ⇒ VERIFIED pass', async () => {
+  const [s, run] = ghScenarioDoctor();
+  const r = await inScenario(s, [], DEPS(run));
+  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[4].detail);
+  assert.equal(r.code, 0, r.output);
+  assert.match(r.checks[4].detail, /server-side protection VERIFIED on acme\/fix-proj/);
+  // The admin-only protection detail is NOT consulted for a non-admin identity: it would 403,
+  // and an error doctor provoked itself is not evidence about the repository.
+  assert.ok(!run.calls.some((c) => c.key.includes('/protection')), 'the admin-only endpoint stays unprobed');
+});
+
+test('github: neither classic protection nor a ruleset rule ⇒ VERIFIED unprotected, fail', async () => {
+  const [s, run] = ghScenarioDoctor({
+    [`${GH_REPO}/branches/main`]: { stdout: JSON.stringify({ name: 'main', protected: false }) },
+    [`${GH_REPO}/rules/branches/main`]: { stdout: '[]' },
+  });
+  const r = await inScenario(s, [], DEPS(run));
+  assert.equal(levels(r)['branch-protection'], 'fail');
+  assert.equal(r.code, 1);
+  assert.match(r.checks[4].detail, /'main' is NOT protected on acme\/fix-proj/);
+  assert.match(r.checks[4].detail, /Settings → Branches \(or Rules → Rulesets\)/);
+});
+
+test('github: a ruleset rule protects a branch classic protection does not report', async () => {
+  const [s, run] = ghScenarioDoctor({
+    [`${GH_REPO}/branches/main`]: { stdout: JSON.stringify({ name: 'main', protected: false }) },
+    [`${GH_REPO}/rules/branches/main`]: { stdout: JSON.stringify([{ type: 'non_fast_forward' }, { type: 'deletion' }]) },
+  });
+  const r = await inScenario(s, [], DEPS(run));
+  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[4].detail);
+});
+
+test('github: write access with unreadable rules ⇒ WARN naming the common case, never a green', async () => {
+  const [s, run] = ghScenarioDoctor({
+    [GH_REPO]: { stdout: JSON.stringify({ permissions: { admin: false, push: true, pull: true } }) },
+  });
+  const r = await inScenario(s, [], DEPS(run));
+  assert.equal(levels(r)['branch-protection'], 'warn', r.checks[4].detail);
+  assert.equal(r.code, 0, 'an unknown must not fail the command');
+  assert.match(r.checks[4].detail, /the agent identity has write access/);
+  assert.match(r.checks[4].detail, /need admin to read — the common GitHub case/);
+  assert.match(r.checks[4].detail, /best-effort/);
+});
+
+test('github: an ADMIN identity is checked against the detail endpoint and fails when unbound', async () => {
+  const admin = {
+    [GH_REPO]: { stdout: JSON.stringify({ permissions: { admin: true, push: true, pull: true } }) },
+  };
+  // enforce_admins OFF: the rule exists but does not bind the identity reading it.
+  const [s1, run1] = ghScenarioDoctor({
+    ...admin,
+    [`${GH_REPO}/branches/main/protection`]: {
+      stdout: JSON.stringify({ required_pull_request_reviews: {}, enforce_admins: { enabled: false } }),
+    },
+  });
+  const r1 = await inScenario(s1, [], DEPS(run1));
+  assert.equal(levels(r1)['branch-protection'], 'fail', r1.checks[4].detail);
+  assert.match(r1.checks[4].detail, /the agent identity is an ADMIN of acme\/fix-proj and 'main' does not bind it/);
+  assert.match(r1.checks[4].detail, /enforce_admins is off/);
+
+  // enforce_admins ON with a PR requirement: VERIFIED good even for an admin.
+  const [s2, run2] = ghScenarioDoctor({
+    ...admin,
+    [`${GH_REPO}/branches/main/protection`]: {
+      stdout: JSON.stringify({ required_pull_request_reviews: {}, enforce_admins: { enabled: true } }),
+    },
+  });
+  const r2 = await inScenario(s2, [], DEPS(run2));
+  assert.equal(levels(r2)['branch-protection'], 'pass', r2.checks[4].detail);
+});
+
+test('github: a WILDCARD recorded branch is UNVERIFIABLE, never a verdict either way', async () => {
+  // GitLab patterns have no per-branch GitHub query — `repos/.../branches/release/*` is not a
+  // branch. Inventing a match would be a verdict about branches nobody named.
+  const s = withGithubRemote(scenario());
+  writeJson(s.configPath, { ...readJson(s.configPath), protectedBranches: ['release/*'] });
+  const r = await inScenario(s, [], DEPS(ghGreen()));
+  assert.equal(levels(r)['branch-protection'], 'warn');
+  assert.equal(r.code, 0);
+  assert.match(r.checks[4].detail, /'release\/\*' is a wildcard pattern/);
+  assert.match(r.checks[4].detail, /cannot be queried per pattern/);
+});
+
+test('github: a nested remote path is refused rather than audited as owner/repo', async () => {
+  const s = withGithubRemote(scenario());
+  writeJson(s.configPath, { ...readJson(s.configPath), remoteUrl: 'https://github.com/acme/sub/fix-proj.git' });
+  const r = await inScenario(s, [], DEPS(ghGreen({
+    'gh auth status --hostname github.com': { stderr: '✓ Logged in to github.com account legion-bot\n' },
+  })));
+  assert.equal(levels(r)['branch-protection'], 'warn');
+  assert.match(r.checks[4].detail, /cannot derive an owner\/repo path/);
+});
+
+test('the forge INFO line names the value and the level that decided it — and is absent from --json', async () => {
+  const [s, run] = ghScenarioDoctor();
+  const r = await inScenario(s, [], DEPS(run));
+  assert.match(r.forgeInfo, /^info {2}forge {2}github — `gh` drives the merge\/pull request for default\/fix-proj \[remote url \(github\.com\)\]/);
+  assert.match(r.forgeInfo, /--forge <gitlab\|github>/, 'the override is named where the value is shown');
+  assert.match(r.output, /info {2}forge {2}github/, 'the human render carries it');
+
+  // A recorded field outranks detection, and the line SAYS which level won.
+  writeJson(s.configPath, { ...readJson(s.configPath), forge: 'gitlab' });
+  const r2 = await inScenario(s, [], DEPS(green()));
+  assert.match(r2.forgeInfo, /forge {2}gitlab — `glab` drives .* \[project\]/);
+
+  // --json is the CHECK ARRAY and stays exactly that.
+  const r3 = await inScenario(s, ['--json'], DEPS(green()));
+  const parsed = JSON.parse(r3.output);
+  assert.deepEqual(parsed.map((c) => c.check), CHECK_IDS);
+  assert.ok(!r3.output.includes('info  forge'), 'an info line is not a check');
+});
+
+test('a corrupt org.json makes the forge UNRESOLVED — doctor refuses to guess a CLI (2026-08-15)', async () => {
+  // It used to fall back to URL detection and pass. That could disagree with the project's own
+  // recorded override — doctor verifying gh while finalize drives glab — so an unresolvable forge
+  // is now reported as the unknown it is, on the SAME error finalize will refuse with.
+  const [s, run] = ghScenarioDoctor();
+  writeFileSync(join(s.home, 'orgs', 'default', 'org.json'), '{ not json\n');
+  const r = await inScenario(s, [], DEPS(run));
+  assert.equal(levels(r)['forge-auth'], 'warn', r.checks[3].detail);
+  assert.equal(r.code, 0, 'an unknown must not fail the command');
+  assert.match(r.checks[3].detail, /the forge for project default\/fix-proj could not be resolved/);
+  assert.match(r.checks[3].detail, /doctor will not guess which CLI to verify/);
+  assert.ok(!run.calls.some((c) => c.args[0] === 'auth'), 'no CLI is probed when none is known to be right');
+  // Protection is then UNVERIFIABLE, never "unprotected".
+  assert.equal(levels(r)['branch-protection'], 'warn');
+  // …and the operator is TOLD, in words, that finalize will refuse until it is fixed.
+  assert.match(r.forgeInfo, /UNRESOLVED for default\/fix-proj/);
+  assert.match(r.forgeInfo, /`legion finalize` refuses until the file is fixed or removed/);
+});
+
+test('github: EVERY api probe is pinned to the recorded host — a GHE tenant is never audited on github.com', () => {
+  // THE BLOCK FINDING (2026-08-15): `gh api <literal path>` goes to gh's DEFAULT host, which is
+  // github.com whenever more than one host is authenticated. Unscoped, doctor would verify the
+  // token for acme.ghe.com and then ask github.com whether the branch is protected — auditing a
+  // repository nobody asked about, and a green there is the one verdict this check refuses.
+  // Asserted as a SOURCE property because a run fake cannot observe which host real gh picks.
+  const src = readFileSync(join(ROOT, 'src', 'cli', 'doctor.mjs'), 'utf8');
+  const code = src.split('\n').filter((l) => !l.trim().startsWith('//') && !l.trim().startsWith('*')).join('\n');
+  const calls = [...code.matchAll(/ghJson\(run,([^;]*?)\)\s*;/gs)].map((m) => m[1]);
+  assert.ok(calls.length >= 4, `expected the four gh api probes, found ${calls.length}`);
+  for (const c of calls) {
+    assert.match(c, /^\s*host,/, `every ghJson call must pass the recorded host, got: ${c.trim().slice(0, 80)}`);
+  }
+  assert.match(code, /const ghJson = \(run, host, args, cwd\) => forgeJson\(run, 'gh', \[\.\.\.args, '--hostname', host\], cwd\)/,
+    'and the helper must be the one place --hostname is appended');
+});
+
+test('github: an underivable host makes protection UNVERIFIED rather than probing a default host', async () => {
+  const s = withGithubRemote(scenario());
+  // A github forge recorded explicitly, with a remote that names no host at all.
+  writeJson(s.configPath, { ...readJson(s.configPath), forge: 'github', remoteUrl: 'file:///somewhere/odd' });
+  const r = await inScenario(s, [], DEPS(ghGreen({ 'gh auth status': { spawnError: 'ENOENT' } })));
+  assert.equal(levels(r)['branch-protection'], 'warn');
+  assert.match(r.checks[4].detail, /gh is not verified authenticated|cannot derive a host from the recorded remote/);
+});
+
+test('github: a permissions object without boolean push/admin is UNKNOWN, never a verified green', async () => {
+  // `{}` used to make canPush false and reach PASS claiming "the identity cannot push" — an
+  // unknown promoted to the exact fact the pass rests on.
+  for (const perms of [{}, { admin: false }, { push: 'yes', admin: false }]) {
+    const [s, run] = ghScenarioDoctor({ [GH_REPO]: { stdout: JSON.stringify({ permissions: perms }) } });
+    const r = await inScenario(s, [], DEPS(run));
+    assert.equal(levels(r)['branch-protection'], 'warn', `${JSON.stringify(perms)} must not pass`);
+    assert.match(r.checks[4].detail, /without boolean push\/admin fields/);
+  }
 });

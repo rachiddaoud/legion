@@ -1,4 +1,4 @@
-// doctor.mjs — `legion doctor [--json] [--org <org>]`: env, hooks, glab, branch protection
+// doctor.mjs — `legion doctor [--json] [--org <org>]`: env, hooks, forge CLI, branch protection
 // and version pin. CONFORMANCE CHECKS, RUN BEFORE A FEATURE STARTS.
 //
 // READ-ONLY, ABSOLUTELY. It writes NO file, takes NO lock, mutates NO state and touches NO
@@ -15,11 +15,11 @@
 //
 // EVERY EXTERNAL PROBE GOES THROUGH deps.run — the injected kernel/runner.mjs seam, shared
 // with `legion finalize`. Nothing in this file imports child_process, and nothing spawns git
-// itself: the git reads it needs (which project is this cwd — asked by the glab-auth,
+// itself: the git reads it needs (which project is this cwd — asked by the forge-auth,
 // branch-protection and remote-guards checks; where this repository's hooks live — asked by
 // remote-guards) happen inside resolveProject and inspectPrePushHook, both of which use the
 // hardened git() (kernel/git.mjs header E). node:test therefore never runs a real
-// `claude` or `glab` and never touches the network. That read is taken with
+// `claude`, `glab` or `gh` and never touches the network. That read is taken with
 // {fromAnyWorktree:true}: doctor is run FROM A FEATURE WORKTREE more often than from the main
 // checkout, and a branch-protection check that cannot resolve the
 // project there is a check that verifies nothing in production while still exiting 0.
@@ -45,18 +45,31 @@
 // unparsable output). An unknown is an unknown: it must not read as green, and it must not
 // read as "your Claude Code is too old" either — doctor only ever fails on evidence it holds.
 //
-// GLAB AUTH IS JUDGED PER HOST, NOT GLOBALLY. `glab auth status` exits non-zero
+// FORGE AUTH IS JUDGED PER HOST AND PER FORGE, NOT GLOBALLY. `<cli> auth status` exits non-zero
 // when ANY configured host lacks a usable token, and inheriting that global code would make doctor
 // red on a real, fully-authenticated target host because an unrelated token-less gitlab.com
-// entry sat in the operator's glab config. A red doctor nobody can act on is a red doctor
+// entry sat in the operator's config. A red doctor nobody can act on is a red doctor
 // operators learn to ignore. So: when a registered project resolves from cwd, the host is
-// DERIVED from the project's recorded remoteUrl and only that host is probed
-// (`glab auth status --hostname <host>`) — a verdict about the one host every `legion finalize`
-// and every branch-protection call will actually use. When NO project resolves, doctor does not
-// know which host matters, so the per-host blocks are named with their
-// own states and an unauthenticated host becomes a WARN that says why it could not be judged —
-// never a FAIL, because failing on a host this repository may have nothing to do with is
-// precisely the kind of false alarm this check exists to avoid.
+// DERIVED from the project's recorded remoteUrl and the CLI from its resolved FORGE, and only
+// that host on that CLI is probed (`glab|gh auth status --hostname <host>`) — a verdict about the
+// one host every `legion finalize` and every branch-protection call will actually use.
+// WHEN NO PROJECT RESOLVES, NEITHER THE HOST NOR THE FORGE IS KNOWN, so BOTH CLIs are probed
+// (2026-08-15) and the report names what each one said. The FAIL is reserved for "NEITHER glab
+// nor gh is installed": before the second forge this path failed hard on a missing glab, which
+// for a GitHub-only operator is a red row about a tool they will never run — the same false
+// alarm the host-scoping work removed, in a new costume. Everything else is a WARN that says
+// why it could not be judged.
+//
+// THE CHECK ID `glab-auth` BECAME `forge-auth` ON 2026-08-15. That is a breaking change to the
+// `--json` contract, taken deliberately: an id naming glab while the check runs `gh auth status`
+// would be a standing lie in the surface built for honesty. See CHECK_IDS.
+//
+// BRANCH PROTECTION FORKS BY FORGE, WITH ONE SET OF EPISTEMICS. GitLab reads protected_branches
+// and the identity's access level; GitHub reads what a NON-ADMIN token can actually see (the
+// repo's own `permissions`, the branch's `protected` bool, the active ruleset rules) and touches
+// the admin-only protection detail only when the identity is an admin. The GitHub common case —
+// write access, rules unreadable without admin — is a WARN that says exactly that, because a
+// green there would be a claim about rules doctor never read.
 //
 // THE remote-guards CHECK NOW REPORTS A RETIRED LAYER'S LEFTOVERS. Legion's local push guards
 // (the pre-push hook and the plugin's PreToolUse Bash scan) were REMOVED 2026-08-07 by owner
@@ -75,13 +88,13 @@
 // command — a doctor that dies on check 2 tells you nothing about checks 3-5, which is exactly
 // when you need it. The ONE loud death is a usage error, which throws before any probe runs.
 //
-// ONE THING HERE IS NOT A CHECK: the TICKET CONFIG INFO LINE (ticketInfoLine below). It
-// reports the resolved ticket config and WHICH LEVEL each field came from, carries no verdict,
-// never moves the exit code and is absent from `--json` — CHECK_IDS remains the machine-readable
-// contract. Its docblock argues why information rather than a seventh check, and why even a
-// corrupt org.json is printed here rather than failed on.
+// TWO THINGS HERE ARE NOT CHECKS: the FORGE and TICKET CONFIG INFO LINES (forgeInfoLine,
+// ticketInfoLine below). Each reports resolved config and WHICH LEVEL it came from, carries no
+// verdict, never moves the exit code and is absent from `--json` — CHECK_IDS remains the
+// machine-readable contract. ticketInfoLine's docblock argues why information rather than a
+// seventh check, and why even a corrupt org.json is printed there rather than failed on.
 //
-// SHAPE: doctorCore(argv, deps) returns { code, checks, ticketInfo, output } and writes NOTHING;
+// SHAPE: doctorCore(argv, deps) returns { code, checks, ticketInfo, forgeInfo, output } and writes NOTHING;
 // run(argv) prints output and returns code. Tests assert the --json shape and the per-check levels
 // off the returned value, with no stdout patching.
 import { existsSync, readFileSync, statSync } from 'node:fs';
@@ -92,7 +105,11 @@ import { branchPatternMatches } from '../kernel/branches.mjs';
 import { inspectPrePushHook } from '../kernel/githooks.mjs';
 import { realRunner } from '../kernel/runner.mjs';
 import { resolveProject } from './feature.mjs';
-import { closingKeyword, resolveTicketConfig } from '../kernel/ticket.mjs';
+import { closingKeyword, resolveForge, resolveTicketConfig } from '../kernel/ticket.mjs';
+// remoteHost was this file's own `glabHost` until 2026-08-15; it moved to kernel/forge.mjs
+// unchanged when the second forge arrived, because deriving a host from a remote URL was never
+// GitLab-specific and finalize's forge selection needs the same derivation.
+import { forgeTable, remoteHost } from '../kernel/forge.mjs';
 
 const USAGE = 'legion doctor [--json] [--org <org>]';
 
@@ -119,8 +136,13 @@ const DEFAULT_PLUGIN_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 /** The fixed check ids, in output order. Machine-readable consumers key on these.
  * `remote-guards` sits LAST, immediately after `branch-protection`: the two are about the same
- * layering and are read together, and this order puts the guarantee above the depth. */
-export const CHECK_IDS = ['node', 'claude-version', 'plugin-manifest', 'glab-auth', 'branch-protection', 'remote-guards'];
+ * layering and are read together, and this order puts the guarantee above the depth.
+ * RENAMED 2026-08-15, deliberately and at a cost: `glab-auth` became `forge-auth` when the check
+ * started probing gh as well as glab. The id IS the `--json` contract, so renaming it is a
+ * breaking change to that contract — taken because the alternative is worse: an id that says
+ * `glab` while the check verifies `gh auth status` is a standing lie in the one surface built
+ * for honesty. The other five ids were already forge-neutral and are untouched. */
+export const CHECK_IDS = ['node', 'claude-version', 'plugin-manifest', 'forge-auth', 'branch-protection', 'remote-guards'];
 
 /** GitLab access levels, for details a human can act on. */
 const ACCESS_NAMES = {
@@ -265,30 +287,25 @@ function checkPluginManifest(pluginRoot) {
     : { level: 'pass', detail: `plugin manifest and components valid at ${pluginRoot}` };
 }
 
-/** THE HOST a project's remote lives on, for `glab auth status --hostname`. Handles the three
- * forms a recorded `git remote get-url origin` actually takes: scheme URLs with an optional
- * port and userinfo (`ssh://git@host:2222/a/b.git`, `https://host/a/b.git`) and the scp-like
- * form (`git@host:a/b.git`). Anything without an unambiguous authority ⇒ null ⇒ the check falls
- * back to the unscoped probe and SAYS it could not scope: a guessed host would be a verdict
- * about a server nobody asked about. Deliberately NOT dot-requiring — a single-label internal
- * host (`https://gitlab/a/b.git`) is structurally unambiguous here. */
-export function glabHost(remoteUrl) {
-  if (typeof remoteUrl !== 'string' || remoteUrl.trim() === '') return null;
-  const url = remoteUrl.trim();
-  let authority = null;
-  const scheme = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/]+)(?:\/|$)/.exec(url);
-  if (scheme) authority = scheme[1];
-  // As in gitlabProjectPath: a `://` that the pattern above REFUSED (file:///path) must never
-  // fall through to the scp form, which would read a local path's first segment as a host.
-  else if (!url.includes('://')) {
-    const scp = /^(?:[^@/]+@)?([^@/:]+):/.exec(url);
-    if (scp) authority = scp[1];
-  }
-  if (authority == null) return null;
-  const at = authority.lastIndexOf('@'); // userinfo (user:pass@host) — the LAST @ starts the host
-  const host = (at === -1 ? authority : authority.slice(at + 1)).replace(/:\d+$/, '').toLowerCase();
-  return /^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(host) ? host : null;
-}
+/** THE HOST a project's remote lives on, for `<cli> auth status --hostname`. Moved to
+ * kernel/forge.mjs on 2026-08-15 (it was `glabHost` here) and re-exported unchanged for
+ * importers who reach it through doctor. */
+export { remoteHost };
+
+/** What each forge needs from DOCTOR, and only that: the two remedies an operator can act on.
+ * id / cli / forgeName are NOT restated here — forgeTable merges them from kernel/forge.mjs's
+ * FORGE_IDENTITY, the same base finalize's FORGE_OPS is built on, so the two tables cannot drift
+ * on the identity facts and a forge missing from either throws at import (2026-08-15). */
+const FORGE_PROBES = forgeTable({
+  gitlab: {
+    install: 'install it (https://gitlab.com/gitlab-org/cli) and run `glab auth login`',
+    login: (host) => `glab auth login --hostname ${host}`,
+  },
+  github: {
+    install: 'install it (https://cli.github.com) and run `gh auth login`',
+    login: (host) => `gh auth login --hostname ${host}`,
+  },
+}, 'doctor FORGE_PROBES');
 
 /** A block header in `glab auth status`: an UNINDENTED hostname line, its indented lines the
  * state of that host. Parsed CONSERVATIVELY and only for the unscoped rendering path — a
@@ -297,11 +314,14 @@ export function glabHost(remoteUrl) {
  * the per-host state", i.e. a warn: this parser can lose a host, it can never invent one. */
 const AUTH_HOST_LINE = /^([A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z0-9][A-Za-z0-9-]*)(?::\d+)?:?$/;
 
-/** [{host, authenticated}] out of `glab auth status` output, in the order glab printed them.
- * authenticated = the block carries a ✓ line AND no error line: glab marks a working host with
- * ✓ and a broken one with `x`/`✗` (plus `-` hints), and a block with neither is UNKNOWN, which
- * is not authenticated. EXPORTED for the parser table test. */
-export function parseGlabAuthHosts(text) {
+/** [{host, authenticated}] out of `<cli> auth status` output, in the order the CLI printed them.
+ * authenticated = the block carries a ✓ line AND no error line: both CLIs mark a working host
+ * with ✓ and a broken one with `x`/`X`/`✗` (plus `-` hints), and a block with neither is UNKNOWN,
+ * which is not authenticated. ONE parser for both forges (2026-08-15): the marker sets are a
+ * superset union, and neither CLI prints a leading `X` line to mean success — so widening cannot
+ * turn a pass into a fail or the reverse, it can only read gh's blocks where before it read none.
+ * EXPORTED for the parser table test. */
+export function parseForgeAuthHosts(text) {
   const blocks = [];
   let cur = null;
   for (const line of String(text ?? '').split(/\r?\n/)) {
@@ -315,95 +335,167 @@ export function parseGlabAuthHosts(text) {
     if (cur == null) continue;
     const t = line.trim();
     if (t.startsWith('✓')) cur.ok = true;
-    else if (/^[x✗×]\s/.test(t)) cur.bad = true;
+    else if (/^[xX✗×]\s/.test(t)) cur.bad = true;
   }
   return blocks.map(({ host, ok, bad }) => ({ host, authenticated: ok && !bad }));
 }
 
-const GLAB_MISSING = {
+const missingCli = (p) => ({
   level: 'fail',
-  detail: 'glab not found on PATH — install it (https://gitlab.com/gitlab-org/cli) and run `glab auth login`; '
+  detail: `${p.cli} not found on PATH — ${p.install}; `
     + '`legion finalize` and the branch-protection check both need it',
-};
+});
 
-/** The verdict that matters: authenticated for THE host this project pushes to. Every other
- * host in the operator's glab config is irrelevant to this repository and is not consulted. */
-function checkGlabAuthScoped(run, host, projectId) {
-  const r = run('glab', ['auth', 'status', '--hostname', host], { timeoutMs: PROBE_TIMEOUT_MS });
-  if (r.spawnError === 'ENOENT') return GLAB_MISSING;
-  if (r.spawnError) return { level: 'fail', detail: `\`glab auth status --hostname ${host}\` could not run: ${r.spawnError}` };
+/** The verdict that matters: authenticated for THE host this project pushes to, with THE CLI
+ * that project's forge drives. Every other host in the operator's CLI config is irrelevant to
+ * this repository and is not consulted. */
+function checkForgeAuthScoped(run, p, host, projectId) {
+  const r = run(p.cli, ['auth', 'status', '--hostname', host], { timeoutMs: PROBE_TIMEOUT_MS });
+  if (r.spawnError === 'ENOENT') return missingCli(p);
+  if (r.spawnError) return { level: 'fail', detail: `\`${p.cli} auth status --hostname ${host}\` could not run: ${r.spawnError}` };
   if (!r.ok) {
     return {
       level: 'fail',
-      detail: `glab is installed but not authenticated for ${host}, the host recorded for project ${projectId} `
-        + `(exit ${r.code}) — run \`glab auth login --hostname ${host}\`: ${excerpt(r.stderr || r.stdout)}`,
+      detail: `${p.cli} is installed but not authenticated for ${host}, the host recorded for project ${projectId} `
+        + `(exit ${r.code}) — run \`${p.login(host)}\`: ${excerpt(r.stderr || r.stdout)}`,
     };
   }
   return {
     level: 'pass',
-    detail: `glab authenticated for ${host} (the remote host recorded for project ${projectId}): `
+    detail: `${p.cli} authenticated for ${host} (the remote host recorded for project ${projectId}): `
       + `${excerpt(r.stderr || r.stdout, 120)}`,
   };
 }
 
-/** No project resolves (or its remote names no host), so no host is THE host. Report per-host
- * state and refuse to fail on a host that may be nothing to do with the work at hand. */
-function checkGlabAuthUnscoped(run, why) {
-  const r = run('glab', ['auth', 'status'], { timeoutMs: PROBE_TIMEOUT_MS });
-  if (r.spawnError === 'ENOENT') return GLAB_MISSING;
-  if (r.spawnError) return { level: 'fail', detail: `\`glab auth status\` could not run: ${r.spawnError}` };
-  const hosts = parseGlabAuthHosts(`${r.stdout ?? ''}\n${r.stderr ?? ''}`);
+/** ONE CLI's unscoped state, as a sentence — or null when that CLI is not installed at all.
+ * Returns {good, text}. `good` is the ONE bit the caller can act on: every host this CLI printed
+ * is authenticated AND it exited 0. Everything else — a host that is verifiably unauthenticated,
+ * output no parser could read, a nonzero exit whose cause doctor could not see — is `false`, and
+ * WHICH of them it was lives in `text`, which is what a human reads.
+ * IT WAS A THREE-VALUED 'good'|'bad'|'unknown' UNTIL 2026-08-15 AND THE THIRD VALUE WAS A LIE:
+ * this is the UNSCOPED path, which never fails on a per-host verdict (the whole reason it
+ * exists), so 'bad' and 'unknown' produced an identical level and an identical remedy — a
+ * distinction the type asserted and no branch honoured. Collapsed rather than given a behaviour
+ * it does not deserve; the nuance was never lost, because it was always carried in the prose. */
+function unscopedCliState(run, cli) {
+  const r = run(cli, ['auth', 'status'], { timeoutMs: PROBE_TIMEOUT_MS });
+  if (r.spawnError === 'ENOENT') return null;
+  if (r.spawnError) return { good: false, text: `\`${cli} auth status\` could not run: ${r.spawnError}` };
+  const hosts = parseForgeAuthHosts(`${r.stdout ?? ''}\n${r.stderr ?? ''}`);
   const good = hosts.filter((h) => h.authenticated).map((h) => h.host);
   const bad = hosts.filter((h) => !h.authenticated).map((h) => h.host);
-  const scope = `${why}, so doctor cannot tell which host matters here`;
-  const remedy = 'run doctor from a registered project checkout to have its host verified, or '
-    + '`glab auth login --hostname <host>`';
   if (hosts.length === 0) {
     return {
-      level: 'warn',
-      detail: `\`glab auth status\` exited ${r.code} and no per-host state could be read out of it `
-        + `(${excerpt(r.stderr || r.stdout, 120)}) — ${scope}; ${remedy}`,
+      good: false,
+      text: `\`${cli} auth status\` exited ${r.code} and no per-host state could be read out of it `
+        + `(${excerpt(r.stderr || r.stdout, 120)})`,
     };
   }
   if (bad.length > 0) {
     return {
-      level: 'warn',
-      detail: `glab is authenticated for ${good.length ? good.join(', ') : 'no configured host'} and NOT for `
-        + `${bad.join(', ')} — ${scope}, and an unauthenticated host this repository may never touch is not a `
-        + `failure; ${remedy}`,
+      good: false,
+      text: `${cli} is authenticated for ${good.length ? good.join(', ') : 'no configured host'} and NOT for ${bad.join(', ')}`,
     };
   }
-  // The parse says every host it READ is fine, yet glab itself exited non-zero: the two disagree,
-  // and the parser is the lossy one (AUTH_HOST_LINE drops single-label hosts and any block header
-  // upstream prints unindented but unlike a hostname — glabHost, one screen up, accepts exactly
-  // the single-label hosts this parser refuses). A pass here would assert "every configured host"
-  // with contradicting evidence in hand. The exit code is honoured in the GREEN direction ONLY:
-  // it can withhold a pass, it can never become the fail this check exists to stop inheriting.
+  // The parse says every host it READ is fine, yet the CLI itself exited non-zero: the two
+  // disagree, and the parser is the lossy one (AUTH_HOST_LINE drops single-label hosts and any
+  // block header upstream prints unindented but unlike a hostname — remoteHost accepts exactly
+  // the single-label hosts this parser refuses). A pass here would assert "every configured
+  // host" with contradicting evidence in hand. The exit code is honoured in the GREEN direction
+  // ONLY: it can withhold a pass, it can never become the fail this check exists to stop
+  // inheriting.
   if (!r.ok) {
     return {
-      level: 'warn',
-      detail: `\`glab auth status\` exited ${r.code} but every host doctor could read out of it is authenticated `
-        + `(${good.join(', ')}) — a host it could not read may be the failing one, so this is not a pass; `
-        + `${scope}; ${remedy}`,
+      good: false,
+      text: `\`${cli} auth status\` exited ${r.code} but every host doctor could read out of it is authenticated `
+        + `(${good.join(', ')}), so a host it could not read may be the failing one`,
     };
   }
+  return { good: true, text: `${cli} authenticated for every configured host (${good.join(', ')})` };
+}
+
+/** No project resolves (or its remote names no host), so neither the host NOR THE FORGE is
+ * known. BOTH CLIs are probed (2026-08-15) and the report is per CLI: before the second forge
+ * this path failed hard on a missing glab, which for a GitHub-only operator is a red row about
+ * a tool they will never run — exactly the false alarm the host-scoping work removed. The fail
+ * is now reserved for "NEITHER forge CLI is installed", which is the one state that leaves
+ * `legion finalize` with nothing to drive whichever forge turns out to matter. Everything else
+ * is a warn that says which CLI reported what and why nothing could be scoped. */
+function checkForgeAuthUnscoped(run, why, knownForge = null) {
+  // KNOWN FORGE, UNKNOWN HOST is a different ignorance from knowing neither: the project resolved
+  // and told us which CLI `legion finalize` will drive, only its remote names no host to scope to.
+  // Probing the OTHER forge's CLI there would report on a tool this project will never run — and,
+  // since 2026-08-15, an absent CLI withholds the pass, so it would also manufacture a warn out of
+  // an irrelevance. One forge known ⇒ one CLI probed, and a missing one is the same FAIL the
+  // scoped path gives, because this project genuinely needs it.
+  const probes = knownForge === null ? Object.values(FORGE_PROBES) : [FORGE_PROBES[knownForge]];
+  const probed = probes.map((p) => [p, unscopedCliState(run, p.cli)]);
+  const missing = probed.filter(([, s]) => s === null).map(([p]) => p.cli);
+  const states = probed.filter(([, s]) => s !== null);
+  const scope = `${why}, so doctor cannot tell which host or forge matters here`;
+  const remedy = 'run doctor from a registered project checkout to have its host verified, or '
+    + '`glab auth login --hostname <host>` / `gh auth login --hostname <host>`';
+  if (states.length === 0) {
+    return knownForge === null
+      ? {
+        level: 'fail',
+        detail: 'neither glab nor gh was found on PATH — install the one your forge uses '
+          + '(https://gitlab.com/gitlab-org/cli, https://cli.github.com) and authenticate it; '
+          + '`legion finalize` and the branch-protection check both need it',
+      }
+      : missingCli(FORGE_PROBES[knownForge]);
+  }
+  const report = [
+    ...states.map(([, s]) => s.text),
+    ...missing.map((cli) => `${cli} is not installed`),
+  ].join('; ');
+  // A PASS HERE CLAIMS "authenticated for the forge that matters", AND NOTHING KNOWS WHICH THAT
+  // IS. So an absent CLI withholds the pass (2026-08-15): with glab missing and gh healthy, a
+  // GitLab project in this cwd has nothing to finalize with, and reporting green because the
+  // OTHER forge's CLI is fine would be the false alarm's mirror image — a false all-clear. Both
+  // installed and both good is the only shape that can honestly pass unscoped.
+  if (missing.length === 0 && states.every(([, s]) => s.good)) {
+    return { level: 'pass', detail: `${report} — ${why}, so no single host was verified as the target` };
+  }
   return {
-    level: 'pass',
-    detail: `glab authenticated for every configured host (${good.join(', ')}) — ${why}, so no single host was verified as the target`,
+    level: 'warn',
+    detail: `${report} — ${scope}, and an unauthenticated host this repository may never touch is not a `
+      + `failure; ${remedy}`,
   };
 }
 
-/** Host-aware (header). Resolution mirrors checkBranchProtection's, including fromAnyWorktree:
- * doctor runs inside feature worktrees, and a check that silently unscopes itself there would
- * be host-blind exactly where every push happens. */
-function checkGlabAuth(run, flags) {
+/** Host-aware AND forge-aware (header). Resolution mirrors checkBranchProtection's, including
+ * fromAnyWorktree: doctor runs inside feature worktrees, and a check that silently unscopes
+ * itself there would be host-blind exactly where every push happens.
+ * Returns {result, forge} — the forge is handed to checkBranchProtection so the two checks
+ * cannot disagree about which server they are talking about. */
+function checkForgeAuth(run, flags) {
   let projectId = null;
   let host = null;
   let why = null;
+  let forge = null;
+  let unresolved = null;
   try {
     const { entry, cfg } = resolveProject(flags, { fromAnyWorktree: true });
     projectId = `${entry.org}/${entry.name}`;
-    host = glabHost(cfg?.remoteUrl);
+    host = remoteHost(cfg?.remoteUrl);
+    // A RESOLVER FAILURE IS AN UNKNOWN, NOT A LICENCE TO GUESS (2026-08-15). This used to fall
+    // back to `detectForge`, which can disagree with the project's own recorded override — doctor
+    // would then verify gh, pass, and finalize would drive glab. An unknown forge is reported as
+    // one: both this check and branch-protection go non-green, naming the resolver's own refusal,
+    // which is also the refusal finalize will hit.
+    try { forge = resolveForge(entry.org, entry.name, { remoteUrl: cfg?.remoteUrl }).value; }
+    catch (e) { unresolved = excerpt(e.message, 200); }
+    if (unresolved !== null) {
+      return {
+        result: {
+          level: 'warn',
+          detail: `the forge for project ${projectId} could not be resolved (${unresolved}) — doctor will not `
+            + `guess which CLI to verify, and \`legion finalize\` refuses on the same error until the file is fixed`,
+        },
+        forge: null,
+      };
+    }
     if (host == null) {
       why = `project ${projectId} records no host-bearing remote (${JSON.stringify(cfg?.remoteUrl ?? null)})`;
     }
@@ -411,13 +503,26 @@ function checkGlabAuth(run, flags) {
     // excerpt: git's own refusals are multi-line, and a detail is one table row.
     why = `no registered project resolves from this cwd (${excerpt(e.message, 160)})`;
   }
-  return host == null ? checkGlabAuthUnscoped(run, why) : checkGlabAuthScoped(run, host, projectId);
+  const probe = FORGE_PROBES[forge] ?? null;
+  if (host == null || probe === null) {
+    return { result: checkForgeAuthUnscoped(run, why, probe === null ? null : forge), forge };
+  }
+  return { result: checkForgeAuthScoped(run, probe, host, projectId), forge };
 }
 
 // --- branch protection -------------------------------------------------------------------------
 
 const BEST_EFFORT =
   'only the server is authoritative, so while this is unverified the guarantee is best-effort';
+
+/** owner/repo from a git remote URL, for GitHub's two-segment API paths. The general parser
+ * below is deliberately loose (GitLab nests arbitrarily); GitHub does not, and a three-segment
+ * path handed to `repos/{owner}/{repo}` would query something else entirely. Anything that is
+ * not exactly two segments ⇒ null ⇒ the check WARNS rather than auditing the wrong repository. */
+export function githubRepoPath(remoteUrl) {
+  const p = gitlabProjectPath(remoteUrl);
+  return p !== null && p.split('/').length === 2 ? p : null;
+}
 
 /** owner/sub/repo from a git remote URL. Handles scheme URLs (https://host/a/b.git) and the
  * scp-like form (git@host:a/b.git). Anything else ⇒ null ⇒ the check WARNS: guessing a project
@@ -447,18 +552,137 @@ export function gitlabProjectPath(remoteUrl) {
  * server is now the only enforcement of these semantics.) */
 export { branchPatternMatches };
 
-/** One `glab api` call, parsed. Returns {value} or {error} — never throws, because EVERY
- * failure mode here (no network, 403, glab version drift, HTML error page) means the same
+/** One forge-CLI api call, parsed. Returns {value} or {error} — never throws, because EVERY
+ * failure mode here (no network, 403, CLI version drift, HTML error page) means the same
  * thing to the caller: unverifiable. */
-function glabJson(run, args, cwd) {
-  const r = run('glab', args, { cwd, timeoutMs: PROBE_TIMEOUT_MS });
-  if (r.spawnError) return { error: `\`glab ${args.join(' ')}\` could not run: ${r.spawnError}` };
-  if (!r.ok) return { error: `\`glab ${args.join(' ')}\` exited ${r.code}: ${excerpt(r.stderr || r.stdout)}` };
+function forgeJson(run, cli, args, cwd) {
+  const r = run(cli, args, { cwd, timeoutMs: PROBE_TIMEOUT_MS });
+  if (r.spawnError) return { error: `\`${cli} ${args.join(' ')}\` could not run: ${r.spawnError}` };
+  if (!r.ok) return { error: `\`${cli} ${args.join(' ')}\` exited ${r.code}: ${excerpt(r.stderr || r.stdout)}` };
   try {
     return { value: JSON.parse(r.stdout) };
   } catch (e) {
-    return { error: `\`glab ${args.join(' ')}\` did not return JSON (${e.message}): ${excerpt(r.stdout, 120)}` };
+    return { error: `\`${cli} ${args.join(' ')}\` did not return JSON (${e.message}): ${excerpt(r.stdout, 120)}` };
   }
+}
+const glabJson = (run, args, cwd) => forgeJson(run, 'glab', args, cwd);
+/** `gh api` with the host PINNED (2026-08-15). Without `--hostname` gh sends a literal endpoint to
+ * its DEFAULT host — github.com whenever more than one host is authenticated — so on a GHE tenant
+ * doctor would audit `github.com/<owner>/<repo>`: a repository nobody asked about, and a green
+ * there is exactly the verdict this check refuses to produce. The host is the one the auth check
+ * scoped to, derived from the same recorded remote. */
+const ghJson = (run, host, args, cwd) => forgeJson(run, 'gh', [...args, '--hostname', host], cwd);
+
+/** THE GITHUB half of the server-side check (2026-08-15), with GitLab's epistemics preserved
+ * exactly: fail = VERIFIED bad, pass = VERIFIED good, warn = UNVERIFIABLE, and ambiguity never
+ * becomes a pass.
+ * WHAT MAKES GITHUB DIFFERENT, and it is not a shortcoming of this code: the classic protection
+ * DETAIL endpoint (`repos/{o}/{r}/branches/{b}/protection`) requires ADMIN. A non-admin agent
+ * identity — the ordinary, CORRECT setup — cannot read the rules that bind it. So the probes
+ * used here are the ones a plain read token can see:
+ *   - `repos/{o}/{r}` → `permissions` for THIS identity (push/admin booleans);
+ *   - `repos/{o}/{r}/branches/{b}` → `protected`, a bool that says a rule EXISTS;
+ *   - `repos/{o}/{r}/rules/branches/{b}` → the active RULESET rules that apply to the branch,
+ *     readable with read access and the modern replacement for classic protection.
+ * The detail endpoint is consulted ONLY when the identity is admin (i.e. when it is readable at
+ * all), and admin is also the case where a `pull_request` rule alone proves nothing — an admin
+ * can bypass unless the rule says otherwise, which is precisely what cannot be read without
+ * enumerating bypass actors. That case is a WARN naming the reason, never a green. */
+function checkGithubBranchProtection(run, cfg, repoRoot, branches, recorded) {
+  const path = githubRepoPath(cfg?.remoteUrl);
+  const host = remoteHost(cfg?.remoteUrl);
+  if (host == null) {
+    return {
+      level: 'warn',
+      detail: `cannot derive a host from the recorded remote ${JSON.stringify(cfg?.remoteUrl ?? null)}, and an `
+        + `unscoped \`gh api\` would query gh's DEFAULT host instead — protection UNVERIFIED (${recorded}); ${BEST_EFFORT}`,
+    };
+  }
+  if (path == null) {
+    return {
+      level: 'warn',
+      detail: `cannot derive an owner/repo path from the recorded remote ${JSON.stringify(cfg?.remoteUrl ?? null)} `
+        + `— protection UNVERIFIED (${recorded}); ${BEST_EFFORT}`,
+    };
+  }
+  const unverified = (why) => ({ level: 'warn', detail: `${why} — protection of ${path} UNVERIFIED (${recorded}); ${BEST_EFFORT}` });
+
+  const repo = ghJson(run, host, ['api', `repos/${path}`], repoRoot);
+  if (repo.error) return unverified(repo.error);
+  const perms = repo.value?.permissions;
+  if (perms === null || typeof perms !== 'object' || Array.isArray(perms)) {
+    // The same rule as GitLab's both-absent case: two unknowns must not compute a green.
+    return unverified(`\`gh api repos/${path}\` reported no permissions object, so the agent identity's access is unknown`);
+  }
+  // ABSENT IS NOT FALSE (the rule GitLab's branch states as "ABSENT IS NOT EMPTY"). A `{}` or a
+  // partial permissions object would make `push === true` false and read as "this identity cannot
+  // push" — an UNKNOWN turned into the very fact the pass verdict rests on. Both booleans must be
+  // present and boolean before anything is derived from them.
+  if (typeof perms.push !== 'boolean' || typeof perms.admin !== 'boolean') {
+    return unverified(
+      `\`gh api repos/${path}\` returned a permissions object without boolean push/admin fields `
+      + `(${JSON.stringify(perms).slice(0, 120)}), so the agent identity's access is unknown`,
+    );
+  }
+  const canPush = perms.push === true || perms.maintain === true || perms.admin === true;
+  const isAdmin = perms.admin === true;
+
+  const bad = [];
+  const unknown = [];
+  for (const branch of branches) {
+    // GitLab's protected-branch WILDCARDS have no per-branch GitHub query: `release/*` names a
+    // pattern, and `repos/.../branches/release/*` is not a branch. Refusing to answer is the
+    // only honest option — inventing a match would be a verdict about branches nobody named.
+    if (branch.includes('*')) {
+      unknown.push(`'${branch}' is a wildcard pattern, and GitHub protection cannot be queried per pattern from here`);
+      continue;
+    }
+    const enc = branch.split('/').map(encodeURIComponent).join('/');
+    const b = ghJson(run, host, ['api', `repos/${path}/branches/${enc}`], repoRoot);
+    if (b.error) { unknown.push(b.error); continue; }
+    const classic = b.value?.protected === true;
+
+    const rules = ghJson(run, host, ['api', `repos/${path}/rules/branches/${enc}`], repoRoot);
+    if (rules.error) { unknown.push(rules.error); continue; }
+    if (!Array.isArray(rules.value)) { unknown.push(`\`gh api repos/${path}/rules/branches/${enc}\` did not return a list`); continue; }
+    const types = rules.value.map((r) => r?.type).filter((t) => typeof t === 'string');
+    const ruleProtected = types.includes('pull_request') || types.includes('non_fast_forward');
+
+    if (!classic && !ruleProtected) {
+      bad.push(`'${branch}' is NOT protected on ${path} (no branch protection and no ruleset rule applies to it)`);
+      continue;
+    }
+    // PROTECTED — but protected against WHOM? That is the question a pass has to answer.
+    if (!canPush) continue; // VERIFIED: this identity cannot push the branch at all
+    if (!isAdmin) {
+      unknown.push(
+        `'${branch}' is protected on ${path} and the agent identity has write access, but the rules that bind it `
+        + '(required reviews, push restrictions, bypass actors) need admin to read — the common GitHub case',
+      );
+      continue;
+    }
+    const prot = ghJson(run, host, ['api', `repos/${path}/branches/${enc}/protection`], repoRoot);
+    if (prot.error) { unknown.push(prot.error); continue; }
+    const requiresPr = prot.value?.required_pull_request_reviews != null;
+    const enforceAdmins = prot.value?.enforce_admins?.enabled === true;
+    if (requiresPr && enforceAdmins) continue; // VERIFIED: admins included in the requirement
+    bad.push(
+      `the agent identity is an ADMIN of ${path} and '${branch}' does not bind it — `
+      + `${requiresPr ? 'enforce_admins is off' : 'no pull-request requirement is configured'}, so it CAN push directly`,
+    );
+  }
+  if (bad.length) {
+    return {
+      level: 'fail',
+      detail: `${bad.join('; ')} — fix it in GitHub: Settings → Branches (or Rules → Rulesets) (${recorded})`,
+    };
+  }
+  if (unknown.length) return unverified(unknown.join('; '));
+  return {
+    level: 'pass',
+    detail: `server-side protection VERIFIED on ${path}: every recorded branch is protected and the agent identity `
+      + `cannot push ${branches.join(', ')} directly`,
+  };
 }
 
 /** THE server-side check (layer 1). Three-valued on purpose:
@@ -468,7 +692,7 @@ function glabJson(run, args, cwd) {
  *          granted to a GROUP whose membership we cannot evaluate, or an empty recorded set.
  * Ambiguity NEVER becomes a pass: a green that really means "could not tell" is the single
  * outcome this check refuses to produce. */
-function checkBranchProtection(run, flags, glabOk) {
+function checkBranchProtection(run, flags, authOk, forge) {
   let resolved;
   try {
     // fromAnyWorktree: doctor must answer in the cwd sessions RUN IN. Every feature session
@@ -493,12 +717,14 @@ function checkBranchProtection(run, flags, glabOk) {
     };
   }
   const recorded = `recorded by \`legion project init\`: ${branches.join(', ')}`;
-  if (!glabOk) {
-    // "not VERIFIED authenticated", not "unauthenticated": since the glab-auth check became
+  const cli = FORGE_PROBES[forge]?.cli ?? 'the forge CLI';
+  if (!authOk) {
+    // "not VERIFIED authenticated", not "unauthenticated": since the auth check became
     // host-aware it also warns when it could not decide WHICH host to judge, and that is not
     // the same fact as a missing token. Either way the server is not reachable with proof.
-    return { level: 'warn', detail: `glab is not verified authenticated (see the glab-auth check), so server-side protection is UNVERIFIED (${recorded}); ${BEST_EFFORT}` };
+    return { level: 'warn', detail: `${cli} is not verified authenticated (see the forge-auth check), so server-side protection is UNVERIFIED (${recorded}); ${BEST_EFFORT}` };
   }
+  if (forge === 'github') return checkGithubBranchProtection(run, cfg, repoRoot, branches, recorded);
   const path = gitlabProjectPath(cfg?.remoteUrl);
   if (path == null) {
     return {
@@ -708,7 +934,7 @@ function ticketInfoLine(flags) {
     // than printing a resolved-looking line that consulted nothing.
     return `${prefix}  no registered project resolves from this cwd (${excerpt(e.message, 120)}), so `
       + 'neither the org nor the project level was read — the plugin default applies: issues in the '
-      + `code repository's own GitLab project, closing line \`${closingKeyword('closes')} #<iid>\``;
+      + `code repository's own forge project, closing line \`${closingKeyword('closes')} #<iid>\``;
   }
   const id = `${org}/${project}`;
   let cfg;
@@ -720,25 +946,58 @@ function ticketInfoLine(flags) {
       + 'nothing that renders a ticket line can run until the file is fixed or removed)';
   }
   const project_ = cfg.ticketProject.value === null
-    ? "the code repository's own GitLab project"
+    ? "the code repository's own forge project"
     : cfg.ticketProject.value;
   return `${prefix}  issues in ${project_} [${cfg.ticketProject.from}]; closing line `
     + `\`${closingKeyword(cfg.ticketClosingStyle.value)} #<iid>\` [${cfg.ticketClosingStyle.from}] `
     + '— resolved fresh at every use, pinned nowhere';
 }
 
+/** THE forge line — information, not a check, for exactly ticketInfoLine's reasons: every value
+ * it can hold is a legitimate operator choice, so a verdict would claim a verification nobody
+ * performed. What it must show is WHICH LEVEL decided (project.json, org.json, URL detection or
+ * the plugin default), because a four-level resolution is undebuggable when you can see only the
+ * winner — an operator whose GHES override "did nothing" needs to be told that detection never
+ * ran. Absent from `--json`: CHECK_IDS remains the machine-readable contract. */
+function forgeInfoLine(flags) {
+  const prefix = 'info  forge';
+  let org;
+  let project;
+  let remoteUrl = null;
+  try {
+    const { entry, cfg } = resolveProject(flags, { fromAnyWorktree: true });
+    org = entry.org;
+    project = entry.name;
+    remoteUrl = cfg?.remoteUrl ?? null;
+  } catch (e) {
+    return `${prefix}  no registered project resolves from this cwd (${excerpt(e.message, 120)}), so no forge was `
+      + 'resolved — `legion project init` records one, detected from the origin remote';
+  }
+  const id = `${org}/${project}`;
+  let r;
+  try { r = resolveForge(org, project, { remoteUrl }); }
+  catch (e) {
+    return `${prefix}  UNRESOLVED for ${id}: ${excerpt(e.message, 260)} `
+      + '(doctor does not fail on this, but `legion finalize` refuses until the file is fixed or removed)';
+  }
+  const cli = FORGE_PROBES[r.value]?.cli ?? '(no CLI)';
+  return `${prefix}  ${r.value} — \`${cli}\` drives the merge/pull request for ${id} [${r.from}]`
+    + '; override with `legion project init --forge <gitlab|github>`';
+}
+
 // --- core --------------------------------------------------------------------------------------
 
 /** Human table: level, check id, detail — plus a count line, plus a verdict line when red, plus the
- * ONE ticket info line (ticketInfoLine: information, not a check — it sits after the verdict so a
+ * TWO info lines (forge + ticket: information, not checks — they sit after the verdict so a
  * red doctor's remedy is never pushed off the last line a reader looks at). */
-function renderTable(checks, ticketInfo) {
+function renderTable(checks, ticketInfo, forgeInfo) {
   const w = Math.max(...checks.map((c) => c.check.length));
   const count = (level) => checks.filter((c) => c.level === level).length;
   const lines = checks.map((c) => `${c.level.toUpperCase().padEnd(4)}  ${c.check.padEnd(w)}  ${c.detail}`);
   lines.push('', `doctor: ${count('pass')} pass, ${count('warn')} warn, ${count('fail')} fail`);
   if (count('fail') > 0) lines.push('FAIL — fix the failing checks before starting a feature');
-  if (ticketInfo != null) lines.push('', ticketInfo);
+  const info = [forgeInfo, ticketInfo].filter((l) => l != null);
+  if (info.length > 0) lines.push('', ...info);
   return `${lines.join('\n')}\n`;
 }
 
@@ -779,10 +1038,17 @@ export async function doctorCore(argv, deps = {}) {
   add('node', () => checkNode(nodeVersion));
   add('claude-version', () => checkClaudeVersion(run, minClaudeVersion));
   add('plugin-manifest', () => checkPluginManifest(pluginRoot));
-  const glab = add('glab-auth', () => checkGlabAuth(run, flags));
-  // glab absent/unauthed makes the server unreachable: branch protection is then UNVERIFIABLE
-  // (warn), not unprotected (fail). The overall exit is already 1 from glab-auth itself.
-  add('branch-protection', () => checkBranchProtection(run, flags, glab.level === 'pass'), 'warn');
+  // The forge the auth check resolved is REUSED by branch protection: two checks that resolved
+  // it independently could disagree about which server they are describing.
+  let forge = null;
+  const auth = add('forge-auth', () => {
+    const r = checkForgeAuth(run, flags);
+    forge = r.forge;
+    return r.result;
+  });
+  // The CLI absent/unauthed makes the server unreachable: branch protection is then UNVERIFIABLE
+  // (warn), not unprotected (fail). The overall exit is already 1 from forge-auth itself.
+  add('branch-protection', () => checkBranchProtection(run, flags, auth.level === 'pass', forge), 'warn');
   // 'warn' on throw for the same reason the check never fails: a depth layer whose state could
   // not be read is an unknown, and an unknown here must not turn doctor red.
   add('remote-guards', () => checkRemoteGuards(flags), 'warn');
@@ -793,11 +1059,14 @@ export async function doctorCore(argv, deps = {}) {
   let ticketInfo;
   try { ticketInfo = ticketInfoLine(flags); }
   catch (e) { ticketInfo = `info  ticket config  could not be reported: ${excerpt(e?.message ?? e, 200)}`; }
+  let forgeInfo;
+  try { forgeInfo = forgeInfoLine(flags); }
+  catch (e) { forgeInfo = `info  forge  could not be reported: ${excerpt(e?.message ?? e, 200)}`; }
   // --json IS THE CHECK ARRAY and stays exactly that: consumers key on CHECK_IDS and on the array
-  // shape, and the ticket line is not a check (ticketInfoLine's docblock). It rides the human
-  // render, and the returned object carries it for anything that wants it structurally.
-  const output = flags.json ? `${JSON.stringify(checks, null, 2)}\n` : renderTable(checks, ticketInfo);
-  return { code, checks, ticketInfo, output };
+  // shape, and the info lines are not checks (ticketInfoLine's docblock). They ride the human
+  // render, and the returned object carries them for anything that wants them structurally.
+  const output = flags.json ? `${JSON.stringify(checks, null, 2)}\n` : renderTable(checks, ticketInfo, forgeInfo);
+  return { code, checks, ticketInfo, forgeInfo, output };
 }
 
 export async function run(argv) {

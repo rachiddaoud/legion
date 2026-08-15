@@ -113,7 +113,7 @@ function commit(s, name, content) {
 }
 /** Hand-write the `mr` record `legion finalize` would have written. This suite never runs
  * finalize and never touches a remote; the record is the only thing close() reads. */
-function recordMr(s, headSha, iid = 7) {
+function recordMr(s, headSha, iid = 7, forge = null) {
   const f = feature(s);
   writeFileSync(join(s.dossier, 'feature.json'), JSON.stringify({
     ...f,
@@ -124,6 +124,8 @@ function recordMr(s, headSha, iid = 7) {
       targetBranch: f.baseBranch,
       headSha,
       at: '2026-07-24T00:00:00.000Z',
+      // Absent by default: the pre-2026-08-15 record shape, which renders `!`.
+      ...(forge === null ? {} : { forge }),
     },
   }, null, 2) + '\n');
 }
@@ -863,6 +865,19 @@ test('close delivered refuses a recorded MR for an OLDER commit', () => {
   assert.equal(r.status, 1);
   assert.match(r.stderr, /recorded MR !7 is for 0{40}/);
   assert.match(r.stderr, /stale/);
+  assert.equal(feature(s).status, 'active');
+});
+
+test('close delivered names a stale GITHUB record as a PR, in # notation', () => {
+  // The record's `forge` marker decides the noun and the notation everywhere it is rendered;
+  // a record without one (every record written before 2026-08-15) stays `MR !7`, above.
+  const s = scenario();
+  assert.equal(state(s, 'init').status, 0);
+  advance(s, 'finalize');
+  recordMr(s, '0'.repeat(40), 7, 'github');
+  const r = state(s, 'close', 'delivered');
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /recorded PR #7 is for 0{40}/);
   assert.equal(feature(s).status, 'active');
 });
 

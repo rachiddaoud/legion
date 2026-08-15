@@ -243,7 +243,7 @@ test('doctor states the resolved ticket config AND the level each field came fro
   // Default alone.
   let r = h.legionIn(h.repoRoot, 'doctor');
   assert.equal(r.code, 0, `doctor must not fail in the sandbox: ${r.stdout}${r.stderr}`);
-  assert.match(r.stdout, /info {2}ticket config {2}issues in the code repository's own GitLab project \[plugin default\]/);
+  assert.match(r.stdout, /info {2}ticket config {2}issues in the code repository's own forge project \[plugin default\]/);
   assert.match(r.stdout, /closing line `Closes #<iid>` \[plugin default\]/);
 
   // Org level.

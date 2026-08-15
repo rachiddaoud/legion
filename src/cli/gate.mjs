@@ -339,6 +339,8 @@ const PROTECTED = /(^|\/)(\.eslintrc[^/]*|eslint\.config\.[^/]+|\.prettierrc[^/]
 const SECRETS = [
   [/sk-[A-Za-z0-9]{20,}/, 'API key (sk-…)'],
   [/ghp_[A-Za-z0-9]{36}/, 'GitHub token (ghp_…)'],
+  // The fine-grained PAT format GitHub issues today, alongside the classic ghp_ one above.
+  [/github_pat_[A-Za-z0-9_]{22,}/, 'GitHub fine-grained token (github_pat_…)'],
   [/glpat-[A-Za-z0-9_-]{20,}/, 'GitLab token (glpat-…)'],
   [/AKIA[A-Z0-9]{16}/, 'AWS access key (AKIA…)'],
   [/api[_-]?key\s*[:=]\s*['"][^'"]{8,}['"]/i, 'hardcoded api key'],
