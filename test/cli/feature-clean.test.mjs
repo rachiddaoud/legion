@@ -51,21 +51,27 @@ function recorder(h) {
   const log = join(dir, 'argv.log');
   const record = (name) => `{ echo "${name}"; for a in "$@"; do echo "$a"; done; } >> '${log}'\n`;
   writeFileSync(join(dir, 'git'), `#!/bin/sh\n${record('git')}exec '${REAL_GIT}' "$@"\n`);
-  writeFileSync(join(dir, 'glab'),
-    `#!/bin/sh\n${record('glab')}echo "legion3 clean test: glab must never be invoked" >&2\nexit 1\n`);
-  for (const n of ['git', 'glab']) chmodSync(join(dir, n), 0o755);
+  for (const cli of ['glab', 'gh']) {
+    writeFileSync(join(dir, cli),
+      `#!/bin/sh\n${record(cli)}echo "legion3 clean test: ${cli} must never be invoked" >&2\nexit 1\n`);
+  }
+  for (const n of ['git', 'glab', 'gh']) chmodSync(join(dir, n), 0o755);
   return { env: { ...h.env, PATH: dir + delimiter + h.env.PATH }, log };
 }
 
 /** Tokens that would mean this command reached past the local repository. `remote`/`fetch` are
- * banned as WHOLE tokens: `--remotes` (the containment read, purely local) must stay legal. */
-const REMOTE_TOKEN = /^(push|--delete|-d|mr|fetch|remote|ls-remote)$/;
+ * banned as WHOLE tokens: `--remotes` (the containment read, purely local) must stay legal.
+ * `pr` joined `mr` on 2026-08-15 with the second forge — the GitHub verb for the same reach. */
+const REMOTE_TOKEN = /^(push|--delete|-d|mr|pr|fetch|remote|ls-remote)$/;
 
 function assertLocalOnly(log, what) {
   const lines = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [];
   assert.ok(lines.length > 0,
     `${what}: the argv recorder captured NOTHING — the shim was not on PATH, so this case proves nothing`);
-  assert.ok(!lines.includes('glab'), `${what}: glab was invoked; \`legion finalize\` is the only path that may talk to GitLab`);
+  for (const cli of ['glab', 'gh']) {
+    assert.ok(!lines.includes(cli),
+      `${what}: ${cli} was invoked; \`legion finalize\` is the only path that may talk to a forge`);
+  }
   for (const tok of lines) {
     assert.ok(!REMOTE_TOKEN.test(tok),
       `${what}: argv token '${tok}' reaches the remote — cleanup must never become a second remote-write path\n${lines.join(' ')}`);

@@ -1,4 +1,4 @@
-// runner.mjs — THE process seam for NON-GIT external tools (`glab`, `claude`, …).
+// runner.mjs — THE process seam for NON-GIT external tools (`glab`, `gh`, `claude`, …).
 // Exactly one such seam exists on purpose: `legion finalize` and `legion doctor` both probe
 // the outside world, and two independent seams would drift in the two properties that matter
 // (no shell, purged redirection env) exactly where nobody is looking.
@@ -16,11 +16,11 @@
 // so no quoting/word-splitting question exists to get wrong.
 //
 // ENVIRONMENT: process.env MINUS every name in GIT_REDIRECT_VARS. This is not git paranoia
-// leaking into non-git code — `glab` resolves the GitLab project from the git remote of its
-// cwd, so an ambient GIT_DIR (git itself exports one when running hooks) aims it at a
-// DIFFERENT repository. That is the
+// leaking into non-git code — the forge CLIs (`glab`, `gh`) resolve their project from the git
+// remote of their cwd, so an ambient GIT_DIR (git itself exports one when running hooks) aims
+// them at a DIFFERENT repository. That is the
 // same hazard finalize's header documents, closed in one place. Everything else survives —
-// PATH and GITLAB_TOKEN in particular, without which every probe is a false negative.
+// PATH, GITLAB_TOKEN and GH_TOKEN in particular, without which every probe is a false negative.
 //
 // NON-THROWING BY CONSTRUCTION: the result is always an object, never an exception, because
 // the CALLER classifies the outcome and the classifications differ. doctor maps a missing
@@ -53,7 +53,7 @@ export function runCapture(file, args = [], { cwd, env, timeoutMs = DEFAULT_TIME
   if (file === 'git') {
     throw new Error(
       'kernel/runner.mjs must never spawn git — use kernel/git.mjs (pinned config + purged GIT_* env). '
-      + 'This runner is the seam for glab/claude only.',
+      + 'This runner is the seam for glab/gh/claude only.',
     );
   }
   const r = spawnSync(file, args, {

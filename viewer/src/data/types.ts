@@ -85,7 +85,13 @@ export interface MrRecord {
   targetBranch: string | null;
   headSha: string | null;
   at: string | null;
+  /** which forge opened it — decides `#42` (github) vs `!42` (gitlab). Absent on records
+   * written before 2026-08-15, which are GitLab merge requests by construction. */
+  forge?: 'gitlab' | 'github' | null;
 }
+
+/** The forge's own notation for a merge/pull request id. */
+export const mrRef = (mr: MrRecord): string => `${mr.forge === 'github' ? '#' : '!'}${mr.iid}`;
 
 export interface InitiativeBlock {
   id: string;

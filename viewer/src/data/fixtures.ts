@@ -195,9 +195,24 @@ const delivered = summary({
   viewerStatus: 'delivered', kernelStatus: 'delivered', stage: 'finalize',
   closedAt: T(20), updatedAt: T(20), ageHours: 20, ticket: 'acme/cv-mf#412',
   tasks: { total: 4, done: 4, started: 0, pending: 0, openQuestions: 0 },
+  // No `forge` key: a record written before 2026-08-15, which renders `!77` — the fallback the
+  // marker's absence is defined to mean.
   mr: {
     iid: 77, url: 'https://gitlab.example.com/acme/cv-mf/-/merge_requests/77',
     targetBranch: 'develop', headSha: '5d4c3b2a19f8e7d6c5b4a39281706f5e4d3c2b1a', at: T(21),
+  },
+});
+
+/** A GitHub-forge delivery, so the `#42` notation has a fixture to render. */
+const deliveredGithub = summary({
+  org: 'acme', project: 'cv-web', name: 'cv41-pr-notation',
+  viewerStatus: 'delivered', kernelStatus: 'delivered', stage: 'finalize',
+  closedAt: T(18), updatedAt: T(18), ageHours: 18, ticket: 'acme/cv-web#88',
+  tasks: { total: 2, done: 2, started: 0, pending: 0, openQuestions: 0 },
+  mr: {
+    iid: 42, url: 'https://github.com/acme/cv-web/pull/42',
+    targetBranch: 'main', headSha: '7f6e5d4c3b2a19f8e7d6c5b4a3928170f5e4d3c2', at: T(19),
+    forge: 'github',
   },
 });
 
@@ -377,7 +392,7 @@ const CORRUPT = unreadableRow(
 
 export const WORLDS: Record<string, FixtureWorld> = {
   active: world(
-    [active, blocked, quiet, delivered, initiativeA, initiativeB],
+    [active, blocked, quiet, delivered, deliveredGithub, initiativeA, initiativeB],
     [],
     {
       [active.key]: activeView,

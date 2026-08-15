@@ -20,7 +20,7 @@
 // was dropped by the operator, and its session facts moved into the feature detail as RECORDED
 // facts), the per-row Answer form, and the cost column.
 import type { ActivityResponse, Attention, FeatureId, FeatureRow, FeaturesResponse } from '../data/types';
-import { idOfKey, isActionable, isUnreadable } from '../data/types';
+import { idOfKey, isActionable, isUnreadable, mrRef } from '../data/types';
 import { AttentionRow, Empty, RelTime, Section, StatusPill } from '../components/ui';
 
 const closedAtOf = (r: FeatureRow) => (isUnreadable(r) ? null : r.closedAt);
@@ -107,7 +107,7 @@ export function Operations({ features, activity, onOpen }: {
                     <td><StatusPill status={r.viewerStatus} /></td>
                     <td><RelTime iso={closedAtOf(r)} /></td>
                     <td className="mono">{isUnreadable(r) ? '—' : `${r.tasks.done}/${r.tasks.total}`}</td>
-                    <td className="mono">{!isUnreadable(r) && r.mr ? `!${r.mr.iid}` : '—'}</td>
+                    <td className="mono">{!isUnreadable(r) && r.mr ? mrRef(r.mr) : '—'}</td>
                   </tr>
                 ))}
               </tbody>

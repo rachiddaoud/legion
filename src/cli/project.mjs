@@ -8,7 +8,7 @@
 // separate processes never lose a registration.
 // Re-init RECONCILES, never blind-overwrites: only derived fields (repoRoot, remoteUrl,
 // defaultBranch) plus explicitly flagged fields (--protected/--no-protected/--gates/
-// --bootstrap/--ticket-project/--ticket-closing-style/--notify) are diffed and updated; unflagged gates, bootstrap
+// --bootstrap/--forge/--ticket-project/--ticket-closing-style/--notify) are diffed and updated; unflagged gates, bootstrap
 // and createdAt are preserved untouched; an unchanged config writes NOTHING (byte-identical
 // no-op, index untouched). An EMPTY protected set is only ever explicit: --no-protected; a
 // --protected value that parses to nothing ('', ' ', ',,') is rejected loudly, never a silent [].
@@ -60,11 +60,20 @@ import { validateGatesConfig } from './gate.mjs';
 // The ticket config's field validators, IMPORTED for the reason the gates/bootstrap ones are: a
 // flag value and a hand-edited project.json must be judged by ONE definition of valid, and that
 // definition belongs beside the resolver that reads the field back (kernel/ticket.mjs).
-import { validateClosingStyle, validateTicketFields, validateTicketProject } from '../kernel/ticket.mjs';
+import { validateClosingStyle, validateConfigFields, validateTicketProject } from '../kernel/ticket.mjs';
+// The forge selector's detection + validator (kernel/forge.mjs). init RECORDS the field only
+// when --forge was passed — `null` is UNSET at this level, the same convention the two ticket
+// fields obey, because a concrete value here outranks org.json and would make an org-wide
+// `forge` unreachable. Detection still decides at every use (kernel/ticket.mjs resolveForge
+// re-runs it against the recorded remoteUrl), and the operator SEES the effective value in
+// init's output and in `legion doctor`'s forge row, each naming the level that decided it
+// (2026-08-15).
+import { DEFAULT_FORGE, detectForge, remoteHost, validateForge } from '../kernel/forge.mjs';
 
 const USAGE =
   'legion project init [--root <path>] [--org <org>] [--name <name>] ' +
   '[--protected <branch,branch>] [--no-protected] [--gates <path.json>] [--bootstrap <path.json>] ' +
+  '[--forge <gitlab|github>] ' +
   '[--ticket-project <path>] [--ticket-closing-style <closes|fixes|resolves|refs>] [--notify <topic>]';
 
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -177,6 +186,9 @@ export async function run(argv) {
   const ticketStyleFlag = flags['ticket-closing-style'] != null
     ? validateClosingStyle(flags['ticket-closing-style'], '--ticket-closing-style')
     : null;
+  // The forge selector, judged by THE validator resolveForge reads back through — the escape
+  // hatch for the hosts detection cannot classify (a self-hosted GHES reads as gitlab by URL).
+  const forgeFlag = flags.forge != null ? validateForge(flags.forge, '--forge') : null;
 
   // --- derive evidence (kernel-owned; callers never supply it) ---
   const root = resolve(flags.root ?? process.cwd());
@@ -207,6 +219,19 @@ export async function run(argv) {
   if (!existsSync(configPath)) {
     // --- fresh init ---
     const protectedBranches = flags['no-protected'] ? [] : (protectedList ?? [defaultBranch]);
+    // RECORDED ONLY WHEN THE OPERATOR CHOSE IT — `null` is UNSET at this level, exactly like the
+    // two ticket fields below, and for the same reason: the resolver composes per level, so a
+    // concrete value written here would sit ABOVE ~/.legion/orgs/<org>/org.json and make an
+    // org-wide `forge` unreachable for every project registered after it. Detection is not lost
+    // by leaving it null — resolveForge re-runs it against this same recorded `remoteUrl` at
+    // every use — and VISIBILITY is served by the line printed below plus `legion doctor`'s forge
+    // row, both of which name the effective value AND the level that decided it.
+    const effectiveForge = forgeFlag ?? detectForge(remoteUrl) ?? DEFAULT_FORGE;
+    const forgeOrigin = forgeFlag !== null
+      ? 'recorded from --forge'
+      : (detectForge(remoteUrl) !== null
+        ? `detected from ${remoteHost(remoteUrl)} at every use, recorded nowhere`
+        : 'the default — no origin remote to detect from; pass --forge to record one');
     const doc = {
       schemaVersion: 1,
       legionVersion,
@@ -215,6 +240,7 @@ export async function run(argv) {
       name,
       repoRoot,
       remoteUrl,
+      forge: forgeFlag,
       defaultBranch,
       protectedBranches,
       gates: gatesFlag ?? {},          // scaffold unless --gates declared one (validated above)
@@ -235,20 +261,22 @@ export async function run(argv) {
       if (!dirExisted) rmSync(dir, { recursive: true, force: true });
       return dirExisted ? `removed ${configPath}` : `removed ${dir}`;
     };
-    say.push(`initialized project ${org}/${name}\n  config: ${configPath}\n`);
+    say.push(`initialized project ${org}/${name}\n  forge: ${effectiveForge} (${forgeOrigin})\n  config: ${configPath}\n`);
   } else {
     // --- re-init: reconcile (diff + update), never blind overwrite ---
     const existing = readJson(configPath);
     validateBootstrap(existing.bootstrap, configPath);
     validateGatesConfig(existing.gates, configPath); // carried-forward config is judged too, not just flagged config
-    validateTicketFields(existing, configPath);      // …including the two ticket fields (never key-strict here: project.json carries a dozen unrelated keys)
+    validateConfigFields(existing, configPath);      // …including the ticket fields and forge (never key-strict here: project.json carries a dozen unrelated keys)
     // Derived fields always reconcile; operator-owned fields reconcile ONLY when the
-    // flag was passed (re-init without --protected must not reset a curated list).
+    // flag was passed (re-init without --protected must not reset a curated list; re-init
+    // without --forge must not re-derive a GHES override detection cannot see).
     const nextFields = { repoRoot, remoteUrl, defaultBranch };
     if (flags['no-protected']) nextFields.protectedBranches = [];
     else if (protectedList !== null) nextFields.protectedBranches = protectedList;
     if (gatesFlag !== null) nextFields.gates = gatesFlag;
     if (bootstrapFlag !== null) nextFields.bootstrap = bootstrapFlag;
+    if (forgeFlag !== null) nextFields.forge = forgeFlag;
     if (ticketProjectFlag !== null) nextFields.ticketProject = ticketProjectFlag;
     if (ticketStyleFlag !== null) nextFields.ticketClosingStyle = ticketStyleFlag;
     if (flags.notify != null) nextFields.notify = flags.notify;
@@ -273,6 +301,17 @@ export async function run(argv) {
       writeJson(configPath, updated);
       rollback = () => { writeAtomic(configPath, before); return `restored ${configPath} to its previous contents`; };
       say.push(`reconciled project ${org}/${name} (revision ${updated.revision})\n  config: ${configPath}\n`);
+    }
+    // The recorded forge is OPERATOR-OWNED and never silently rewritten (a re-derive here would
+    // clobber the GHES override detection cannot see), so a disagreement with what the fresh
+    // remote suggests is INFORMATION with a remedy, not a reconciliation.
+    const recordedForge = existing.forge ?? null;
+    const suggested = detectForge(remoteUrl);
+    if (forgeFlag === null && recordedForge !== null && suggested !== null && recordedForge !== suggested) {
+      say.push(
+        `  note: recorded forge '${recordedForge}' differs from what ${remoteHost(remoteUrl)} suggests `
+        + `('${suggested}') — right for a self-hosted forge; pass --forge ${suggested} if not\n`,
+      );
     }
   }
 

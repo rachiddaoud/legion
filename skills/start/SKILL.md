@@ -77,12 +77,12 @@ What you actually need:
   `git symbolic-ref --short refs/remotes/origin/HEAD | sed 's|^origin/||'`), never guess silently.
   **Strip the remote prefix**: the value is `main`, never `origin/main`. `feature start` accepts
   either — it only resolves the base to a commit — and then pins verbatim into the manifest what
-  you handed it; but that pinned string is also the **target branch** of the merge request
+  you handed it; but that pinned string is also the **target branch** of the merge/pull request
   `legion finalize` opens, and `origin/main` is not a branch that exists on the server. A remote-
   prefixed base is therefore not a typo you fix later: the feature specs, builds, gates and passes
   review, and only finalize refuses, with abandon-and-start-again the only way out.
-- **The ticket, if there is one** — the issue reference this work tracks (`123`, `#123` or
-  `group/project#123`). Ask once, accept "none" and move on **silently**: most features have no
+- **The ticket, if there is one** — the issue reference this work tracks (`123`, `#123`, or the
+  cross-project `group/project#123` / `owner/repo#123`). Ask once, accept "none" and move on **silently**: most features have no
   ticket, legion never derives one, and one that surfaces later is recorded in the lifecycle with
   `legion state ticket-record <ref>`.
 - **Any additional repositories** the work touches, only if the user volunteers them (step 3).
@@ -263,7 +263,8 @@ otherwise. What holds:
 
 - **The server is the guarantee** — protected branches and the agent identity's permissions.
 - **`legion finalize` remains the only remote-write path legion itself takes** — the one command
-  that verifies the evidence chain and opens the MR against the pinned base. It is the intended
+  that verifies the evidence chain and opens the merge request (GitLab, via `glab`) or pull
+  request (GitHub, via `gh`) against the pinned base. It is the intended
   path, not an enforced one: the local guards (the `pre-push` hook and the PreToolUse Bash scan)
   were removed 2026-08-07, and a hand-rolled push meets nothing local.
 - **You** keep the discipline the isolation used to keep for you: edits belong in the worktree,

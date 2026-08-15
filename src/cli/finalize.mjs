@@ -1,8 +1,14 @@
 // finalize.mjs — `legion finalize`. THE ONLY COMMAND IN
-// THE KERNEL THAT WRITES TO A REMOTE. Nothing else pushes, and nothing else opens an MR.
+// THE KERNEL THAT WRITES TO A REMOTE. Nothing else pushes, and nothing else opens an MR/PR.
+//
+// TWO FORGES SINCE 2026-08-15. GitLab (glab, `mr`) and GitHub (gh, `pr`) — selected per project
+// by kernel/ticket.mjs resolveForge and expressed as DATA in FORGE_OPS below: which CLI, which
+// argvs, which payload field names, which notation (`!123` vs `#123`). ONE flow drives both,
+// because what differs between them is spelling, not shape. Everything this header says about
+// "the MR" is true of the PR; where a claim is forge-specific it names the forge.
 //
 // WHAT IT GUARANTEES, AND WHAT IT DOES NOT. Safety is layered on purpose:
-// the HARD boundary is server-side (GitLab protected branches + the agent identity's
+// the HARD boundary is server-side (the forge's protected branches + the agent identity's
 // permissions, verified by `legion doctor`); finalize is the INTENDED PATH — and since
 // 2026-08-07 those are the ONLY two layers: the local guards (the pre-push hook and the
 // plugin's PreToolUse hook) were removed by owner decision, so a developer is free to push and
@@ -75,10 +81,15 @@
 // (kernel/ticket.mjs header), so the chain above neither reads it nor cares whether it exists.
 // What it buys is two renderings: the MR body's closing-reference line and one append-only comment
 // on the issue, both below. Three properties are load-bearing here and each is pinned by a test:
-//   - OPTIONAL, AND SKIPPED WHOLE. Without `feature.json.ticket` this file resolves no config,
-//     reads no org.json, composes no line and makes no `issue` call: a ticket-less finalize's glab
-//     call sequence, MR body and output are unchanged from a feature with no ticket. The whole track is additive
-//     and must not be able to move the behaviour of a feature that has no ticket.
+//   - OPTIONAL, AND SKIPPED WHOLE. Without `feature.json.ticket` this file resolves no TICKET
+//     config, composes no line and makes no `issue` call: a ticket-less finalize's forge-CLI
+//     call sequence, MR/PR body and output are unchanged from a feature with no ticket. The whole
+//     track is additive and must not be able to move the behaviour of a feature that has no ticket.
+//     NARROWED 2026-08-15, and the narrowing is real: this bullet used to say "resolves no config,
+//     reads no org.json". Forge resolution now reads org.json/project.json on EVERY run, ticketed
+//     or not — a forge selector is needed before the first remote call, and a corrupt org.json
+//     therefore refuses a ticket-less finalize too. Fail-closed and consistent with the rest of
+//     the chain (nothing is pushed), but it IS a behaviour change, and a test pins it.
 //   - RESOLVED AT READ TIME, PINNED NOWHERE. The rendering config (project + closing style) is
 //     resolved HERE, on this run, by kernel/ticket.mjs's resolver — never copied out of
 //     feature.json, because a ticket format is not evidence-bearing and pinning it would only cost
@@ -105,13 +116,14 @@
 // src/kernel/githooks.mjs header; `project init` / `feature start` now remove leftovers from
 // older installs), so the only pre-push hooks this push can meet are the operator's own, and
 // they are theirs to keep or clear.
-// glab inherits the same hazard by a different route: it resolves the GitLab project from the
-// git remote of its cwd, so an ambient GIT_DIR would open the MR against another repository.
-// Its environment is therefore stripped of GIT_REDIRECT_VARS too (and nothing else — GITLAB_
-// TOKEN/PATH must survive). BEST-EFFORT, stated: glab's own host/config resolution is outside
-// this kernel's control. That stripping now lives in kernel/runner.mjs — the ONE non-git
-// process seam, shared with `legion doctor` so the two glab callers cannot drift apart on
-// the two properties that matter: no shell, and no repo redirection.
+// THE FORGE CLIs inherit the same hazard by a different route: glab and gh alike resolve the
+// project from the git remote of their cwd, so an ambient GIT_DIR would open the MR/PR against
+// another repository. Their environment is therefore stripped of GIT_REDIRECT_VARS too (and
+// nothing else — GITLAB_TOKEN / GH_TOKEN and PATH must survive). BEST-EFFORT, stated: each
+// CLI's own host/config resolution is outside this kernel's control (for gh that includes
+// GH_HOST, which is what a `--repo` on a GHE tenant rides on). That stripping lives in
+// kernel/runner.mjs — the ONE non-git process seam, shared with `legion doctor` so the forge-CLI
+// callers cannot drift apart on the two properties that matter: no shell, and no repo redirection.
 //
 // (Both comments obey this identically: the ticket comment is composed and posted in its own try,
 // its failure prints its own composed text, and it can no more fail a finalize than the MR comment
@@ -119,10 +131,12 @@
 // still an issue, and the MR is where the merge happens.)
 //
 // THE INJECTABLE SEAM. finalizeCore(argv, io) takes the runner; run(argv) wires realIo(). The
-// two primitives are LOW-LEVEL on purpose — gitPush() and a glab argv passthrough, not
-// openMr()/viewMr(): the glab argv IS part of the contract under test ("the MR targets the
-// PINNED base"), so the core must compose it and a fake must be able to record it. node:test
-// never pushes and never runs glab for real.
+// primitives are LOW-LEVEL on purpose — gitPush() and a raw forge-CLI argv passthrough per CLI
+// (io.glab, io.gh), not openMr()/viewMr(): the glab/gh argv IS part of the contract under test
+// ("the MR/PR targets the PINNED base"), so the core must compose it and a fake must be able to
+// record it. That is why the second forge arrived as FORGE_OPS — a table of argv BUILDERS the
+// core still composes and passes through the same seam — rather than as an adapter that would
+// have hidden the argv behind a method. node:test never pushes and never runs either CLI for real.
 //
 // ORDERING IS THE CONTRACT: verify → push → LOOK UP → create only if absent → READ BACK →
 // RE-READ feature.json (it must not have moved under us) → record → COMMENT (the MR's, then the
@@ -141,12 +155,13 @@
 //     prose is a kernel that lies fluently. FOR A TICKETED FEATURE THE CLOSING-REFERENCE LINE JOINS
 //     THAT TAIL: `<keyword> <reference>` immediately above BODY_TRAILER, still one
 //     kernel-appended block and still no hashes. The KEYWORD is the resolved closing style and the
-//     REFERENCE is `group/project#123` whenever a ticket project is resolved — GitLab's auto-close
-//     fires cross-project only on the full path — or `#123` when none is, which is the case where
-//     the issues live in the code repo's own project and glab already knows which that is (the
-//     kernel never derives a project path the forge owns). CLAIM NOTHING MORE THAN THIS: the kernel
-//     renders a line; GITLAB does the linking and the auto-close on merge, under whatever closing
-//     pattern that server is configured with. WHY NO HASHES ANYWHERE IN THE MR: they enforce
+//     REFERENCE is `group/project#123` (GitLab) or `owner/repo#123` (GitHub) whenever a ticket
+//     project is resolved — both forges' auto-close fires cross-project only on the full path —
+//     or `#123` when none is, which is the case where
+//     the issues live in the code repo's own project and the forge CLI already knows which that is
+//     (the kernel never derives a project path the forge owns). CLAIM NOTHING MORE THAN THIS: the
+//     kernel renders a line; THE FORGE does the linking and the auto-close on merge, under whatever
+//     closing pattern that server is configured with. WHY NO HASHES ANYWHERE IN THE MR: they enforce
 //     nothing. Everything a hash could prove was already verified HERE (C3–C6) and is verified
 //     again by `close delivered`; in the MR they are an EDITABLE PROJECTION that no colleague can
 //     check without the machine-local dossier. Their durable home is `legion report`,
@@ -165,8 +180,8 @@
 //     that cannot act on it. THE TWO COMMENTS ARE INDEPENDENT IN BOTH DIRECTIONS: two separate
 //     trys, in the order MR-comment then ticket-comment, so a lost MR comment still attempts the
 //     issue comment and a failing issue comment costs nothing that came before it. Nothing outside
-//     this file gains a remote write for either: both go through the SAME injected io.glab seam
-//     that the push and the MR already use — finalize is the one path.
+//     this file gains a remote write for either: both go through the SAME injected forge-CLI seam
+//     that the push and the MR/PR already use — finalize is the one path.
 // A COMMENT-POST FAILURE IS REPORTED, NOT FATAL, and the semantics are stated exactly because
 // "loud" and "failed" are not the same word: the push happened, the MR exists, the MR is RECORDED
 // in feature.json, `close delivered` will find it, and finalize therefore EXITS 0. What is lost is
@@ -176,14 +191,14 @@
 // SAME head exits early by design and posts NOTHING, so a lost comment is not recovered by
 // re-running — only a real later finalize event carries its own.
 //
-// IDEMPOTENCE. An agent re-running finalize is ordinary, and a SECOND `mr create` is the
-// failure mode worth preventing — GitLab rejects a duplicate MR for the same source branch, so
-// a feature that created one and then failed before recording it would be stranded with no
-// kernel path to bind the MR that exists. What this file guarantees: finalize never opens a
-// SECOND MR for a branch. With an `mr` recorded at the CURRENT head it prints it and exits 0
-// having called nothing and written nothing; otherwise it pushes (the MR tracks the branch),
-// then RESOLVES the MR that already exists — BY IID when one is recorded, BY SOURCE BRANCH
-// otherwise — and creates only when that lookup finds none. A create that succeeds and a
+// IDEMPOTENCE. An agent re-running finalize is ordinary, and a SECOND create is the
+// failure mode worth preventing — both forges reject a duplicate OPEN MR/PR for the same source
+// branch, so a feature that created one and then failed before recording it would be stranded
+// with no kernel path to bind the one that exists. What this file guarantees: finalize never
+// opens a SECOND MR/PR for a branch. With an `mr` recorded at the CURRENT head it prints it and
+// exits 0 having called nothing and written nothing; otherwise it pushes (the MR/PR tracks the
+// branch), then RESOLVES the one that already exists — BY ID when one is recorded, BY SOURCE
+// BRANCH otherwise — and creates only when that lookup finds none. A create that succeeds and a
 // read-back that fails is therefore RECOVERABLE: the next run finds that MR and records it.
 //
 // FEATURE RESOLUTION is by WORKTREE via resolveDossier (shared with `legion state`/`plan
@@ -208,7 +223,8 @@ import { approvalValid, bumpWrite, receiptProvenance, reviewBindingHolds, unsati
 // `legion state ticket-record` write through, and the same resolver `legion doctor` reports — so
 // what the operator was shown at start, what doctor says today, and what lands in the MR body and
 // on the issue cannot disagree. Never a second copy of either here.
-import { closingKeyword, resolveTicketConfig, validateTicketRef } from '../kernel/ticket.mjs';
+import { forgeTable } from '../kernel/forge.mjs';
+import { closingKeyword, resolveForge, resolveTicketConfig, validateTicketRef } from '../kernel/ticket.mjs';
 import { resolveDossier } from './state.mjs';
 
 const USAGE = 'legion finalize [--description-file <path>] [--now <iso>] [--org <org>] [--feature <name>]';
@@ -218,14 +234,14 @@ const USAGE = 'legion finalize [--description-file <path>] [--now <iso>] [--org 
  * one trailing line" invariant is a single token a test can bind to. */
 const BODY_TRAILER = 'Opened by legion finalize · evidence trail in the feature dossier.';
 
-// origin is the only remote legion records (project init stores origin's URL), and the MR
+// origin is the only remote legion records (project init stores origin's URL), and the MR/PR
 // target is the PINNED base — neither is a flag, so neither can be steered by a caller.
 const REMOTE = 'origin';
-// A glab call that hangs is a workflow that hangs; 2 minutes is generous for create/view.
-const GLAB_TIMEOUT_MS = 120_000;
-const GLAB_MAX_BUFFER = 64 * 1024 * 1024;
+// A forge-CLI call that hangs is a workflow that hangs; 2 minutes is generous for create/view.
+const FORGE_CLI_TIMEOUT_MS = 120_000;
+const FORGE_CLI_MAX_BUFFER = 64 * 1024 * 1024;
 
-// --- the injectable seam (all remote effects live behind these two functions) ---------------
+// --- the injectable seam (all remote effects live behind these functions) -------------------
 
 /** THE PUSH SUBPROCESS'S ENVIRONMENT. A pure builder over a base env rather than an inline
  * object literal so the property that matters is assertable without pushing anything, and it is
@@ -236,6 +252,24 @@ const GLAB_MAX_BUFFER = 64 * 1024 * 1024;
  * guard keyed its allow rule on; the guard is gone and the marker died with it.) */
 export function pushEnv(base = process.env) {
   return { ...base, GIT_TERMINAL_PROMPT: '0' };
+}
+
+/** ONE forge-CLI runner (glab or gh — the same twin contract since 2026-08-15), argv-explicit,
+ * no shell ever. Both CLIs derive their project from cwd's git remote, so an ambient GIT_DIR
+ * would aim them at another repository: the redirection vars are stripped in kernel/runner.mjs
+ * and nothing else is (GITLAB_TOKEN / GH_TOKEN, PATH must survive). */
+function forgeCliRunner(cli) {
+  return (args, cwd) => {
+    // The spawn (no shell, redirection-vars purged) lives in kernel/runner.mjs; the
+    // CLASSIFICATION stays here, because finalize's contract is "any forge-CLI failure is a
+    // loud throw" while doctor's is "an API failure is a warn". The message shape is unchanged.
+    const r = runCapture(cli, args, { cwd, timeoutMs: FORGE_CLI_TIMEOUT_MS, maxBuffer: FORGE_CLI_MAX_BUFFER });
+    if (!r.ok) {
+      const detail = `${r.stdout}${r.stderr}`.trim() || r.spawnError || `exit ${r.code}`;
+      throw new Error(`${cli} ${args.join(' ')} (in ${cwd}) failed: ${detail}`);
+    }
+    return r.stdout;
+  };
 }
 
 /** The REAL runner: the only place in the kernel that talks to a remote. */
@@ -255,22 +289,65 @@ export function realIo() {
       return gitUserRepo(['push', '--set-upstream', remote, `refs/heads/${branch}:refs/heads/${branch}`], worktree,
         { env: pushEnv(process.env) });
     },
-    /** Run `glab` with an explicit argv (no shell, ever) in `cwd`. glab derives the GitLab
-     * project from cwd's git remote, so an ambient GIT_DIR would aim it at another repository:
-     * the redirection vars are stripped and nothing else is (GITLAB_TOKEN, PATH must survive). */
-    glab(args, cwd) {
-      // The spawn (no shell, redirection-vars purged) lives in kernel/runner.mjs; the
-      // CLASSIFICATION stays here, because finalize's contract is "any glab failure is a loud
-      // throw" while doctor's is "an API failure is a warn". The message shape is unchanged.
-      const r = runCapture('glab', args, { cwd, timeoutMs: GLAB_TIMEOUT_MS, maxBuffer: GLAB_MAX_BUFFER });
-      if (!r.ok) {
-        const detail = `${r.stdout}${r.stderr}`.trim() || r.spawnError || `exit ${r.code}`;
-        throw new Error(`glab ${args.join(' ')} (in ${cwd}) failed: ${detail}`);
-      }
-      return r.stdout;
-    },
+    glab: forgeCliRunner('glab'),
+    gh: forgeCliRunner('gh'),
   };
 }
+
+// --- the two forges, as DATA -----------------------------------------------------------------
+// Everything that DIFFERS between GitLab and GitHub, in one frozen table: which CLI, the argvs
+// (raw — a fake records exactly what would run, so the argv stays the contract under test), the
+// payload-field mapping, and the human notation. Deliberately a data descriptor and NOT an
+// adapter class: the flow below is ONE flow, and what varies is spelling, not shape. `normalize`
+// maps a server payload to the ONE record validateMr judges — {iid, url, targetBranch,
+// sourceBranch, sha, open}. GitLab's view-by-branch resolves only an OPEN MR (a branch without
+// one exits nonzero), so its `open` is constantly true; GitHub's `gh pr view <branch>` resolves
+// CLOSED/MERGED PRs too, which is why `open` exists at all — see probeOpenMr.
+const FORGE_OPS = forgeTable({
+  gitlab: {
+    // id / cli / forgeName come from kernel/forge.mjs's FORGE_IDENTITY — stated once, merged in
+    // by forgeTable, and a forge missing from this literal throws at import.
+    noun: 'MR',
+    longNoun: 'merge request',
+    ref: (n) => `!${n}`,
+    viewByBranch: (b) => ['mr', 'view', b, '--output', 'json'],
+    viewByIid: (n) => ['mr', 'view', String(n), '--output', 'json'],
+    create: (b, base, title, body) => ['mr', 'create', '--source-branch', b, '--target-branch', base, '--title', title, '--description', body, '--yes'],
+    comment: (n, text) => ['mr', 'note', String(n), '--message', text],
+    // `--repo` is glab's own project selector, OMITTED when no ticket project is resolved so
+    // that glab falls back to the worktree's remote — the same resolution every other call in
+    // this file relies on. Passing a derived path there instead would be the kernel guessing at
+    // something the forge already knows.
+    issueComment: (iid, text, project) => ['issue', 'note', iid, '--message', text, ...(project === null ? [] : ['--repo', project])],
+    normalize: (doc) => ({ iid: doc.iid, url: doc.web_url, targetBranch: doc.target_branch, sourceBranch: doc.source_branch, sha: doc.sha ?? null, open: true }),
+    // `sha` is genuinely optional across glab versions — the pre-existing, documented behaviour.
+    shaRequired: false,
+    // GitLab projects nest arbitrarily (`group/sub/project`), so any segment count is legal.
+    maxProjectSegments: Infinity,
+  },
+  github: {
+    noun: 'PR',
+    longNoun: 'pull request',
+    ref: (n) => `#${n}`,
+    viewByBranch: (b) => ['pr', 'view', b, '--json', 'number,url,baseRefName,headRefName,headRefOid,state'],
+    viewByIid: (n) => ['pr', 'view', String(n), '--json', 'number,url,baseRefName,headRefName,headRefOid,state'],
+    create: (b, base, title, body) => ['pr', 'create', '--head', b, '--base', base, '--title', title, '--body', body],
+    comment: (n, text) => ['pr', 'comment', String(n), '--body', text],
+    // BEST-EFFORT SHORTFALL, stated (the same epistemic honesty as glab's host resolution): a
+    // cross-repo `--repo owner/repo` resolves against github.com or GH_HOST, not the worktree's
+    // remote host — on a GHE tenant a cross-repo ticket comment rides on the operator's gh
+    // config being aimed at that host.
+    issueComment: (iid, text, project) => ['issue', 'comment', iid, '--body', text, ...(project === null ? [] : ['--repo', project])],
+    normalize: (doc) => ({ iid: doc.number, url: doc.url, targetBranch: doc.baseRefName, sourceBranch: doc.headRefName, sha: doc.headRefOid ?? null, open: doc.state === 'OPEN' }),
+    // `headRefOid` is one of the fields the read-back EXPLICITLY requests, so its absence is a
+    // malformed payload, not version variance — and without it the recorded `headSha` would be
+    // the local HEAD asserted as server-verified. Required, therefore, where GitLab's is not.
+    shaRequired: true,
+    // `gh --repo` parses `[HOST/]OWNER/REPO`: a three-segment value silently becomes a HOSTNAME
+    // plus owner/repo and aims the call at another server. Two segments, exactly.
+    maxProjectSegments: 2,
+  },
+}, 'finalize FORGE_OPS');
 
 // --- manifests -------------------------------------------------------------------------------
 
@@ -293,11 +370,11 @@ const dirtyList = (paths) =>
       'empty (uninitialised): run `git submodule update --init` in the worktree'
     : `${paths.slice(0, 5).join(', ')}${paths.length > 5 ? ` (+${paths.length - 5} more)` : ''}`;
 
-// --- MR read-back -----------------------------------------------------------------------------
+// --- MR/PR read-back --------------------------------------------------------------------------
 
-/** Parse a glab JSON payload, naming the command and the head of the output on failure — an
- * unparseable read-back must never be mistaken for an absent field. */
-function parseMrJson(raw, argv) {
+/** Parse a forge-CLI JSON payload, naming the command and the head of the output on failure —
+ * an unparseable read-back must never be mistaken for an absent field. */
+function parseForgeJson(raw, ops, argv) {
   try {
     const doc = JSON.parse(raw);
     if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
@@ -306,40 +383,55 @@ function parseMrJson(raw, argv) {
     return doc;
   } catch (e) {
     const head = String(raw ?? '').slice(0, 200);
-    throw new Error(`could not parse \`glab ${argv.join(' ')}\` output as MR JSON: ${e.message}; output began: ${JSON.stringify(head)}`);
+    throw new Error(`could not parse \`${ops.cli} ${argv.join(' ')}\` output as ${ops.noun} JSON: ${e.message}; output began: ${JSON.stringify(head)}`);
   }
 }
 
-/** Is an MR ALREADY OPEN for this source branch? `mr create` is NOT retryable — GitLab rejects
- * a second MR for the same source branch — so a run that created one and then failed before
- * recording it would strand the feature with no kernel path to bind the MR that exists. Look
- * first, create only when there is demonstrably none.
- * DECIDED: this reuses `glab mr view <source-branch>` — glab's OWN branch→MR resolution, the
- * SAME argv the read-back already uses — rather than adding an `mr list --source-branch`
- * surface: one glab surface, one parser.
- * A NONZERO glab exit reads as "none open" (that is glab's behaviour for a branch with no MR).
- * Reading a transient glab outage as "none" is safe BY CONSTRUCTION: the create that follows
- * then fails closed on GitLab's duplicate rejection. A ZERO exit whose payload will not parse
- * still throws — that is an anomaly, not an absence. */
-function probeOpenMr(io, f) {
-  const argv = ['mr', 'view', f.branch, '--output', 'json'];
+/** Is an MR/PR ALREADY OPEN for this source branch? Create is NOT retryable — both forges
+ * reject a second open MR/PR for the same source branch — so a run that created one and then
+ * failed before recording it would strand the feature with no kernel path to bind the one that
+ * exists. Look first, create only when there is demonstrably none.
+ * DECIDED: this reuses the forge's OWN branch→MR/PR resolution (`glab mr view <branch>` /
+ * `gh pr view <branch>`) — the SAME argv the read-back already uses — rather than adding a
+ * list surface: one view surface per forge, one parser.
+ * A NONZERO exit reads as "none open" (both CLIs exit nonzero for a branch with nothing to
+ * resolve). Reading a transient CLI outage as "none" is safe BY CONSTRUCTION: the create that
+ * follows then fails closed on the forge's duplicate rejection. A ZERO exit whose payload will
+ * not parse still throws — that is an anomaly, not an absence.
+ * THE GITHUB DIFFERENCE (2026-08-15): `gh pr view <branch>` resolves CLOSED/MERGED PRs too,
+ * where glab's exits nonzero — so a zero-exit payload that is not OPEN is an ABSENCE for this
+ * probe. GitHub permits a new PR for a branch whose earlier one closed, and suppressing create
+ * on a dead PR would strand the feature exactly the way the look-first design exists to
+ * prevent. */
+function probeOpenMr(io, ops, f) {
+  const argv = ops.viewByBranch(f.branch);
   let raw;
-  try { raw = io.glab(argv, f.worktree); } catch { return null; }
-  return parseMrJson(raw, argv);
+  try { raw = io[ops.cli](argv, f.worktree); } catch { return null; }
+  const mr = ops.normalize(parseForgeJson(raw, ops, argv));
+  return mr.open ? mr : null;
 }
 
-/** Fail-closed validation of the MR the SERVER reported. A fabricated or mismatched record is
- * worse than no record: it would let `close delivered` (and any reader) believe a verified MR
- * exists against the pinned base when it does not. */
-function validateMr(mr, { branch, baseBranch }, head) {
+/** Fail-closed validation of the NORMALIZED MR/PR the SERVER reported (one validator for both
+ * forges — FORGE_OPS.normalize maps the payload names). A fabricated or mismatched record is
+ * worse than no record: it would let `close delivered` (and any reader) believe a verified
+ * MR/PR exists against the pinned base when it does not. */
+function validateMr(mr, { branch, baseBranch }, head, ops) {
   const bad = [];
-  if (!Number.isInteger(mr.iid)) bad.push(`iid must be an integer, got ${JSON.stringify(mr.iid)}`);
-  if (typeof mr.web_url !== 'string' || mr.web_url.length === 0) bad.push(`web_url must be a non-empty string, got ${JSON.stringify(mr.web_url)}`);
-  if (mr.target_branch !== baseBranch) bad.push(`target_branch is ${JSON.stringify(mr.target_branch)}, expected the PINNED base ${JSON.stringify(baseBranch)}`);
-  if (mr.source_branch !== branch) bad.push(`source_branch is ${JSON.stringify(mr.source_branch)}, expected ${JSON.stringify(branch)}`);
-  // `sha` is optional across glab versions — checked only when present, never invented.
-  if (mr.sha != null && mr.sha !== head) bad.push(`sha is ${JSON.stringify(mr.sha)}, expected the pushed HEAD ${head}`);
-  if (bad.length > 0) throw new Error(`the MR read back from GitLab does not match this feature: ${bad.join('; ')}`);
+  if (!Number.isInteger(mr.iid)) bad.push(`the ${ops.noun} id must be an integer, got ${JSON.stringify(mr.iid)}`);
+  if (typeof mr.url !== 'string' || mr.url.length === 0) bad.push(`the url must be a non-empty string, got ${JSON.stringify(mr.url)}`);
+  if (mr.targetBranch !== baseBranch) bad.push(`the target branch is ${JSON.stringify(mr.targetBranch)}, expected the PINNED base ${JSON.stringify(baseBranch)}`);
+  if (mr.sourceBranch !== branch) bad.push(`the source branch is ${JSON.stringify(mr.sourceBranch)}, expected ${JSON.stringify(branch)}`);
+  // WHERE THE FORGE IS ASKED FOR THE HEAD SHA, IT MUST ANSWER (ops.shaRequired — GitHub's
+  // read-back names headRefOid in its own --json field list, so a missing one is a malformed
+  // payload). Absent that requirement the record's `headSha` would be the LOCAL head asserted as
+  // server-verified — the one claim in this record nothing else re-checks. GitLab keeps the
+  // documented optionality its CLI versions actually vary on.
+  if (mr.sha == null) {
+    if (ops.shaRequired) bad.push(`${ops.forgeName} returned no head sha, so the ${ops.noun} cannot be shown to contain the pushed HEAD ${head}`);
+  } else if (mr.sha !== head) {
+    bad.push(`the head sha is ${JSON.stringify(mr.sha)}, expected the pushed HEAD ${head}`);
+  }
+  if (bad.length > 0) throw new Error(`the ${ops.noun} read back from ${ops.forgeName} does not match this feature: ${bad.join('; ')}`);
   return mr;
 }
 
@@ -372,24 +464,37 @@ function mrBody(f, description, ticket = null) {
  * THE EFFECTIVE PROJECT: the ref's OWN project wins over the configured one. A `group/project#123`
  * names the issue explicitly and completely, so honouring config over it would post the comment
  * somewhere the operator did not point at. Absent one, the resolved `ticketProject` decides, and
- * `null` there means "the issues live in the code repo's own GitLab project" — rendered as a bare
- * `#123` and posted with no repo flag, letting glab resolve the project from the worktree's remote
- * exactly as it does for the MR. The kernel never derives that path itself — glab is
- * the forge — which is also why "differs from the code repo's own project" is expressed as "a
- * project is configured at all": a configured value equal to the code repo's own is harmless — it
- * renders the long form of the same reference and GitLab resolves it identically.
+ * `null` there means "the issues live in the code repo's own forge project" — rendered as a bare
+ * `#123` and posted with no repo flag, letting the forge CLI resolve the project from the
+ * worktree's remote exactly as it does for the MR/PR. The kernel never derives that path itself —
+ * the CLI is the forge — which is also why "differs from the code repo's own project" is expressed
+ * as "a project is configured at all": a configured value equal to the code repo's own is harmless
+ * — it renders the long form of the same reference and the forge resolves it identically.
  */
-function resolveFeatureTicket(f, featurePath) {
+function resolveFeatureTicket(f, featurePath, ops) {
   if (f.ticket == null) return null;
   const parsed = validateTicketRef(f.ticket, `the \`ticket\` field of ${featurePath}`);
   const config = resolveTicketConfig(f.org, f.project);
   const project = parsed.project ?? config.ticketProject.value;
+  // WHAT THE FORGE CAN ADDRESS (2026-08-15). The ref validator is a GARBAGE FILTER shared by both
+  // forges and deliberately loose about segment counts, because GitLab projects nest arbitrarily.
+  // `gh --repo` does not: it parses `[HOST/]OWNER/REPO`, so a three-segment value is read as a
+  // HOSTNAME plus owner/repo and posts the issue comment at ANOTHER SERVER. That is precisely the
+  // "never derive a path the forge owns" hazard in reverse, so it is refused HERE — before the
+  // push, where a refusal still costs nothing — rather than discovered after the PR is recorded.
+  if (project !== null && project.split('/').length > ops.maxProjectSegments) {
+    throw new Error(
+      `the ticket project '${project}' has ${project.split('/').length} path segments, but ${ops.forgeName} addresses ` +
+      `issues as owner/repo — \`${ops.cli} --repo ${project}\` would read '${project.split('/')[0]}' as a HOSTNAME and ` +
+      `post at another server. Fix the reference or the configured ticket project.`,
+    );
+  }
   const reference = project === null ? `#${parsed.iid}` : `${project}#${parsed.iid}`;
   return {
-    // The ISSUE NUMBER, not the operator's bytes: `glab issue note` takes the iid. The verbatim
-    // ref stays in the manifest (kernel/ticket.mjs never normalises what was typed); rendering is
-    // where it must become a reference GitLab can resolve, since a bare `123` in an MR body links
-    // nothing at all.
+    // The ISSUE NUMBER, not the operator's bytes: `glab issue note` / `gh issue comment` take
+    // the iid. The verbatim ref stays in the manifest (kernel/ticket.mjs never normalises what
+    // was typed); rendering is where it must become a reference the forge can resolve, since a
+    // bare `123` in an MR/PR body links nothing at all.
     iid: parsed.iid,
     project,
     reference,
@@ -403,12 +508,12 @@ function resolveFeatureTicket(f, featurePath) {
  * are for the human who is about to merge, they live on the MR, and a second copy on the issue
  * would be evidence shown to readers who cannot act on it and who would then have two places to
  * check. What the issue's readers want from legion is a link and a date. */
-function ticketComment(f, mr, head, at) {
+function ticketComment(f, mr, head, at, ops) {
   return [
-    `**legion finalize** — merge request ${mr.web_url} updated at ${at}.`,
+    `**legion finalize** — ${ops.longNoun} ${mr.url} updated at ${at}.`,
     '',
     `Feature \`${f.featureId}\`: \`${f.branch}\` → \`${f.baseBranch}\`, head \`${head}\`.`,
-    'The gate and review trail for this event is on the merge request.',
+    `The gate and review trail for this event is on the ${ops.longNoun}.`,
   ].join('\n');
 }
 
@@ -450,9 +555,9 @@ function policyWords(f, tier) {
  * so no rendering could name them. What is rendered instead is every fact that survives: which
  * TIER moved, WHEN, and — in words — what the policy this MR is certified by runs TODAY. The gap
  * is named in the text rather than papered over. */
-function finalizeComment(f, tasks, head, at) {
+function finalizeComment(f, tasks, head, at, ops) {
   const b = tasks.receipts.boundary;
-  const L = [`**legion finalize** — merge request updated at ${at}.`, ''];
+  const L = [`**legion finalize** — ${ops.longNoun} updated at ${at}.`, ''];
 
   L.push(`**Gates: GREEN.** The boundary gate certifies commit \`${head}\`.`);
   if (b.declaredCommands === 0) {
@@ -493,7 +598,7 @@ function finalizeComment(f, tasks, head, at) {
     }
     L.push(
       '',
-      `The policy this merge request is certified by runs — boundary: ${policyWords(f, 'boundary')}; task: ${policyWords(f, 'task')}.`,
+      `The policy this ${ops.longNoun} is certified by runs — boundary: ${policyWords(f, 'boundary')}; task: ${policyWords(f, 'task')}.`,
       'The superseded policies are retained in the feature dossier as fingerprints only, so their',
       'command lists cannot be shown here. `legion gate run --repin` is audited, not prevented:',
       'confirm the policy above is the one you expect before merging.',
@@ -647,15 +752,49 @@ export async function finalizeCore(argv, io) {
     return refuse(`lifecycle stage '${stale.stage}' no longer re-derives satisfied: ${stale.why}`);
   }
 
+  // --- THE FORGE, resolved here for the reasons the ticket is (header) -------------------------
+  // Not a condition either: it selects WHICH CLI the remote sequence drives, and like the ticket
+  // config it is read fresh, pinned nowhere, and can REFUSE (a bad `forge` value, an unreadable
+  // org.json) — so it runs before the idempotence exit and before the first io call, where a
+  // refusal still costs nothing.
+  let ops;
+  try {
+    // THE ORIGIN URL IS PASSED, not left to project.json alone: resolveForge's last resort before
+    // the default is URL detection, and a project.json that is missing (or one written before the
+    // field existed and since moved) would otherwise fall through to DEFAULT_FORGE and drive glab
+    // at a GitHub remote. The URL is read through the hardened seam, like every other read here.
+    const forge = resolveForge(f.org, f.project, { remoteUrl: gitTry(['remote', 'get-url', REMOTE], f.worktree) });
+    ops = FORGE_OPS[forge.value];
+    if (ops === undefined) throw new Error(`no operations are defined for forge '${forge.value}'`);
+  } catch (e) {
+    return refuse(`the project's forge could not be resolved: ${e.message}`);
+  }
+
+  // A RECORDED MR/PR BELONGS TO THE FORGE THAT OPENED IT. If the project's forge has been changed
+  // since (a `--forge` re-init, an org.json edit), the recorded id names an object on the OTHER
+  // server: printing it with this forge's notation would be a lie, and sending it to this forge's
+  // view-by-id would ask GitHub about a GitLab iid. Absent marker ⇒ gitlab, which is what every
+  // record written before 2026-08-15 is by construction.
+  const recordedForge = f.mr ? (f.mr.forge ?? 'gitlab') : null;
+  if (recordedForge !== null && recordedForge !== ops.id) {
+    return refuse(
+      `feature ${f.featureId} has a ${recordedForge} ${recordedForge === 'github' ? 'PR' : 'MR'} recorded (${f.mr.url ?? 'no url'}), ` +
+      `but this project now resolves to '${ops.id}' — finalize will not re-interpret an id from one forge against another. ` +
+      `Restore the project's forge to '${recordedForge}', or clear the \`mr\` field of feature.json to open a fresh ${ops.noun} on '${ops.id}'.`,
+    );
+  }
+
   // --- the ticket: NOT a condition, but resolved HERE (header) --------------------------------
   // It gates nothing — a ticket-less feature is finalizable and always was. What this placement
-  // buys is that its two ways of failing (a garbage `ticket` field, a present-but-unreadable
-  // org.json) land as ORDINARY REFUSALS with nothing pushed, instead of surfacing after the push
-  // where no refusal can undo anything. It sits before the idempotence exit as well, so a broken
-  // ticket config reads the same on every run rather than only when HEAD has moved.
+  // buys is that its ways of failing (a garbage `ticket` field, a present-but-unreadable
+  // org.json, a project path this forge cannot address) land as ORDINARY REFUSALS with nothing
+  // pushed, instead of surfacing after the push where no refusal can undo anything. It sits
+  // before the idempotence exit as well, so a broken ticket config reads the same on every run
+  // rather than only when HEAD has moved. AFTER the forge (2026-08-15) because the last of those
+  // checks is forge-specific.
   let ticket;
   try {
-    ticket = resolveFeatureTicket(f, featurePath);
+    ticket = resolveFeatureTicket(f, featurePath, ops);
   } catch (e) {
     return refuse(`the feature's ticket could not be resolved: ${e.message}`);
   }
@@ -664,8 +803,8 @@ export async function finalizeCore(argv, io) {
   const priorMr = f.mr ?? null;
   if (priorMr && priorMr.headSha === head) {
     process.stdout.write(
-      `finalize: MR !${priorMr.iid} already recorded for HEAD ${head} → ${priorMr.url}\n` +
-      `nothing to do (idempotent re-run: no push, no MR, no write)\n`,
+      `finalize: ${ops.noun} ${ops.ref(priorMr.iid)} already recorded for HEAD ${head} → ${priorMr.url}\n` +
+      `nothing to do (idempotent re-run: no push, no ${ops.noun}, no write)\n`,
     );
     return 0;
   }
@@ -688,31 +827,54 @@ export async function finalizeCore(argv, io) {
 
     let mr;
     if (priorMr) {
-      // The MR already exists and tracks the branch — the push above updated it. Never a
-      // second `mr create`; read back BY IID so we re-record the SAME MR. A RECORDED MR must
+      // The MR/PR already exists and tracks the branch — the push above updated it. Never a
+      // second create; read back BY ID so we re-record the SAME one. A RECORDED MR/PR must
       // read back: a failure here is LOUD, never "assume it is gone".
-      const argv = ['mr', 'view', String(priorMr.iid), '--output', 'json'];
-      mr = parseMrJson(io.glab(argv, f.worktree), argv);
-      process.stdout.write(`finalize: MR !${priorMr.iid} already open — skipping create, re-reading it\n`);
+      const argv = ops.viewByIid(priorMr.iid);
+      mr = ops.normalize(parseForgeJson(io[ops.cli](argv, f.worktree), ops, argv));
+      // AND IT MUST STILL BE OPEN. Until 2026-08-15 this path took whatever the id resolved to,
+      // which on GitHub (whose payload carries `state`) meant a CLOSED or MERGED pull request
+      // could be re-recorded and ANNOUNCED as "already open" — a sentence the payload in hand
+      // contradicts — and then accepted by `close delivered` as the verified delivery. The push
+      // has already happened when we learn this, so it is a loud throw with the remedy named,
+      // never a silent re-record. (GitLab reports no state, so `open` is true there and this
+      // clause is inert — the pre-existing behaviour, unchanged.)
+      if (!mr.open) {
+        throw new Error(
+          `the recorded ${ops.noun} ${ops.ref(priorMr.iid)} is no longer OPEN on ${ops.forgeName} (${mr.url}) — ` +
+          `the branch was pushed, but finalize will not re-record a closed ${ops.noun} as this feature's delivery. ` +
+          `Re-open it, or clear the \`mr\` field of feature.json so the next run opens a fresh one.`,
+        );
+      }
+      process.stdout.write(`finalize: ${ops.noun} ${ops.ref(priorMr.iid)} already open — skipping create, re-reading it\n`);
     } else {
-      mr = probeOpenMr(io, f);
-      if (mr) process.stdout.write(`finalize: an MR is already open for ${f.branch} — skipping create, recording it\n`);
+      mr = probeOpenMr(io, ops, f);
+      if (mr) process.stdout.write(`finalize: a ${ops.noun} is already open for ${f.branch} — skipping create, recording it\n`);
     }
     if (!mr) {
-      io.glab(
-        ['mr', 'create', '--source-branch', f.branch, '--target-branch', f.baseBranch,
-          '--title', f.name, '--description', mrBody(f, description, ticket), '--yes'],
+      io[ops.cli](
+        ops.create(f.branch, f.baseBranch, f.name, mrBody(f, description, ticket)),
         f.worktree,
       );
       created = true;
-      process.stdout.write(`finalize: opened an MR ${f.branch} → ${f.baseBranch} (the PINNED base)\n`);
-      const argv = ['mr', 'view', f.branch, '--output', 'json'];
-      mr = parseMrJson(io.glab(argv, f.worktree), argv);
+      process.stdout.write(`finalize: opened a ${ops.noun} ${f.branch} → ${f.baseBranch} (the PINNED base)\n`);
+      const argv = ops.viewByBranch(f.branch);
+      mr = ops.normalize(parseForgeJson(io[ops.cli](argv, f.worktree), ops, argv));
+      // A ${ops.noun} created one call ago that reads back NOT OPEN is an anomaly, not a state to
+      // record. gh resolves a branch to its open PR first, so this should be unreachable — which
+      // is exactly why it throws rather than being handled: an unreachable state that happens is
+      // one nothing here understands.
+      if (!mr.open) {
+        throw new Error(
+          `the ${ops.noun} just created for ${f.branch} reads back as NOT OPEN on ${ops.forgeName} (${mr.url}) — ` +
+          `refusing to record it; check ${ops.forgeName} by hand`,
+        );
+      }
     }
-    validateMr(mr, f, head); // fail-closed field validation of what the SERVER said
+    validateMr(mr, f, head, ops); // fail-closed field validation of what the SERVER said
 
-    // The window between reading feature.json and this write contains a push and two glab round
-    // trips — long enough for the SessionStart `session-record` hook (covers
+    // The window between reading feature.json and this write contains a push and two forge-CLI
+    // round trips — long enough for the SessionStart `session-record` hook (covers
     // startup|resume|clear|compact) or a second session in this worktree to have written the
     // manifest. Writing {...f} would silently REVERT that write and reuse the revision it
     // consumed, breaking the monotonic-revision invariant kernel/state.mjs's header states.
@@ -723,15 +885,20 @@ export async function finalizeCore(argv, io) {
     if (fresh.revision !== f.revision) {
       throw new Error(
         `feature.json changed while finalize was talking to the remote (revision ${f.revision} → ${fresh.revision}) — ` +
-        `refusing to overwrite it. THE MR IS OPEN: !${mr.iid} ${mr.web_url}. Re-run \`legion finalize\`: it resolves that ` +
-        `MR by source branch and records it without opening a second one.`);
+        `refusing to overwrite it. THE ${ops.noun} IS OPEN: ${ops.ref(mr.iid)} ${mr.url}. Re-run \`legion finalize\`: it resolves that ` +
+        `${ops.noun} by source branch and records it without opening a second one.`);
     }
     bumpWrite(featurePath, {
       ...fresh,
-      mr: { iid: mr.iid, url: mr.web_url, targetBranch: f.baseBranch, headSha: head, at: now },
+      // `forge` (added 2026-08-15) is a RENDERING marker, not evidence: it tells the viewer, the
+      // session digest and this file which notation the id takes (`!123` vs `#123`). Every
+      // reader defaults to gitlab when it is absent, which is exactly right for every record
+      // written before the second forge existed. The rest of the shape is UNCHANGED, because
+      // kernel/state.mjs close() reads `mr.headSha` out of it.
+      mr: { iid: mr.iid, url: mr.url, targetBranch: f.baseBranch, headSha: head, at: now, forge: ops.id },
     }, now);
     recorded = true;
-    process.stdout.write(`finalize: recorded MR !${mr.iid} → ${mr.web_url} (target ${f.baseBranch}, head ${head})\n`);
+    process.stdout.write(`finalize: recorded ${ops.noun} ${ops.ref(mr.iid)} → ${mr.url} (target ${f.baseBranch}, head ${head})\n`);
 
     // --- the append-only finalize-event comment (header: COMMENTS = PROCESS METADATA) -----------
     // LAST, and in its OWN try: everything above is the finalize the operator asked for, and it has
@@ -740,13 +907,13 @@ export async function finalizeCore(argv, io) {
     // leniency: the push happened, the MR exists, feature.json records it.
     let comment = null;
     try {
-      comment = finalizeComment(f, tasks, head, now);
-      io.glab(['mr', 'note', String(mr.iid), '--message', comment], f.worktree);
-      process.stdout.write(`finalize: posted the gates-green comment on MR !${mr.iid}\n`);
+      comment = finalizeComment(f, tasks, head, now, ops);
+      io[ops.cli](ops.comment(mr.iid, comment), f.worktree);
+      process.stdout.write(`finalize: posted the gates-green comment on ${ops.noun} ${ops.ref(mr.iid)}\n`);
     } catch (err) {
       process.stderr.write(
-        `finalize: THE MR COMMENT COULD NOT BE POSTED: ${err?.message ?? err}\n` +
-        `  THE MR EXISTS AND IS RECORDED: !${mr.iid} ${mr.web_url} — the push, the merge request and ` +
+        `finalize: THE ${ops.noun} COMMENT COULD NOT BE POSTED: ${err?.message ?? err}\n` +
+        `  THE ${ops.noun} EXISTS AND IS RECORDED: ${ops.ref(mr.iid)} ${mr.url} — the push, the ${ops.longNoun} and ` +
         `feature.json are all done, so finalize SUCCEEDED and nothing is rolled back.\n` +
         `  What is missing is this event's process-metadata comment. An idempotent re-run at the same ` +
         `HEAD does nothing at all, so it will NOT post it: paste the text below by hand, or let the ` +
@@ -769,20 +936,14 @@ export async function finalizeCore(argv, io) {
     if (ticket !== null) {
       let note = null;
       try {
-        note = ticketComment(f, mr, head, now);
-        io.glab(
-          // `--repo` is glab's own project selector, and it is OMITTED when no ticket project is
-          // resolved so that glab falls back to the worktree's remote — the same resolution every
-          // other glab call in this file relies on. Passing a derived path there instead would be
-          // the kernel guessing at something the forge already knows.
-          ['issue', 'note', ticket.iid, '--message', note, ...(ticket.project === null ? [] : ['--repo', ticket.project])],
-          f.worktree,
-        );
+        note = ticketComment(f, mr, head, now, ops);
+        // The `--repo` selector (and its deliberate omission) lives in FORGE_OPS.issueComment.
+        io[ops.cli](ops.issueComment(ticket.iid, note, ticket.project), f.worktree);
         process.stdout.write(`finalize: posted the finalize-event comment on issue ${ticket.reference}\n`);
       } catch (err) {
         process.stderr.write(
           `finalize: THE TICKET COMMENT COULD NOT BE POSTED on issue ${ticket.reference}: ${err?.message ?? err}\n` +
-          `  THE MR EXISTS AND IS RECORDED: !${mr.iid} ${mr.web_url} — the push, the merge request and ` +
+          `  THE ${ops.noun} EXISTS AND IS RECORDED: ${ops.ref(mr.iid)} ${mr.url} — the push, the ${ops.longNoun} and ` +
           `feature.json are all done, so finalize SUCCEEDED and nothing is rolled back.\n` +
           `  What is missing is this event's note on the issue. An idempotent re-run at the same HEAD ` +
           `does nothing at all, so it will NOT post it: paste the text below by hand, or let the next ` +
@@ -800,11 +961,13 @@ export async function finalizeCore(argv, io) {
     process.stderr.write(
       `finalize FAILED AFTER THE REMOTE WRITE: ${err?.message ?? err}\n` +
       `  branch pushed to ${REMOTE}: ${pushed ? `YES — ${f.branch} @ ${head}` : 'no'}\n` +
-      `  merge request opened:      ${created ? `YES — ${f.branch} → ${f.baseBranch}` : (priorMr ? `pre-existing !${priorMr.iid}` : 'no')}\n` +
+      // Padded to the same value column the neighbouring lines use (19 − the noun's length),
+      // so the three-line report stays a table whichever forge is in play.
+      `  ${ops.longNoun} opened:${' '.repeat(Math.max(1, 19 - ops.longNoun.length))}${created ? `YES — ${f.branch} → ${f.baseBranch}` : (priorMr ? `pre-existing ${ops.ref(priorMr.iid)}` : 'no')}\n` +
       `  recorded in feature.json:  ${recorded ? 'yes' : 'NO'}\n` +
-      `CHECK GITLAB BY HAND: an MR may exist that legion does not know about. Re-run ` +
-      `\`legion finalize\` once glab works — it never opens a SECOND MR for this branch: it resolves ` +
-      `the one that already exists (by iid when recorded, by source branch otherwise) and records it.\n`,
+      `CHECK ${ops.forgeName.toUpperCase()} BY HAND: an open ${ops.noun} may exist that legion does not know about. Re-run ` +
+      `\`legion finalize\` once ${ops.cli} works — it never opens a SECOND ${ops.noun} for this branch: it resolves ` +
+      `the one that already exists (by id when recorded, by source branch otherwise) and records it.\n`,
     );
     return 1;
   }

@@ -75,7 +75,11 @@ export function featureActivity({ feature, tasks = null, commits = [] } = {}) {
     push(dated(s?.at), 'session', `session recorded: ${s?.sessionId}`);
   }
   if (feature?.mr) {
-    push(dated(feature.mr.at), 'mr', `MR !${feature.mr.iid} recorded at ${feature.mr.headSha}`);
+    // GitHub PRs are `#42`, GitLab MRs `!42`; a record with no `forge` predates the marker
+    // (2026-08-15) and is a GitLab MR by construction.
+    const gh = feature.mr.forge === 'github';
+    push(dated(feature.mr.at), 'mr',
+      `${gh ? 'PR' : 'MR'} ${gh ? '#' : '!'}${feature.mr.iid} recorded at ${feature.mr.headSha}`);
   }
 
   // --- tasks.json: tasks, questions, reviews, approvals, receipts --------------------------

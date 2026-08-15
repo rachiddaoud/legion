@@ -1,12 +1,17 @@
-// ticket.mjs — THE ticket-reference validator and THE read-time ticket-config resolver.
-// glab is the forge, so there is no
-// adapter, no second provider and no field here that anticipates one. Two things live in this
-// file and nothing else: what a ticket REF may look like, and where the rendering CONFIG comes
-// from. Both are imported by every consumer — `feature start --ticket`, `legion state
-// ticket-record`, `legion project init`, `legion doctor`, `legion finalize` — because a second
-// copy of either would drift, and the two halves that would then disagree are the flag and the
-// op (one accepting what the other refuses) and the MR body and the issue comment (one rendering
-// what the other does not).
+// ticket.mjs — THE ticket-reference validator and THE read-time config resolver family.
+// SUPERSEDED DECISION, reversed 2026-08-15: this header used to state "glab is the forge, so
+// there is no adapter, no second provider and no field here that anticipates one." Two forges
+// exist now — gitlab (glab) and github (gh) — and the SELECTOR is one more piece of
+// non-evidence-bearing operator config resolved exactly like the ticket fields: read fresh at
+// the moment of use, pinned nowhere (kernel/forge.mjs holds the pure detection/validation;
+// resolveForge below is the one reader of the config levels). Three things live in this
+// file and nothing else: what a ticket REF may look like, where the rendering CONFIG comes
+// from, and which FORGE a project talks to. All are imported by every consumer — `feature
+// start --ticket`, `legion state ticket-record`, `legion project init`, `legion doctor`,
+// `legion finalize` — because a second copy of any would drift, and the halves that would then
+// disagree are the flag and the op (one accepting what the other refuses), the MR/PR body and
+// the issue comment (one rendering what the other does not), and the CLI doctor verifies
+// versus the CLI finalize drives.
 //
 // THE TICKET IS OPERATOR-SUPPLIED DATA, NEVER EVIDENCE, AND THAT IS THE DESIGN. Everywhere else
 // in this kernel a caller-supplied identifier is refused on sight (a model
@@ -47,8 +52,9 @@
 // silently change what legion writes into an MR body and an issue tracker, and the operator would
 // read their own override as applied while the default was in force. Unknown keys refuse by name
 // for the same reason — a typo'd `ticketCloseStyle` that is silently ignored is exactly that
-// failure with a friendlier face. Growing this file means growing TICKET_CONFIG_KEYS deliberately.
+// failure with a friendlier face. Growing this file means growing ORG_CONFIG_KEYS deliberately.
 import { existsSync } from 'node:fs';
+import { DEFAULT_FORGE, detectForge, remoteHost, validateForge } from './forge.mjs';
 import { readJson } from './fsatomic.mjs';
 import { orgConfigPath, projectConfigPath } from './paths.mjs';
 
@@ -115,8 +121,13 @@ export function closingKeyword(style) {
   return k;
 }
 
-/** The two config keys, exhaustively (header: growing this is deliberate, never incidental). */
+/** The two ticket config keys, exhaustively (header: growing this is deliberate, never
+ * incidental). */
 export const TICKET_CONFIG_KEYS = ['ticketProject', 'ticketClosingStyle'];
+/** EVERYTHING org.json may carry: the ticket fields plus the forge selector. Grown 2026-08-15
+ * when the second forge arrived — org.json stays key-strict, so the growth is here, named,
+ * never incidental. */
+export const ORG_CONFIG_KEYS = [...TICKET_CONFIG_KEYS, 'forge'];
 /** LEVEL 1 — the plugin default. `ticketProject: null` means "the code repo's own GitLab project",
  * i.e. whatever glab derives from the worktree's remote; the kernel does not spell it out, because
  * spelling it out would mean deriving a project path the forge already knows. */
@@ -149,27 +160,29 @@ export function validateClosingStyle(value, where) {
   return value;
 }
 
-/** Validate the ticket-bearing FIELDS of an already-parsed config document, in place, naming the
- * file. EXPORTED for `legion project init`, which judges its own flags and the config it carries
+/** Validate the CONFIG FIELDS of an already-parsed config document, in place, naming the file.
+ * (Named validateTicketFields until 2026-08-15; it validates `forge` too now, and calling it
+ * "ticket" made a reader trust a name that had stopped being true.) EXPORTED for `legion project init`, which judges its own flags and the config it carries
  * forward with exactly these validators — one definition of valid, never a second copy in the CLI.
- * `strictKeys` is org.json's rule and org.json's alone: that file exists ONLY for these two
- * keys, so an unknown one is a typo the operator must see (header). project.json carries a dozen
- * unrelated keys and is never key-checked here. */
-export function validateTicketFields(doc, path, { strictKeys = false } = {}) {
+ * `strictKeys` is org.json's rule and org.json's alone: that file exists ONLY for the
+ * ORG_CONFIG_KEYS, so an unknown one is a typo the operator must see (header). project.json
+ * carries a dozen unrelated keys and is never key-checked here. */
+export function validateConfigFields(doc, path, { strictKeys = false } = {}) {
   if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
     throw new Error(`${path}: expected a JSON object of ticket config, got ${Array.isArray(doc) ? 'an array' : JSON.stringify(doc)}`);
   }
   if (strictKeys) {
-    const unknown = Object.keys(doc).filter((k) => !TICKET_CONFIG_KEYS.includes(k));
+    const unknown = Object.keys(doc).filter((k) => !ORG_CONFIG_KEYS.includes(k));
     if (unknown.length > 0) {
       throw new Error(
         `${path}: unknown key(s) ${unknown.join(', ')} — this file configures exactly `
-        + `${TICKET_CONFIG_KEYS.join(' and ')}, and an unrecognised key is a typo that would be silently ignored`,
+        + `${ORG_CONFIG_KEYS.join(', ')}, and an unrecognised key is a typo that would be silently ignored`,
       );
     }
   }
   if (doc.ticketProject != null) validateTicketProject(doc.ticketProject, `${path} ticketProject`);
   if (doc.ticketClosingStyle != null) validateClosingStyle(doc.ticketClosingStyle, `${path} ticketClosingStyle`);
+  if (doc.forge != null) validateForge(doc.forge, `${path} forge`);
   return doc;
 }
 
@@ -189,7 +202,7 @@ function readLevel(path, opts) {
       { cause: e },
     );
   }
-  return validateTicketFields(doc, path, opts);
+  return validateConfigFields(doc, path, opts);
 }
 
 /**
@@ -219,4 +232,34 @@ export function resolveTicketConfig(org, project) {
     }
   }
   return resolved;
+}
+
+/**
+ * WHICH FORGE this project talks to, resolved fresh at the moment of use like every other
+ * non-evidence-bearing value here (header). Precedence, most specific wins: project.json
+ * `forge` → org.json `forge` → URL detection over the project's recorded `remoteUrl` (or the
+ * caller-supplied one, for contexts that carry a URL before/without a registered project) →
+ * DEFAULT_FORGE. Each level is read through the SAME readLevel as the ticket config, so
+ * "absent is silent, present-but-broken refuses loudly" has exactly one definition — a corrupt
+ * org.json refuses a forge resolution just as it refuses a ticket one, because a config that
+ * reads as "no config" would silently point finalize's remote writes at the wrong CLI.
+ * @param {string} org
+ * @param {string} project
+ * @param {{remoteUrl?: string|null}} [opts] fallback URL when project.json records none
+ * @returns {{value: 'gitlab'|'github', from: string}} `from` ∈ 'project' | 'org' |
+ *   'remote url (<host>)' | 'default' — doctor renders it, and an operator who cannot see
+ *   which level won cannot debug an override.
+ */
+export function resolveForge(org, project, { remoteUrl = null } = {}) {
+  const orgDoc = readLevel(orgConfigPath(org), { strictKeys: true });
+  const projDoc = readLevel(projectConfigPath(org, project), {});
+  if (projDoc?.forge != null) return { value: projDoc.forge, from: 'project' };
+  if (orgDoc?.forge != null) return { value: orgDoc.forge, from: 'org' };
+  // Pre-forge-field project.json files (and unregistered contexts) land here: detection over
+  // the recorded remote keeps every existing GitLab project resolving 'gitlab' with no
+  // migration, and makes a GitHub remote work without any config at all.
+  const url = projDoc?.remoteUrl ?? remoteUrl;
+  const detected = detectForge(url);
+  if (detected !== null) return { value: detected, from: `remote url (${remoteHost(url)})` };
+  return { value: DEFAULT_FORGE, from: 'default' };
 }

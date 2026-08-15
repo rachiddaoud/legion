@@ -101,7 +101,12 @@ if ((feature.intakeRepos ?? []).length > 0) {
   L.push(`- intake repos (attached at feature start, already in reach via --add-dir): ${feature.intakeRepos.join(', ')}`);
 }
 if (feature.initError) L.push(`- initError: ${feature.initError}`);
-if (feature.mr) L.push(`- mr: !${feature.mr.iid} @ ${feature.mr.headSha}`);
+// `#` for a GitHub PR, `!` for a GitLab MR. A record written before the forge marker existed
+// (2026-08-15) has no `forge` key and is a GitLab MR by construction, so absent ⇒ `!`.
+if (feature.mr) {
+  const ref = feature.mr.forge === 'github' ? `#${feature.mr.iid}` : `!${feature.mr.iid}`;
+  L.push(`- ${feature.mr.forge === 'github' ? 'pr' : 'mr'}: ${ref} @ ${feature.mr.headSha}`);
+}
 
 if (!tasks) {
   L.push('');

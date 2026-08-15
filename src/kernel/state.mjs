@@ -1701,10 +1701,13 @@ function close(dossier, { positional }, now) {
     // delivered, and closing on it would be a claim of success the code does not deliver.
     const mr = f.mr;
     if (!mr) {
-      throw new Error('close delivered requires a verified MR — run `legion finalize` (it pushes the branch, opens the MR against the PINNED base, reads it back and records it in feature.json)');
+      throw new Error('close delivered requires a verified MR/PR — run `legion finalize` (it pushes the branch, opens the merge/pull request against the PINNED base, reads it back and records it in feature.json)');
     }
     if (mr.headSha !== head) {
-      throw new Error(`close delivered: recorded MR !${mr.iid} is for ${mr.headSha}, current HEAD is ${head} (stale — re-run \`legion finalize\` to update and re-record it)`);
+      // The forge's own notation (`#42` on GitHub, `!42` on GitLab). A record with no `forge`
+      // predates the marker (2026-08-15) and is a GitLab MR by construction.
+      const gh = mr.forge === 'github';
+      throw new Error(`close delivered: recorded ${gh ? 'PR' : 'MR'} ${gh ? '#' : '!'}${mr.iid} is for ${mr.headSha}, current HEAD is ${head} (stale — re-run \`legion finalize\` to update and re-record it)`);
     }
     // The corollary-1 net (header THE STAGE MACHINE): reaching finalize once is not evidence the
     // lifecycle is STILL satisfied — re-derive the whole prefix at the moment of closing.
