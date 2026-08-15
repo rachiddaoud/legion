@@ -9,3 +9,11 @@ node_modules/
 # build exists, so neither directory can ever be staged by accident.
 viewer/dist/
 viewer/node_modules/
+
+# ONE LOCKFILE, and it is viewer/package-lock.json. The bundle builds on the OPERATOR's machine,
+# so it may only depend on what a legion install already requires: npm ships with Node (package.json
+# pins >=22) and pnpm does not, and pnpm additionally blocks the postinstall scripts esbuild needs.
+# Use pnpm locally if you prefer it — it reads the npm lockfile fine — but its lockfile never lands,
+# because two lockfiles means the reproducibility this file claims depends on which command ran.
+viewer/pnpm-lock.yaml
+viewer/pnpm-workspace.yaml

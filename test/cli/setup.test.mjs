@@ -21,8 +21,10 @@ function mkBox() {
 }
 test.after(() => { for (const b of boxes) rmSync(b, { recursive: true, force: true }); });
 
-/** A temp legion checkout: marketplace manifest + an executable bin/legion. */
-function mkCheckout({ marketName = 'legion', pluginName = 'legion', manifest } = {}) {
+/** A temp legion checkout: marketplace manifest + an executable bin/legion. `viewer` adds the
+ * frontend source, which is what makes setup attempt the bundle build — WITHOUT it the build step
+ * skips and spawns nothing, which is why every pre-existing test here still records zero npm calls. */
+function mkCheckout({ marketName = 'legion', pluginName = 'legion', manifest, viewer = false, viewerBuilt = false } = {}) {
   const root = join(mkBox(), 'checkout');
   mkdirSync(join(root, '.claude-plugin'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
@@ -32,6 +34,18 @@ function mkCheckout({ marketName = 'legion', pluginName = 'legion', manifest } =
     join(root, '.claude-plugin', 'marketplace.json'),
     manifest ?? JSON.stringify({ name: marketName, plugins: [{ name: pluginName, source: './' }] }),
   );
+  if (viewer) {
+    mkdirSync(join(root, 'viewer'), { recursive: true });
+    writeFileSync(join(root, 'viewer', 'package.json'), JSON.stringify({ name: 'legion-viewer' }));
+    writeFileSync(join(root, 'viewer', 'package-lock.json'), JSON.stringify({ lockfileVersion: 3 }));
+  }
+  // A bundle ALREADY BUILT — index.html, because that is what "built" means (_viewer-bundle.mjs).
+  // Without this the force:true assertion below is vacuous: with no dist to skip on, the build runs
+  // whether or not setup passes --force, and the test passes with the flag deleted.
+  if (viewerBuilt) {
+    mkdirSync(join(root, 'viewer', 'dist'), { recursive: true });
+    writeFileSync(join(root, 'viewer', 'dist', 'index.html'), '<!doctype html>\n');
+  }
   return root;
 }
 
@@ -221,6 +235,71 @@ test('arguments are refused: setup takes none', async () => {
   await assert.rejects(() => setupCore(['extra'], depsFor(root, run)), /takes no arguments/);
   await assert.rejects(() => setupCore(['--force'], depsFor(root, run)), /takes no arguments|missing value/);
   assert.equal(calls.length, 0);
+});
+
+// --- the viewer bundle step: built here, but NEVER fatal (src/cli/setup.mjs) -------------------
+// Building at install time is what stops the first `/legion:viewer` of a fresh checkout paying for
+// an npm install. The property that matters is the SECOND half: a frontend toolchain must not be
+// able to fail a kernel install, and it must not be able to do so QUIETLY either.
+
+test('a checkout with viewer/ gets its bundle built — in viewer/, and BEFORE doctor', async () => {
+  const root = mkCheckout({ viewer: true });
+  const { run, calls } = fakeRun();
+  let npmCallsAtDoctor = null;
+  const out = await withStdout(async () => {
+    const code = await setupCore([], depsFor(root, run, {
+      // Ordering, MEASURED: a `doctorRan` boolean is true no matter when the build happened.
+      runDoctor: async () => { npmCallsAtDoctor = calls.filter((c) => c.file === 'npm').length; return 0; },
+    }));
+    assert.equal(code, 0);
+  });
+  const npm = calls.filter((c) => c.file === 'npm');
+  assert.deepEqual(npm.map((c) => c.args.join(' ')), ['ci', 'run build']);
+  for (const c of npm) assert.equal(c.cwd, join(root, 'viewer'), 'the build runs in viewer/, not the checkout root');
+  assert.match(out, /bundle ready at/);
+  assert.equal(npmCallsAtDoctor, 2, 'both build steps must have run by the time doctor is asked for a verdict');
+});
+
+test('setup FORCES the rebuild: an already-built bundle is rebuilt, never skipped', async () => {
+  // setup IS the refresh path ("re-run setup after upgrading the checkout"), and an upgraded
+  // checkout carries new viewer sources behind an old dist. Mutation-tested: dropping `--force` in
+  // src/cli/setup.mjs turns this test red — which the previous fixture, having no dist at all,
+  // could not do.
+  const root = mkCheckout({ viewer: true, viewerBuilt: true });
+  const { run, calls } = fakeRun();
+  const out = await withStdout(async () => {
+    assert.equal(await setupCore([], depsFor(root, run)), 0);
+  });
+  assert.deepEqual(calls.filter((c) => c.file === 'npm').map((c) => c.args.join(' ')), ['ci', 'run build'],
+    'a stale bundle from before the upgrade must not make setup skip the rebuild');
+  assert.doesNotMatch(out, /already built/);
+});
+
+test('a checkout with NO viewer/ says so and spawns nothing — the pre-existing shape', async () => {
+  const root = mkCheckout(); // no viewer/
+  const { run, calls } = fakeRun();
+  const out = await withStdout(async () => {
+    assert.equal(await setupCore([], depsFor(root, run)), 0);
+  });
+  assert.equal(calls.some((c) => c.file === 'npm'), false);
+  assert.match(out, /no viewer\/ frontend source/);
+});
+
+test('a FAILED viewer build warns, names the retry, and setup still reaches doctor', async () => {
+  const root = mkCheckout({ viewer: true });
+  const { run } = fakeRun((file, args) =>
+    (file === 'npm' && args[0] === 'ci' ? { ok: false, code: 1, stderr: 'npm ERR! ENOTFOUND registry.npmjs.org' } : {}));
+  let doctorRan = false;
+  const out = await withStdout(async () => {
+    const code = await setupCore([], depsFor(root, run, { runDoctor: async () => { doctorRan = true; return 0; } }));
+    assert.equal(code, 0, "doctor still owns the exit code — a viewer build is not setup's verdict");
+  });
+  assert.equal(doctorRan, true, 'the kernel is installed and usable; a missing viewer must not block it');
+  assert.match(out, /WARNING/);
+  // --force on the retry: this build was forced, so a pre-upgrade dist may still be sitting there
+  // intact, and an unforced retry would skip on it and report success for what just failed.
+  assert.match(out, /legion viewer-build --force/, 'the warning must name a retry that actually rebuilds');
+  assert.match(out, /npm ERR! ENOTFOUND/, "npm's own output is the diagnosis");
 });
 
 test('whichLegion: finds the first EXECUTABLE legion, skips non-executable entries, null when absent', () => {

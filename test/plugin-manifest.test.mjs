@@ -494,6 +494,11 @@ function componentFiles() {
     // list that makes the command-conformance and artifact-kind scans cover it — a shipped skill
     // absent from this array is prose no test reads, and its whole job is naming real commands.
     ['skills', 'start', 'SKILL.md'],
+    // /legion:viewer. Absent from this array until 2026-08-15, and it drifted exactly as the
+    // comment above predicts: it carried its own copy of the bundle-build commands, pinned to
+    // `npm install`, which nothing executed and nothing checked. The build is a kernel command now
+    // (src/cli/viewer-build.mjs) and the skill is a trigger; listing it here is what keeps it one.
+    ['skills', 'viewer', 'SKILL.md'],
     ...AGENT_NAMES.map((n) => ['agents', `${n}.md`]),
     ['hooks', 'hooks.json'],
     ['hooks', '_common.mjs'],

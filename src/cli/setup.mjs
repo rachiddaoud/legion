@@ -1,16 +1,22 @@
 // setup.mjs — `legion setup`: the one installation path made ONE
 // COMMAND. Run from a CHECKOUT, it makes that checkout the installed legion: registers the
 // checkout as a Claude Code marketplace, installs (or refreshes) the plugin snapshot from it,
-// puts `legion` on PATH when nothing does, and finishes by running `legion doctor` — the same
-// verification the README tells the operator to run after any install. Idempotent by
-// construction: every step either succeeds, falls back to its refresh form, or dies loudly —
-// re-running setup after upgrading the checkout IS the snapshot-refresh path the marketplace
-// manifest's own description promises ("refresh it after upgrading the checkout").
+// puts `legion` on PATH when nothing does, builds the viewer bundle, and finishes by running
+// `legion doctor` — the same verification the README tells the operator to run after any install.
+// Idempotent by construction: every step either succeeds, falls back to its refresh form, or dies
+// loudly — re-running setup after upgrading the checkout IS the snapshot-refresh path the
+// marketplace manifest's own description promises ("refresh it after upgrading the checkout").
+// EXACTLY ONE STEP IS EXEMPT from that succeed/fallback/die rule, and it says so at its own site:
+// the viewer bundle WARNS and setup carries on, because the kernel runs features with no viewer at
+// all and doctor — not a frontend toolchain — owns this command's verdict.
 //
 // WHAT THIS COMMAND MAY TOUCH, exhaustively — and why it can exist outside `legion finalize`'s
-// remote-write monopoly: nothing here reaches a remote. `claude plugin …`
+// remote-write monopoly: nothing here WRITES to a remote. `claude plugin …`
 // writes Claude Code's own config dir (~/.claude, or CLAUDE_CONFIG_DIR); `npm link` writes the
-// npm prefix; both are LOCAL, operator-machine state. No git, no glab, no push, no MR. The
+// npm prefix; the viewer step writes viewer/node_modules and viewer/dist INSIDE the checkout;
+// all three are LOCAL, operator-machine state. No git, no glab, no push, no MR. One step READS a
+// remote — `npm ci` fetches from the npm registry, which is why a failure there is reported as an
+// environment fact and never as a kernel fault. The
 // spawns go through kernel/runner.mjs — the one non-git process seam (no shell, purged
 // redirection env) — and git is structurally refused there.
 //
@@ -51,6 +57,7 @@ import { parseArgs } from '../kernel/args.mjs';
 import { readJson } from '../kernel/fsatomic.mjs';
 import { runCapture } from '../kernel/runner.mjs';
 import { isMarketplaceInstall } from './feature.mjs';
+import { buildViewer, viewerBuildCore } from './viewer-build.mjs';
 
 const USAGE = 'legion setup   (no arguments — run it from the legion checkout)';
 
@@ -181,6 +188,30 @@ export async function setupCore(argv, deps = {}) {
       + `(${root}). Left untouched: repointing PATH is your call, not setup's. `
       + `If this checkout should win: cd ${root} && npm link\n`,
     );
+  }
+
+  // --- the viewer bundle: BUILT HERE, BUT NEVER FATAL (header) -------------------------------
+  // Building at install time is what stops the first `/legion:viewer` of a fresh checkout from
+  // paying for an npm install. It runs with force:true because setup IS the refresh path ("re-run
+  // setup after upgrading the checkout") and an upgraded checkout may carry new viewer sources.
+  // A failure WARNS and setup carries on: the kernel runs features with no viewer at all, so
+  // letting a frontend toolchain fail a kernel install would be the tail wagging the dog. It is
+  // not silent either — the warning names `legion viewer-build` as the retry.
+  const viewerPlan = viewerBuildCore(['--force'], { pluginRoot: root });
+  if (!viewerPlan.haveSource) {
+    process.stdout.write(`setup: no viewer/ frontend source in ${root} — skipping the bundle build\n`);
+  } else {
+    const built = buildViewer(run, viewerPlan, { write: (s) => process.stdout.write(s) });
+    if (!built.ok) {
+      process.stdout.write(
+        // --force on the retry, deliberately: this build was forced, so a dist from BEFORE the
+        // upgrade may still be sitting there intact, and an unforced retry would skip on it and
+        // report success for the bundle that just failed to rebuild.
+        'setup: WARNING — the viewer bundle did not build. The kernel is installed and works '
+        + 'without it; run `legion viewer-build --force` to retry.\n'
+        + built.failure,
+      );
+    }
   }
 
   // --- verification: doctor owns the verdict (header) ----------------------------------------

@@ -151,13 +151,18 @@ test('viewerCore: malformed input dies loudly with the usage line, never with a 
   assert.throws(() => viewerCore(['--org', '../evil'], { exists: () => true }), /invalid org/);
 });
 
-test('the dist-missing refusal is pinned: it names the directory, both commands and --api-only', () => {
+test('the dist-missing refusal is pinned: it names the directory, the build command and --api-only', () => {
   const cfg = viewerCore([], { exists: () => false, distDir: '/nowhere/viewer/dist' });
   assert.equal(cfg.haveDist, false);
   assert.equal(cfg.refusal, distRefusal('/nowhere/viewer/dist'));
   const text = cfg.refusal;
   assert.match(text, /^legion viewer: the frontend bundle is missing at \/nowhere\/viewer\/dist$/m);
-  assert.match(text, new RegExp(`cd ${join(ROOT, 'viewer').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} && npm install && npm run build`));
+  // The ONE-COMMAND remedy leads; the by-hand form is the same build, spelled out. `npm ci` and
+  // not `npm install`: viewer/package-lock.json is committed as the reproducibility contract, so
+  // a refusal teaching the unpinned form would teach the operator to break it.
+  assert.match(text, /build it once: {2}legion viewer-build/);
+  assert.match(text, new RegExp(`cd ${join(ROOT, 'viewer').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} && npm ci && npm run build`));
+  assert.doesNotMatch(text, /npm install/, 'the unpinned install form must not reappear here');
   assert.match(text, /legion viewer --api-only/);
   // --api-only is the sanctioned way out, and it never refuses.
   assert.equal(viewerCore(['--api-only'], { exists: () => false, distDir: '/nowhere' }).refusal, null);
@@ -281,6 +286,10 @@ test('PROHIBITION: a FULL crawl of every GET endpoint leaves LEGION_HOME byte-id
 test('PROHIBITION: viewer code imports no state-mutating machinery and names no filesystem write', () => {
   const files = [
     join(ROOT, 'src', 'cli', 'viewer.mjs'),
+    // The bundle predicate viewer.mjs shares with `legion viewer-build`. In the scan because it is
+    // reachable from the sealed command: a leaf that grew an import or a write would carry both
+    // straight past the four assertions below.
+    join(ROOT, 'src', 'cli', '_viewer-bundle.mjs'),
     join(ROOT, 'src', 'cli', '_viewer', 'server.mjs'),
     join(ROOT, 'src', 'cli', '_viewer', 'projection.mjs'),
     join(ROOT, 'src', 'cli', '_viewer', 'activity.mjs'),

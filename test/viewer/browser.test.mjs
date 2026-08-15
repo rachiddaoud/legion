@@ -58,7 +58,7 @@ import { APPROVALS_CAVEAT } from '../../src/cli/_viewer/projection.mjs';
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url)))); // test/viewer/x -> repo root
 const DIST = join(ROOT, 'viewer', 'dist');
 
-const BUILD_FIX = 'run `cd viewer && npm install && npm run build`';
+const BUILD_FIX = 'run `legion viewer-build`';
 const PLAYWRIGHT_FIX = 'run `npm install --no-save playwright && npx playwright install chromium` from the repo root';
 
 /** An 8x8 truecolour PNG, VALID down to its CRCs — a hand-typed almost-PNG decodes to naturalWidth

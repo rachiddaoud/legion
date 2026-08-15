@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../kernel/args.mjs';
 import { safeSegment } from '../kernel/paths.mjs';
+import { bundleBuilt } from './_viewer-bundle.mjs';
 import { createViewerServer } from './_viewer/server.mjs';
 
 const USAGE = 'legion viewer [--port <n>] [--host <addr>] [--api-only] [--org <org>]';
@@ -53,11 +54,15 @@ const KNOWN_FLAGS = ['port', 'host', 'api-only', 'org'];
 const LOOPBACK = /^(127(\.\d{1,3}){3}|localhost|::1|\[::1\]|0:0:0:0:0:0:0:1)$/i;
 
 /** THE dist-missing refusal, one definition, pinned by test/cli/viewer.test.mjs. It names the
- * directory that is missing, the two commands that create it, and the flag that says "I meant the
- * API alone" — a refusal an operator cannot act on is a refusal that gets worked around. */
+ * directory that is missing, the ONE command that creates it, the by-hand form of that command,
+ * and the flag that says "I meant the API alone" — a refusal an operator cannot act on is a
+ * refusal that gets worked around. `legion viewer-build` leads because the remedy having a single
+ * deterministic name is what keeps it out of prose: src/cli/viewer-build.mjs's header explains why
+ * the build is a sibling command here and not a `--build` flag on this one. */
 export function distRefusal(distDir) {
   return `legion viewer: the frontend bundle is missing at ${distDir}\n`
-    + `  build it once:  cd ${join(REPO_ROOT, 'viewer')} && npm install && npm run build\n`
+    + '  build it once:  legion viewer-build\n'
+    + `  or by hand:     cd ${join(REPO_ROOT, 'viewer')} && npm ci && npm run build\n`
     + '  or serve the read-only JSON API alone:  legion viewer --api-only\n'
     + '(the bundle is gitignored and built on demand — nothing is broken, it has just never been built here)\n';
 }
@@ -105,7 +110,10 @@ export function viewerCore(argv, { exists = existsSync, distDir = DEFAULT_DIST }
   const org = flags.org === undefined ? null : safeSegment(flags.org, 'org');
 
   const warnings = LOOPBACK.test(host) ? [] : [exposureWarning(host)];
-  const haveDist = exists(distDir);
+  // index.html, NOT the directory: an interrupted build leaves dist/ present and empty, and
+  // starting on that serves a blank page — the exact silent degradation this file refuses
+  // everywhere else. One predicate, shared with `legion viewer-build` (_viewer-bundle.mjs).
+  const haveDist = bundleBuilt(exists, distDir);
   return {
     port,
     host,

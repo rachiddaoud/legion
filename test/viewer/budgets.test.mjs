@@ -39,7 +39,7 @@ const ASSETS = join(DIST, 'assets');
 /** The one skip reason this file can have, phrased as the command that fixes it. */
 const skip = existsSync(join(DIST, 'index.html'))
   ? false
-  : 'viewer/dist is absent (it is gitignored and built on demand) — run `cd viewer && npm install && npm run build`';
+  : 'viewer/dist is absent (it is gitignored and built on demand) — run `legion viewer-build`';
 
 const ENTRY_JS_BUDGET = 160 * 1024;
 const ENTRY_CSS_BUDGET = 30 * 1024;

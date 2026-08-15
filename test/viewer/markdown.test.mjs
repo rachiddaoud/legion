@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 let renderMarkdown = null;
 try { ({ renderMarkdown } = await import('../../viewer/src/lib/markdown.mjs')); }
 catch { /* viewer deps absent — every test below reports the named skip */ }
-const skip = renderMarkdown ? false : 'viewer build deps are not installed (cd viewer && npm install)';
+const skip = renderMarkdown ? false : 'viewer build deps are not installed — run `legion viewer-build`';
 
 test('raw HTML never passes through — event-handler injection dies at parse time', { skip }, () => {
   const out = renderMarkdown('hi <img src=x onerror=alert(1)> there');
