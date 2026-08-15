@@ -313,7 +313,7 @@ test('a plugin root missing hooks/ fails ONLY the manifest check', async () => {
   for (const d of ['skills', 'agents', 'bin']) mkdirSync(join(broken, d), { recursive: true });
   writeFileSync(join(broken, 'bin', 'legion.mjs'), '#!/usr/bin/env node\n');
   writeJson(join(broken, '.claude-plugin', 'plugin.json'),
-    { name: 'legion', description: 'x', version: '0.1.0', author: { name: 'a' } });
+    { name: 'legion', description: 'x', author: { name: 'a' } });
   writeJson(join(broken, 'package.json'), { name: 'legion', bin: { legion: './bin/legion.mjs' } });
 
   const r = await inScenario(s, [], DEPS(green(), { pluginRoot: broken }));
@@ -346,7 +346,7 @@ test('a malformed manifest, a bad version and a dangling declared path all fail'
   writeJson(join(bad, 'package.json'), { name: 'legion', bin: { legion: './bin/legion.mjs' } });
   r = await inScenario(s, [], DEPS(green(), { pluginRoot: bad }));
   assert.equal(levels(r)['plugin-manifest'], 'fail');
-  for (const re of [/description must be a non-empty string/, /author\.name must be/, /version must be X\.Y\.Z/,
+  for (const re of [/description must be a non-empty string/, /author\.name must be/, /version must be omitted/,
     /declared hooks path \.\/hooks\/nope\.json does not exist/]) {
     assert.match(r.checks[2].detail, re);
   }
@@ -360,7 +360,7 @@ test('a declared component path that DOES exist is accepted', async () => {
   writeFileSync(join(ok, 'bin', 'legion.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(ok, 'hooks', 'hooks.json'), '{}\n');
   writeJson(join(ok, '.claude-plugin', 'plugin.json'), {
-    name: 'legion', description: 'd', version: '0.1.0', author: { name: 'a' },
+    name: 'legion', description: 'd', author: { name: 'a' },
     hooks: '${CLAUDE_PLUGIN_ROOT}/hooks/hooks.json',
   });
   writeJson(join(ok, 'package.json'), { name: 'legion', bin: { legion: './bin/legion.mjs' } });
@@ -419,9 +419,9 @@ const M0_STATUS = {
     '  x gitlab.com: API call failed: GET https://gitlab.com/api/v4/user: 401 (Unauthorized)',
     '  - No token provided',
     '',
-    'gitlab.intech.dev',
-    '  ✓ Logged in to gitlab.intech.dev as legion-bot (keyring)',
-    '  ✓ Git operations for gitlab.intech.dev configured to use ssh protocol.',
+    'gitlab.acme.dev',
+    '  ✓ Logged in to gitlab.acme.dev as legion-bot (keyring)',
+    '  ✓ Git operations for gitlab.acme.dev configured to use ssh protocol.',
     '  ✓ Token: **************************',
     '',
   ].join('\n'),
@@ -430,7 +430,7 @@ const M0_STATUS = {
 test('parseGlabAuthHosts reads the per-host blocks and never invents a host', () => {
   assert.deepEqual(parseGlabAuthHosts(M0_STATUS.stderr), [
     { host: 'gitlab.com', authenticated: false },
-    { host: 'gitlab.intech.dev', authenticated: true },
+    { host: 'gitlab.acme.dev', authenticated: true },
   ]);
   // A block with neither marker is UNKNOWN, which is not authenticated.
   assert.deepEqual(parseGlabAuthHosts('gitlab.invalid\n  something new upstream prints\n'),
@@ -454,18 +454,18 @@ function withRemote(s, url) {
 test('THE M0 REGRESSION: a token-less gitlab.com must not fail a green target host', async () => {
   // M0, verbatim: `glab auth status` exits 1 for gitlab.com while the project's own host is
   // fully authenticated, and doctor went red on it. Now only the project's host is judged.
-  const s = withRemote(scenario(), 'ssh://git@gitlab.intech.dev:2222/acme/fix-proj.git');
+  const s = withRemote(scenario(), 'ssh://git@gitlab.acme.dev:2222/acme/fix-proj.git');
   const run = green({
     'glab auth status': M0_STATUS,
-    'glab auth status --hostname gitlab.intech.dev': { stderr: '✓ Logged in to gitlab.intech.dev as legion-bot\n' },
+    'glab auth status --hostname gitlab.acme.dev': { stderr: '✓ Logged in to gitlab.acme.dev as legion-bot\n' },
   });
   const r = await inScenario(s, [], DEPS(run));
   assert.equal(levels(r)['glab-auth'], 'pass', r.checks[3].detail);
   assert.equal(r.code, 0, r.output);
-  assert.match(r.checks[3].detail, /authenticated for gitlab\.intech\.dev/);
+  assert.match(r.checks[3].detail, /authenticated for gitlab\.acme\.dev/);
   assert.match(r.checks[3].detail, /default\/fix-proj/, 'the pass must name the project whose host it judged');
   const probes = run.calls.filter((c) => c.args[0] === 'auth');
-  assert.deepEqual(probes.map((c) => c.args), [['auth', 'status', '--hostname', 'gitlab.intech.dev']],
+  assert.deepEqual(probes.map((c) => c.args), [['auth', 'status', '--hostname', 'gitlab.acme.dev']],
     'exactly one, host-scoped probe — the global status is never consulted when a project resolves');
   assert.ok(!r.output.includes('gitlab.com'), 'an unrelated host must not even appear in the report');
 });
@@ -487,15 +487,15 @@ test('the scoped check still FAILS when the token missing is the PROJECT’s hos
 });
 
 test('the scoped probe runs from inside a feature worktree too — the cwd every session uses', async () => {
-  const s = withRemote(scenario(), 'ssh://git@gitlab.intech.dev/acme/fix-proj.git');
+  const s = withRemote(scenario(), 'ssh://git@gitlab.acme.dev/acme/fix-proj.git');
   const wt = worktreeOf(s.repo, 'hostscope');
   const run = green({
     'glab auth status': M0_STATUS,
-    'glab auth status --hostname gitlab.intech.dev': { stderr: '✓ Logged in\n' },
+    'glab auth status --hostname gitlab.acme.dev': { stderr: '✓ Logged in\n' },
   });
   const r = await inDir(wt, s.home, [], DEPS(run));
   assert.equal(levels(r)['glab-auth'], 'pass', r.checks[3].detail);
-  assert.ok(run.calls.some((c) => c.args.join(' ') === 'auth status --hostname gitlab.intech.dev'),
+  assert.ok(run.calls.some((c) => c.args.join(' ') === 'auth status --hostname gitlab.acme.dev'),
     'resolution is fromAnyWorktree, so the check must not silently unscope itself in a worktree');
 });
 
@@ -509,7 +509,7 @@ test('NO project resolves ⇒ per-host truth as a WARN, never a FAIL, exit 0', a
   const r = await inDir(outside, s.home, [], DEPS(run));
   assert.equal(levels(r)['glab-auth'], 'warn');
   assert.equal(r.code, 0, `an unscoped unknown must not fail the command: ${r.output}`);
-  assert.match(r.checks[3].detail, /authenticated for gitlab\.intech\.dev and NOT for gitlab\.com/);
+  assert.match(r.checks[3].detail, /authenticated for gitlab\.acme\.dev and NOT for gitlab\.com/);
   assert.match(r.checks[3].detail, /no registered project resolves from this cwd/);
   assert.match(r.checks[3].detail, /cannot tell which host matters/);
   assert.deepEqual(run.calls.filter((c) => c.args[0] === 'auth').map((c) => c.args), [['auth', 'status']],

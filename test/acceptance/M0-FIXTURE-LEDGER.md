@@ -259,7 +259,7 @@ run by hand and is recorded here as evidence, not as a test.
 
 **Preconditions (both were org-side, on the operator — M0-REPORT "Org-side actions"), now met:**
 
-1. **A fixture GitLab project with REAL protection.** `gitlab.intech.dev/rachid.daoud/rachid_test`
+1. **A fixture GitLab project with REAL protection.** `gitlab.example.dev/rachid.daoud/rachid_test`
    (project id 1848), branch `main`: `push_access_levels` and `merge_access_levels` both
    `Maintainers (40)` only, `allow_force_push: false`. Note this is a project the operator owns
    personally, not cv-mf — cv-mf's `develop` still accepts a direct Developer push
@@ -270,7 +270,7 @@ run by hand and is recorded here as evidence, not as a test.
    (`project_1848_bot_3ff839ac0f7e18a36f97a2ee8bad703e`, id 473) — genuinely distinct from the human
    merger (`rachid.daoud`, the project Owner). It was supplied via the `GITLAB_TOKEN` environment
    variable per command, never via `glab auth login` — that would have overwritten the operator's
-   personal `gitlab.intech.dev` session (glab stores one token per hostname), which other work
+   personal `gitlab.example.dev` session (glab stores one token per hostname), which other work
    (cv-mf) depends on. `GITLAB_TOKEN` takes precedence over the stored config for every `glab`
    subprocess `legion` shells out to, so this gives real identity separation without touching global
    auth state.
@@ -281,7 +281,7 @@ run by hand and is recorded here as evidence, not as a test.
   (tiny npm repo, `package.json` test script `node --test`, one passing test — the declared gate
   command for both `task` and `boundary` tiers).
 - `GITLAB_TOKEN=<bot token> legion doctor`, run from the fixture repo, went **FULLY GREEN — 5 pass,
-  0 warn, 0 fail** — including `glab-auth` (`✓ Logged in to gitlab.intech.dev as
+  0 warn, 0 fail** — including `glab-auth` (`✓ Logged in to gitlab.example.dev as
   project_1848_bot_3ff839ac0f7e18a36f97a2ee8bad703e (GITLAB_TOKEN)`) and `branch-protection`
   (`server-side protection VERIFIED on rachid.daoud/rachid_test: the agent identity
   (developer (30)) can neither push nor merge main`).
@@ -335,11 +335,11 @@ that is NOT how git works, and the honest claim is narrower — and still exactl
 needs. In order, from the captured trace:
 
 ```
-trace: run_command: … ssh -p 10022 git@gitlab.intech.dev 'git-receive-pack …'   ← connect + auth
+trace: run_command: … ssh -p 10022 git@gitlab.example.dev 'git-receive-pack …'   ← connect + auth
 packet:  push< ffcbf795…  refs/heads/main\0report-status … agent=git/2.53…       ← ref advertisement (a READ)
 trace: run_command: /Users/…/rachid_test/.git/hooks/pre-push origin ssh://…      ← THE GUARD RUNS
 legion pre-push guard: PUSH BLOCKED.                                             ← and refuses
-error: failed to push some refs to 'ssh://gitlab.intech.dev:10022/…'
+error: failed to push some refs to 'ssh://gitlab.example.dev:10022/…'
 packet:  push> 0000                                                              ← flush, then hang up
 ```
 
@@ -353,7 +353,7 @@ that overstates its own evidence is worth less than no ledger.
 
 **With hooks bypassed the server still refuses — CITED, not re-run (step 3).** `GITLAB_TOKEN` was
 NOT present in this session's environment, and the chunk's fixture rules forbid the fallback: the
-operator's stored `gitlab.intech.dev` credentials are the project OWNER, so a `git push --no-verify`
+operator's stored `gitlab.example.dev` credentials are the project OWNER, so a `git push --no-verify`
 under them would have SUCCEEDED and moved `main` — a probe that destroys its own fixture and proves
 the opposite of its claim. The arm is therefore cited from **the row above, proven 2026-07-29**: same
 project (id 1848), same `main` protected to Maintainers-only, and — the stronger form of the same

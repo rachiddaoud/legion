@@ -164,10 +164,10 @@ const unreadableRow = (key: string, why: string): UnreadableRow => ({
 
 // --- the worlds ------------------------------------------------------------------------------------
 
-const active = summary({ org: 'intech', project: 'cv-mf', name: 'cv41-viewer' });
+const active = summary({ org: 'acme', project: 'cv-mf', name: 'cv41-viewer' });
 
 const blocked = summary({
-  org: 'intech', project: 'cv-mf', name: 'cv42-export',
+  org: 'acme', project: 'cv-mf', name: 'cv42-export',
   viewerStatus: 'blocked', stage: 'build',
   tasks: { total: 2, done: 0, started: 1, pending: 1, openQuestions: 1 },
   attention: [{ kind: 'open-question', detail: { count: 1, taskIds: ['T1'] } }],
@@ -175,13 +175,13 @@ const blocked = summary({
 });
 
 const quiet = summary({
-  org: 'intech', project: 'cv', name: 'cv12-print-layout',
+  org: 'acme', project: 'cv', name: 'cv12-print-layout',
   updatedAt: T(40), ageHours: 40,
   attention: [{ kind: 'quiet', detail: { ageHours: 40, sinceHours: 24, updatedAt: T(40) } }],
 });
 
 const initFailed = summary({
-  org: 'intech', project: 'cv', name: 'cv13-broken-start',
+  org: 'acme', project: 'cv', name: 'cv13-broken-start',
   viewerStatus: 'init-failed', kernelStatus: 'initialization_failed', stage: 'intake', hasPlan: false,
   tasks: { total: 0, done: 0, started: 0, pending: 0, openQuestions: 0 },
   attention: [{
@@ -191,23 +191,23 @@ const initFailed = summary({
 });
 
 const delivered = summary({
-  org: 'intech', project: 'cv-mf', name: 'cv39-ticket-link',
+  org: 'acme', project: 'cv-mf', name: 'cv39-ticket-link',
   viewerStatus: 'delivered', kernelStatus: 'delivered', stage: 'finalize',
-  closedAt: T(20), updatedAt: T(20), ageHours: 20, ticket: 'intech/cv-mf#412',
+  closedAt: T(20), updatedAt: T(20), ageHours: 20, ticket: 'acme/cv-mf#412',
   tasks: { total: 4, done: 4, started: 0, pending: 0, openQuestions: 0 },
   mr: {
-    iid: 77, url: 'https://gitlab.example.com/intech/cv-mf/-/merge_requests/77',
+    iid: 77, url: 'https://gitlab.example.com/acme/cv-mf/-/merge_requests/77',
     targetBranch: 'develop', headSha: '5d4c3b2a19f8e7d6c5b4a39281706f5e4d3c2b1a', at: T(21),
   },
 });
 
 const initiativeA = summary({
-  org: 'intech', project: 'cv-api', name: 'cv40-export-api',
+  org: 'acme', project: 'cv-api', name: 'cv40-export-api',
   initiative: { id: 'exports-2026q3', role: 'primary' },
 });
 const initiativeB = summary({
-  org: 'intech', project: 'cv-mf', name: 'cv40-export-ui',
-  initiative: { id: 'exports-2026q3', role: 'secondary', primary: 'intech/cv-api/cv40-export-api' },
+  org: 'acme', project: 'cv-mf', name: 'cv40-export-ui',
+  initiative: { id: 'exports-2026q3', role: 'secondary', primary: 'acme/cv-api/cv40-export-api' },
 });
 
 export interface FixtureWorld {
@@ -362,7 +362,7 @@ const deliveredView = view(delivered, {
 });
 const weakView = view(
   summary({
-    org: 'intech', project: 'cv', name: 'cv14-typo-fix',
+    org: 'acme', project: 'cv', name: 'cv14-typo-fix',
     viewerStatus: 'delivered', kernelStatus: 'delivered', stage: 'finalize', profile: 'express',
     closedAt: T(48), updatedAt: T(48), ageHours: 48,
     tasks: { total: 1, done: 1, started: 0, pending: 0, openQuestions: 0 },
@@ -371,8 +371,8 @@ const weakView = view(
 );
 
 const CORRUPT = unreadableRow(
-  'intech/cv/cv09-legacy',
-  '/tmp/legion-home/orgs/intech/cv/cv09-legacy/tasks.json is not a JSON object',
+  'acme/cv/cv09-legacy',
+  '/tmp/legion-home/orgs/acme/cv/cv09-legacy/tasks.json is not a JSON object',
 );
 
 export const WORLDS: Record<string, FixtureWorld> = {

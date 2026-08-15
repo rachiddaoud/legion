@@ -67,8 +67,10 @@ test('plugin.json parses and matches the manifest schema shape', () => {
   const raw = readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8');
   const manifest = JSON.parse(raw);
   assert.equal(manifest.name, 'legion');
-  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
-  assert.equal(manifest.version, '0.1.0');
+  // No version field, DELIBERATELY: the repo is its own marketplace and the plugin is versioned
+  // by git commit. Updates compare version strings, so a static version reads as "unchanged" on
+  // every pull and installs keep the cached copy — auto-update silently stops.
+  assert.equal(manifest.version, undefined, 'a static version pins installs and defeats auto-update');
   assert.equal(typeof manifest.description, 'string');
   assert.ok(manifest.description.length > 0, 'description must be non-empty');
   assert.equal(typeof manifest.author?.name, 'string');
@@ -97,6 +99,10 @@ test('marketplace.json parses and offers exactly this repo as the legion plugin'
   assert.equal(m.plugins[0].name, 'legion');
   assert.equal(m.plugins[0].source, './', 'the plugin source is this repo itself');
   assert.ok(m.plugins[0].description.length > 0, 'description must be non-empty');
+  // A marketplace-entry version pins installs exactly like a plugin.json one would — it sits
+  // ABOVE the git commit SHA in Claude Code's version resolution, so its presence would defeat
+  // auto-update the same way. Guarded here because the doctor's manifest check reads plugin.json.
+  assert.equal(m.plugins[0].version, undefined, 'a marketplace-entry version pins installs and defeats auto-update');
 });
 
 test('component dirs exist at plugin root', () => {

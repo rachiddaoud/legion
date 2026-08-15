@@ -220,8 +220,11 @@ function checkPluginManifest(pluginRoot) {
   if (!nonEmpty(manifest?.name)) problems.push('name must be a non-empty string');
   if (!nonEmpty(manifest?.description)) problems.push('description must be a non-empty string');
   if (!nonEmpty(manifest?.author?.name)) problems.push('author.name must be a non-empty string');
-  if (!/^\d+\.\d+\.\d+$/.test(String(manifest?.version ?? ''))) {
-    problems.push(`version must be X.Y.Z (got ${JSON.stringify(manifest?.version ?? null)})`);
+  // No `version`, DELIBERATELY: the plugin is versioned by git commit. Claude Code updates by
+  // comparing version strings, and a static one reads as "unchanged" on every pull — installs
+  // stay pinned to the cached copy and marketplace auto-update silently stops.
+  if (manifest?.version !== undefined) {
+    problems.push(`version must be omitted — a static version pins installs and defeats marketplace auto-update (got ${JSON.stringify(manifest.version)})`);
   }
 
   for (const dir of ['skills', 'agents', 'hooks', 'bin']) {

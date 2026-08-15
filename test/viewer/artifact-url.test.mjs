@@ -17,13 +17,13 @@ import {
   IMAGE_EXTENSIONS, artifactUrl, isHtml, isMarkdown, isServableImage, resolveArtifactPath,
 } from '../../viewer/src/lib/artifact-url.mjs';
 
-const ID = { org: 'intech', project: 'cv-mf', name: 'cv41-viewer' };
+const ID = { org: 'acme', project: 'cv-mf', name: 'cv41-viewer' };
 
 test('artifactUrl builds an encoded query — never a raw path in the URL path', () => {
   const url = artifactUrl(ID, 'visual/M1/home page@1280.png');
   assert.ok(url.startsWith('/api/artifact?'), 'the path is the endpoint, the file is a parameter');
   const q = new URLSearchParams(url.slice('/api/artifact?'.length));
-  assert.equal(q.get('org'), 'intech');
+  assert.equal(q.get('org'), 'acme');
   assert.equal(q.get('project'), 'cv-mf');
   assert.equal(q.get('name'), 'cv41-viewer');
   assert.equal(q.get('path'), 'visual/M1/home page@1280.png', 'the space round-trips through the encoding');
