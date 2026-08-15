@@ -101,6 +101,10 @@ export function Markdown({ text, resolveHref }: MarkdownProps) {
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
+          // SVG <text> labels, not <foreignObject>: the sanitize below drops foreignObject with its
+          // whole subtree (DOMPurify disallows it in every profile), which rendered state/flowchart
+          // diagrams as correctly-sized boxes with no text in them.
+          htmlLabels: false,
           theme: document.documentElement.dataset.theme === 'dark' ? 'dark' : 'neutral',
         });
         let i = 0;
