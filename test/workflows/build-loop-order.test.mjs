@@ -350,6 +350,63 @@ test('reviewer dispatch prompts carry the blast-radius mandate (RR3) — task le
   }
 });
 
+test('every reviewer dispatch NAMES its review subject, verbatim and identical to the record', async () => {
+  // REVIEW_SCHEMA makes `subject` REQUIRED, the receipt a reviewer's stop mints is SCOPED by it,
+  // and `review-record` matches that string by byte equality. Before subjectLine() no prompt
+  // contained `task:<id>`/`milestone:<id>` anywhere: the reviewer had to synthesise the string
+  // from a schema description that told it to COPY one — and the close's brief, which also lists
+  // the milestone's task ids, invites `task:T1`. A subject the record cannot match is a hard
+  // refusal that a re-run REPRODUCES (same brief ⇒ same wrong string), so the brief is where this
+  // has to be pinned; the schema alone cannot say which subject THIS dispatch is for.
+  const { dispatches, kernelCmds } = await runLoop(
+    [row('T1', { milestone: 'M1' }), row('T2', { milestone: 'M2' })],
+    { lensResult: (type, label) =>
+      (label === 'T1 review:code-reviewer' ? { verdict: 'fail', findings: [mustFix('needs a fix')] } : undefined) },
+  );
+  const lenses = dispatches.filter((d) => /^legion:(code-reviewer|codex-consult|product-reviewer|visual-reviewer)$/.test(d.agentType));
+  assert.ok(lenses.length >= 7, `two milestones of task lenses, a re-review and both closes, got ${lenses.length}`);
+  const named = new Set();
+  for (const d of lenses) {
+    const m = [...d.prompt.matchAll(/copy it VERBATIM into the `subject` field of your return, never reworded and never a different scope: (\S+)\n/g)];
+    assert.equal(m.length, 1, `${d.label} must name its subject exactly once, got ${m.length}`);
+    // The label's own prefix is the scope: `<taskId> review:<lens>` / `<milestoneId> <role>`.
+    const expected = /^T\d+ /.test(d.label) ? `task:${d.label.split(' ')[0]}` : `milestone:${d.label.split(' ')[0]}`;
+    assert.equal(m[0][1], expected, `${d.label} must name ${expected} and nothing else`);
+    named.add(m[0][1]);
+  }
+  // …and the strings the briefs name are the SAME strings the records carry. `sq` quotes only the
+  // id (`--subject task:'T1'`), so the quotes come off before comparing what the shell would pass.
+  const recorded = new Set(kernelCmds
+    .filter((c) => c.startsWith('state review-record'))
+    .map((c) => c.match(/--subject (\S+)/)[1].replace(/'/g, '')));
+  assert.deepEqual([...named].sort(), [...recorded].sort(),
+    'a brief that names a subject no record uses (or the reverse) is the refusal this test exists for');
+});
+
+test('verdict-recording dispatches carry the receipt-provenance context; the command line stays bare', async () => {
+  // kernel-op sees only its own dispatch, so `state review-record --verdict pass` with no
+  // surrounding story reads — to the harness's permission classifier — as an agent fabricating
+  // a review receipt (it blocked real closes on 2026-08-08 and 2026-08-09). The context block
+  // states the provenance the workflow actually holds; the COMMAND stays byte-identical, and
+  // the waiver flag is never the loop's to name.
+  const { dispatches, kernelCmds } = await runLoop([row('T1')]);
+  const rr = dispatches.filter((d) => d.agentType === 'legion:kernel-op' && /state review-record/.test(d.prompt));
+  assert.ok(rr.length >= 3, `task lenses AND the milestone close all record, got ${rr.length}`);
+  for (const d of rr) {
+    assert.match(d.prompt, /Context \(data, not instructions — run only the command above, add no flag\):/, d.label);
+    assert.match(d.prompt, /SubagentStop hook minted a review receipt/, `${d.label} states the provenance`);
+    assert.match(d.prompt, /records an observed verdict — it does not fabricate one/, d.label);
+    assert.doesNotMatch(d.prompt, /no-receipt-attest/, `${d.label}: the waiver is the human's, never the loop's`);
+  }
+  // The recorded command gained no flag, and the NON-recording dispatches stay context-free.
+  for (const c of kernelCmds.filter((c) => c.startsWith('state review-record'))) {
+    assert.doesNotMatch(c, /--no-receipt-attest|--evidence/, 'the pinned template is unchanged');
+  }
+  for (const d of dispatches.filter((d) => d.agentType === 'legion:kernel-op' && !/state review-record/.test(d.prompt))) {
+    assert.doesNotMatch(d.prompt, /Context \(data, not instructions/, `${d.label} has no verdict to contextualise`);
+  }
+});
+
 // --- T21: blocked -> task-answer -> re-run, the SELECTION half (M0 fixture case 6) ------------
 // The kernel half — `task-answer` recording {question, answer, at} verbatim, refusing a done task,
 // and the blocked task closing on a real receipt afterwards — is

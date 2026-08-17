@@ -52,14 +52,16 @@ review still has to look at. **Never silently substitute code-reading for artifa
 
 ## Return contract
 
-Return a JSON object: `{ "verdict": "pass" | "fail", "findings": [{ "tier", "title", "where",
+Return a JSON object: `{ "verdict": "pass" | "fail", "subject": "milestone:<id>" (or "feature" — the exact subject your brief dispatched, verbatim; it scopes your stop's review receipt), "findings": [{ "tier", "title", "where",
 "issue", "fix" }], "unverifiedRows": ["…"], "artifact": "<path or null>", "counts": { "block": n,
 "mustFix": n, "note": n } }`, and append the same pass, in the numbered `F<n>` block format, to
 `review-product.md` in the dossier.
 
 You do **not** record the review in state. The session runs
 `legion state review-record --role product-reviewer --verdict <pass|fail> --subject
-milestone:<id>` from your verdict.
+milestone:<id>` from your verdict. Your **stop** is what makes that record possible: the
+SubagentStop hook mints a review receipt the record verifies and consumes — a record refused
+for a missing receipt means the reviewer dispatch never actually ran.
 
 ## Constraints
 

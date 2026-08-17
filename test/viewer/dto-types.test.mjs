@@ -299,6 +299,7 @@ test('every FeatureView field the client declares matches the LIVE /api/feature 
     ]);
     assert.equal(h.legion('state', 'task-start', 'T1').code, 0);
     assert.equal(h.legion('state', 'task-answer', 'T1', '--question', 'which base?', '--answer', 'the pinned baseSha').code, 0);
+    assert.equal(h.legion('gate', 'review-receipt', '--agent-type', 'legion:code-reviewer', '--agent-id', 'dto-rev', '--verdict', 'pass').code, 0);
     assert.equal(h.legion('state', 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1').code, 0);
     // The OPEN question — `task-answer` requires both halves by design, so the unanswered shape is
     // written by hand exactly as test/cli/viewer-projection.test.mjs does. It is what puts an

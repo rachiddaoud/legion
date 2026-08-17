@@ -990,3 +990,101 @@ test('C2 (harness) a RED gate records no receipt at all', () => {
   assert.equal(t.receipts.boundary, null);
   h.assertUnmoved(snap, 'a red gate');
 });
+
+// --- review receipts (2026-08-17): a reviewer-role verdict demands attendance evidence -------
+// The same three-layer shape as gate receipts: minted by ONE surface (`legion gate
+// review-receipt`, ordinarily the reviewer agent's SubagentStop hook, where agent type and id
+// are HARNESS-supplied), verified and CONSUMED by `review-record`, and forgeable only by the
+// same Bash that can already hand-write tasks.json. WHAT IS NOT CLOSED, stated exactly as
+// src/cli/gate.mjs's residual is: a forger who derives the REAL tree hash — readable in the
+// same worktree — and hand-writes a receipt row passes. The closed surfaces are the advertised
+// op list and the BARE assertion; prevention beyond that is claimed nowhere.
+
+test('R1 (receipts) a bare reviewer-role record refuses; a forged receipt with a guessed hash changes nothing; a real mint records', () => {
+  const h = fixture({ gates: 'NONE' });
+  h.seedPlan(THREE);
+
+  const snap = h.snapshot();
+  const bare = h.legion('state', 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1');
+  assert.equal(bare.code, 1);
+  assert.match(bare.stderr, /no unconsumed code-reviewer review receipt/);
+  assert.match(bare.stderr, /caller's\s+assertion/, 'the refusal must say WHY a bare record is not evidence');
+  h.assertUnmoved(snap, 'a bare reviewer-role record');
+
+  // Forged, with a GUESSED binding hash: the kernel re-derives the tree itself and the guess loses.
+  h.writeTasks((doc) => ({
+    ...doc,
+    reviewReceipts: [{
+      agentType: 'legion:code-reviewer', agentId: 'forged', role: 'code-reviewer',
+      verdict: 'pass', treeHash: '0'.repeat(64), planHash: null, at: '2026-08-17T00:00:00.000Z', consumed: null,
+    }],
+  }));
+  const snap2 = h.snapshot();
+  const forged = h.legion('state', 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1');
+  assert.equal(forged.code, 1, 'a receipt binding a tree this worktree never had is not attendance');
+  h.assertUnmoved(snap2, 'a record over a wrong-hash forgery');
+
+  // The vice's other jaw: a REAL mint through the one surface, and the record consumes it.
+  ok(h, 'R1', 'gate', 'review-receipt', '--agent-type', 'legion:code-reviewer', '--agent-id', 'real', '--verdict', 'pass');
+  ok(h, 'R1', 'state', 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1');
+  const receipts = h.readTasks().reviewReceipts;
+  assert.equal(receipts.at(-1).consumed.subject, 'task:T1', 'the real receipt was consumed by the record');
+  assert.equal(receipts.at(0).consumed, null, 'the forgery matched nothing and was not even worth consuming');
+});
+
+test('R2 (receipts) freshness IS the hash equality: the tree moving strands a receipt; a fresh mint at the new tree records', () => {
+  const h = fixture({ gates: 'NONE' });
+  h.seedPlan(THREE);
+  ok(h, 'R2', 'gate', 'review-receipt', '--agent-type', 'legion:code-reviewer', '--agent-id', 'lens-1', '--verdict', 'pass');
+  h.commit('ungated drift after the review');
+  const snap = h.snapshot();
+  const stale = h.legion('state', 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1');
+  assert.equal(stale.code, 1, 'attendance at the OLD tree is not attendance at this one');
+  h.assertUnmoved(snap, 'a record over a stale receipt');
+  ok(h, 'R2', 'gate', 'review-receipt', '--agent-type', 'legion:code-reviewer', '--agent-id', 'lens-2', '--verdict', 'pass');
+  ok(h, 'R2', 'state', 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1');
+});
+
+test('R3 (receipts) the waiver is audited, and the review ROW is field-identical — pre-merge approvals never see receipts', () => {
+  const h = fixture({ gates: 'NONE' });
+  h.seedPlan(THREE);
+
+  const snap = h.snapshot();
+  const empty = h.legion('state', 'review-record', '--role', 'product-reviewer', '--verdict', 'pass', '--subject', 'feature', '--no-receipt-attest', '  ');
+  assert.equal(empty.code, 1);
+  assert.match(empty.stderr, /non-empty reason/);
+  h.assertUnmoved(snap, 'an empty waiver reason');
+
+  ok(h, 'R3', 'state', 'review-record', '--role', 'product-reviewer', '--verdict', 'pass', '--subject', 'feature',
+    '--no-receipt-attest', 'human reviewed in the MR UI');
+  const waived = h.readTasks().reviewReceipts.at(-1);
+  assert.equal(waived.waived, true);
+  assert.equal(waived.reason, 'human reviewed in the MR UI');
+  assert.equal(waived.agentId, null, 'the waiver marks the ABSENCE of evidence; it fabricates none');
+  assert.notEqual(waived.consumed, null, 'born consumed — it can never satisfy a later record');
+
+  ok(h, 'R3', 'gate', 'review-receipt', '--agent-type', 'legion:product-reviewer', '--agent-id', 'pr-1', '--verdict', 'pass');
+  ok(h, 'R3', 'state', 'review-record', '--role', 'product-reviewer', '--verdict', 'pass', '--subject', 'feature');
+  const [a, b] = h.readTasks().reviews.slice(-2);
+  assert.deepEqual(Object.keys(a).sort(), Object.keys(b).sort(),
+    'waived and receipted rows carry identical fields — receipts live OUTSIDE canonicalReviews, so the frozen pre-merge formula cannot tell them apart');
+});
+
+test('R4 (receipts) end to end through the REAL SubagentStop hook: reviewer stops, receipt lands, the record consumes it', () => {
+  const h = fixture({ gates: 'NONE' });
+  h.seedPlan(THREE);
+  const hook = spawnSync(process.execPath, [join(PLUGIN_ROOT, 'hooks', 'review-receipt.mjs')], {
+    input: JSON.stringify({
+      hook_event_name: 'SubagentStop', agent_type: 'legion:code-reviewer', agent_id: 'e2e-lens',
+      agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: h.worktree,
+      last_assistant_message: '{"verdict":"pass","findings":[]}',
+    }),
+    encoding: 'utf8', env: h.env,
+  });
+  assert.equal(hook.status, 0, hook.stderr);
+  const minted = h.readTasks().reviewReceipts.at(-1);
+  assert.equal(minted.agentId, 'e2e-lens', 'the hook minted from the harness-supplied identity');
+  assert.equal(minted.verdict, 'pass');
+  ok(h, 'R4', 'state', 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1');
+  assert.equal(h.readTasks().reviewReceipts.at(-1).consumed.subject, 'task:T1');
+});

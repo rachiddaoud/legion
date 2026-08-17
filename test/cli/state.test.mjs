@@ -94,6 +94,15 @@ function gateOk(s, ...args) {
   assert.equal(r.status, 0, `legion gate run ${args.join(' ')}: ${r.stderr}`);
   return r;
 }
+/** MINT a review receipt through the real surface the SubagentStop hook calls — never by
+ * hand-writing reviewReceipts[] (forgery is the acceptance suite's business, not this one's). */
+function mintReceipt(s, agentType, verdict = 'pass', agentId = 'a-test', subject = null) {
+  const r = gate(s, 'review-receipt', '--agent-type', agentType, '--agent-id', agentId,
+    ...(verdict ? ['--verdict', verdict] : []), ...(subject ? ['--subject', subject] : []),
+    NOW, '2026-07-24T00:00:00.000Z');
+  assert.equal(r.status, 0, `legion gate review-receipt ${agentType}: ${r.stderr}`);
+  return r;
+}
 
 const tasks = (s) => JSON.parse(readFileSync(join(s.dossier, 'tasks.json'), 'utf8'));
 const feature = (s) => JSON.parse(readFileSync(join(s.dossier, 'feature.json'), 'utf8'));
@@ -171,6 +180,7 @@ function advance(s, target, profile = 'express') {
   if (want >= 3) {
     writeArtifact(s, 'plan.md', '# plan (walk)\n');
     stateOk(s, 'artifact-record', 'plan', 'plan.md');
+    mintReceipt(s, 'legion:plan-critic'); // review-record demands attendance evidence
     stateOk(s, 'review-record', '--role', 'plan-critic', '--verdict', 'pass', '--subject', 'plan');
     stateOk(s, 'decision-record', 'plan');
     stateOk(s, 'stage-complete', 'plan');
@@ -294,6 +304,7 @@ test('stage-complete plan needs BOTH a plan-critic pass AND a hash-valid plan ap
   assert.match(r.stderr, /plan-critic review/);
 
   // add a critic review but still no approval
+  mintReceipt(s, 'legion:plan-critic');
   assert.equal(state(s, 'review-record', '--role', 'plan-critic', '--verdict', 'pass', '--subject', 'plan').status, 0);
   r = state(s, 'stage-complete', 'plan');
   assert.equal(r.status, 1);
@@ -321,6 +332,7 @@ test('stage-complete plan reads the LATEST plan-critic verdict, not any historic
   seedTasks(s, [{ id: 'T1' }]);
   const planPath = writeArtifact(s, 'plan.md', '# v1\n');
   assert.equal(state(s, 'artifact-record', 'plan', planPath).status, 0);
+  mintReceipt(s, 'legion:plan-critic');
   assert.equal(state(s, 'review-record', '--role', 'plan-critic', '--verdict', 'pass', '--subject', 'plan').status, 0);
   assert.equal(state(s, 'decision-record', 'plan').status, 0);
   assert.equal(state(s, 'stage-complete', 'plan').status, 0, 'round one completes');
@@ -328,6 +340,7 @@ test('stage-complete plan reads the LATEST plan-critic verdict, not any historic
   // Round two: the plan changed and this time the critic REJECTED it.
   writeFileSync(planPath, '# v2, with the appended work\n');
   assert.equal(state(s, 'artifact-record', 'plan', planPath).status, 0, 'cascade drops the approval');
+  mintReceipt(s, 'legion:plan-critic', 'fail');
   assert.equal(state(s, 'review-record', '--role', 'plan-critic', '--verdict', 'fail', '--subject', 'plan').status, 0);
   assert.equal(state(s, 'decision-record', 'plan').status, 0, 're-approved over the new bytes');
   const r = state(s, 'stage-complete', 'plan');
@@ -335,6 +348,7 @@ test('stage-complete plan reads the LATEST plan-critic verdict, not any historic
   assert.match(r.stderr, /LATEST plan-critic/);
 
   // And the documented rejection loop still closes: revise, re-review, complete.
+  mintReceipt(s, 'legion:plan-critic');
   assert.equal(state(s, 'review-record', '--role', 'plan-critic', '--verdict', 'pass', '--subject', 'plan').status, 0);
   assert.equal(state(s, 'stage-complete', 'plan').status, 0, 'a fresh pass completes the stage');
 });
@@ -346,6 +360,7 @@ test('stage-complete plan refuses when plan.md is edited after approval (hash dr
   seedTasks(s, [{ id: 'T1' }]);
   const planPath = writeArtifact(s, 'plan.md', '# v1\n');
   assert.equal(state(s, 'artifact-record', 'plan', planPath).status, 0);
+  mintReceipt(s, 'legion:plan-critic');
   assert.equal(state(s, 'review-record', '--role', 'plan-critic', '--verdict', 'pass', '--subject', 'plan').status, 0);
   assert.equal(state(s, 'decision-record', 'plan').status, 0);
   // edit plan.md on disk WITHOUT re-recording the artifact — approval subject drifts
@@ -382,6 +397,7 @@ test('express: a STALE critic pass reads as absence (excused); on standard it is
     seedTasks(s, [{ id: 'T1' }]);
     const planPath = writeArtifact(s, 'plan.md', '# v1\n');
     assert.equal(state(s, 'artifact-record', 'plan', planPath).status, 0);
+    mintReceipt(s, 'legion:plan-critic');
     assert.equal(state(s, 'review-record', '--role', 'plan-critic', '--verdict', 'pass', '--subject', 'plan').status, 0);
     // The plan moves AFTER the pass: re-record + re-approve, so the approval is hash-valid over
     // the new bytes while the critic pass still hashes the old subject.
@@ -606,11 +622,151 @@ test('review-record appends {role,verdict,subject,subjectHash,at}; validates ver
   // and tasks.json live in the dossier and change without the tree moving).
   writeArtifact(s, 'plan.md', '# plan\n');
   assert.equal(state(s, 'artifact-record', 'plan', 'plan.md').status, 0);
+  mintReceipt(s, 'legion:plan-critic'); // MINTED AFTER artifact-record: the receipt's planHash must be derivable
   const pr = state(s, 'review-record', '--role', 'plan-critic', '--verdict', 'pass', '--subject', 'plan');
   assert.equal(pr.status, 0, pr.stderr);
   const planRec = tasks(s).reviews.at(-1);
   assert.notEqual(planRec.subjectHash, sh(s.worktree, 'rev-parse', 'HEAD^{tree}'));
   assert.equal(planRec.subjectHash.length, 64);
+});
+
+// --- review receipts: reviewer-role verdicts demand attendance evidence --------------------
+// The reviewer roles refuse a bare record; every other role records exactly as before (the
+// `skeptic` row above pins that). Receipts are minted through `legion gate review-receipt` —
+// the surface the reviewer's SubagentStop hook calls — never hand-written here (forgery is the
+// acceptance suite's business, not this one's).
+
+test('review-record REFUSES a reviewer role with no receipt, and writes nothing', () => {
+  const s = scenario();
+  assert.equal(state(s, 'init').status, 0);
+  seedTasks(s, [{ id: 'T1', milestone: 'M1' }]);
+  const rev = tasks(s).revision;
+  const r = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1');
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /no unconsumed code-reviewer review receipt/);
+  assert.match(r.stderr, /--no-receipt-attest/, 'the refusal names the human waiver');
+  assert.equal(tasks(s).revision, rev, 'a refused record writes nothing');
+});
+
+test('a minted receipt lets the record through and is CONSUMED by it', () => {
+  const s = scenario();
+  assert.equal(state(s, 'init').status, 0);
+  seedTasks(s, [{ id: 'T1', milestone: 'M1' }]);
+  mintReceipt(s, 'legion:code-reviewer', 'pass', 'a-lens-1');
+  const receipt = tasks(s).reviewReceipts.at(-1);
+  assert.equal(receipt.role, 'code-reviewer', 'role is DERIVED from agent type, legion: prefix stripped');
+  assert.equal(receipt.treeHash, sh(s.worktree, 'rev-parse', 'HEAD^{tree}'), 'the kernel derived the tree itself');
+  assert.equal(receipt.consumed, null);
+  const r = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1');
+  assert.equal(r.status, 0, r.stderr);
+  const consumed = tasks(s).reviewReceipts.at(-1).consumed;
+  assert.deepEqual({ subject: consumed.subject, verdict: consumed.verdict }, { subject: 'task:T1', verdict: 'pass' });
+  // Spent is spent: the next record of that role needs fresh attendance.
+  const again = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'milestone:M1');
+  assert.equal(again.status, 1, 'a consumed receipt satisfies nothing');
+});
+
+test('a receipt binds at mint: the tree moving strands it (freshness IS the hash equality)', () => {
+  const s = scenario();
+  assert.equal(state(s, 'init').status, 0);
+  seedTasks(s, [{ id: 'T1' }]);
+  mintReceipt(s, 'legion:code-reviewer');
+  commit(s, 'drift.txt', 'the tree moved after the reviewer ran\n');
+  const r = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1');
+  assert.equal(r.status, 1, 'a stale receipt is not attendance at THIS tree');
+  assert.match(r.stderr, /no unconsumed code-reviewer review receipt/);
+});
+
+test('anti-fold: a pass cannot be recorded over an unconsumed FAIL receipt at the same subject', () => {
+  const s = scenario();
+  assert.equal(state(s, 'init').status, 0);
+  seedTasks(s, [{ id: 'T1' }]);
+  mintReceipt(s, 'legion:code-reviewer', 'pass', 'lens-correctness');
+  mintReceipt(s, 'legion:code-reviewer', 'fail', 'lens-tests');
+  const r = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1');
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /carries verdict 'fail' \(agent lens-tests/);
+  // The honest fail records, consuming BOTH lenses' receipts in the same single write.
+  const honest = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'fail', '--subject', 'task:T1');
+  assert.equal(honest.status, 0, honest.stderr);
+  assert.ok(tasks(s).reviewReceipts.every((x) => x.consumed !== null), 'the folded record answers for every lens');
+});
+
+test('SUBJECT SCOPING: sibling milestones at ONE tree — each record consumes only its own receipt', () => {
+  // One fix commit re-certifies every milestone, so M1's and M2's re-dispatched reviewers mint
+  // at the SAME tree. Pre-scoping, recording M1 consumed both and M2 was falsely refused with
+  // "the reviewer never ran" — the double-lens review's top finding.
+  const s = scenario();
+  assert.equal(state(s, 'init').status, 0);
+  seedTasks(s, [{ id: 'T1', milestone: 'M1' }, { id: 'T2', milestone: 'M2' }]);
+  mintReceipt(s, 'legion:code-reviewer', 'pass', 'recert-m1', 'milestone:M1');
+  mintReceipt(s, 'legion:code-reviewer', 'pass', 'recert-m2', 'milestone:M2');
+  const m1 = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'milestone:M1');
+  assert.equal(m1.status, 0, m1.stderr);
+  const m2 = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'milestone:M2');
+  assert.equal(m2.status, 0, `M1's record must not have eaten M2's receipt: ${m2.stderr}`);
+  // Nothing fungible was left behind: a THIRD subject at this tree has no attendance.
+  const third = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'feature');
+  assert.equal(third.status, 1, 'a scoped receipt never serves a subject its reviewer did not examine');
+});
+
+test('the waiver does NOT lift the anti-fold rule, and a waived record consumes what matches', () => {
+  const s = scenario();
+  assert.equal(state(s, 'init').status, 0);
+  seedTasks(s, [{ id: 'T1' }]);
+  mintReceipt(s, 'legion:code-reviewer', 'fail', 'lens-f');
+  const waivedPass = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1',
+    '--no-receipt-attest', 'looks fine to me');
+  assert.equal(waivedPass.status, 1, 'a human attesting a pass over a live fail lens is still the fabrication');
+  assert.match(waivedPass.stderr, /the waiver does not lift this rule/);
+  // The honest waived FAIL records — and consumes the lens receipt, so nothing dangles.
+  const honest = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'fail', '--subject', 'task:T1',
+    '--no-receipt-attest', 'confirming the lens finding by hand');
+  assert.equal(honest.status, 0, honest.stderr);
+  assert.ok(tasks(s).reviewReceipts.every((x) => x.consumed !== null), 'a waiver leaves no receipt dangling');
+});
+
+test('an attendance-only receipt (no verdict extracted) satisfies existence and never blocks', () => {
+  const s = scenario();
+  assert.equal(state(s, 'init').status, 0);
+  seedTasks(s, [{ id: 'T1' }]);
+  mintReceipt(s, 'legion:product-reviewer', null);
+  assert.equal(tasks(s).reviewReceipts.at(-1).verdict, null);
+  const r = state(s, 'review-record', '--role', 'product-reviewer', '--verdict', 'pass', '--subject', 'feature');
+  assert.equal(r.status, 0, r.stderr);
+});
+
+test('--no-receipt-attest waives with a reason: audited synthetic receipt, identical review row', () => {
+  const s = scenario();
+  assert.equal(state(s, 'init').status, 0);
+  seedTasks(s, [{ id: 'T1' }]);
+  const empty = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1', '--no-receipt-attest', '   ');
+  assert.equal(empty.status, 1);
+  assert.match(empty.stderr, /non-empty reason/);
+  const r = state(s, 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'task:T1', '--no-receipt-attest', 'human reviewed the diff in the MR UI');
+  assert.equal(r.status, 0, r.stderr);
+  const w = tasks(s).reviewReceipts.at(-1);
+  assert.equal(w.waived, true);
+  assert.equal(w.reason, 'human reviewed the diff in the MR UI');
+  assert.notEqual(w.consumed, null, 'born consumed — it can never satisfy a later record');
+  assert.equal(w.agentId, null, 'no agent is claimed — the waiver marks absence, it does not fabricate attendance');
+  // The row itself is FIELD-IDENTICAL to a receipted one: the frozen pre-merge formula hashes
+  // rows, and receipts live outside it.
+  assert.deepEqual(Object.keys(tasks(s).reviews.at(-1)).sort(), ['at', 'role', 'subject', 'subjectHash', 'verdict']);
+});
+
+test('review-receipt is `legion gate` surface, not a state op, and refuses non-reviewer types', () => {
+  const s = scenario();
+  assert.equal(state(s, 'init').status, 0);
+  const r = state(s, 'review-receipt', '--agent-type', 'legion:code-reviewer', '--agent-id', 'x');
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /unknown state op 'review-receipt'/);
+  const badType = gate(s, 'review-receipt', '--agent-type', 'general-purpose', '--agent-id', 'x');
+  assert.equal(badType.status, 1);
+  assert.match(badType.stderr, /not a reviewer agent type/);
+  const noId = gate(s, 'review-receipt', '--agent-type', 'legion:code-reviewer', '--agent-id', '  ');
+  assert.equal(noId.status, 1);
+  assert.match(noId.stderr, /harness-supplied agent id/);
 });
 
 // --- receipts: earned, never typed (T12) ---------------------------------------------------

@@ -11,7 +11,7 @@
 // safe outside a feature, does its one job inside one, and blocks when it must.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -357,6 +357,205 @@ test('SubagentStop is inert for every other subagent and outside a task', () => 
   const s2 = scenario();
   const r2 = fire(s2, 'builder-receipt', { agent_type: 'legion:builder', cwd: s2.worktree, stop_hook_active: false });
   assert.equal(r2.status, 0);
+});
+
+// --- SubagentStop: review-receipt (the reviewer-scoped minter) -------------------------------
+// The asymmetry with builder-receipt is deliberate and pinned here: NOTHING in this hook ever
+// exits 2. A reviewer that stopped has no remedial action; the fail-closed layer is
+// `legion state review-record`, which refuses without the receipt this hook mints.
+
+const readTasksJson = (s) => JSON.parse(readFileSync(join(s.dossier, 'tasks.json'), 'utf8'));
+
+test('a reviewer stop MINTS a verdict-bearing receipt from last_assistant_message', () => {
+  const s = scenario();
+  const r = fire(s, 'review-receipt', {
+    hook_event_name: 'SubagentStop', agent_type: 'legion:code-reviewer', agent_id: 'rev-1',
+    agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: s.worktree,
+    last_assistant_message: '{"verdict":"pass","findings":[]}',
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const receipt = readTasksJson(s).reviewReceipts.at(-1);
+  assert.equal(receipt.role, 'code-reviewer');
+  assert.equal(receipt.agentId, 'rev-1');
+  assert.equal(receipt.verdict, 'pass');
+  assert.equal(receipt.treeHash, sh(s.worktree, 'rev-parse', 'HEAD^{tree}'));
+  assert.equal(receipt.consumed, null);
+});
+
+test('the LAST verdict in the message wins, and `revise` (plan-critic vocabulary) maps to fail', () => {
+  const s = scenario();
+  const r = fire(s, 'review-receipt', {
+    hook_event_name: 'SubagentStop', agent_type: 'legion:plan-critic', agent_id: 'critic-1',
+    agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: s.worktree,
+    // Quoted findings mention a pass; the critic's own conclusion comes last.
+    last_assistant_message: 'earlier draft said {"verdict":"pass"} but final: {"verdict":"revise","findings":[]}',
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readTasksJson(s).reviewReceipts.at(-1).verdict, 'fail', 'a plan sent back is not a plan that passed');
+});
+
+test('no extractable verdict anywhere ⇒ ATTENDANCE-ONLY receipt, never a guessed verdict', () => {
+  const s = scenario();
+  const r = fire(s, 'review-receipt', {
+    hook_event_name: 'SubagentStop', agent_type: 'legion:product-reviewer', agent_id: 'prod-1',
+    agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: s.worktree,
+    last_assistant_message: 'the reviewer said many things but returned no structured verdict',
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const receipt = readTasksJson(s).reviewReceipts.at(-1);
+  assert.equal(receipt.verdict, null);
+  assert.equal(receipt.role, 'product-reviewer');
+});
+
+test('the stated review SUBJECT is extracted and scopes the receipt; garbage subjects are left unstated', () => {
+  const s = scenario();
+  const r = fire(s, 'review-receipt', {
+    hook_event_name: 'SubagentStop', agent_type: 'legion:code-reviewer', agent_id: 'rev-s',
+    agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: s.worktree,
+    last_assistant_message: '{"verdict":"pass","subject":"milestone:M1","findings":[]}',
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readTasksJson(s).reviewReceipts.at(-1).subject, 'milestone:M1');
+  // A subject outside the kernel vocabulary is not extracted — the receipt stays unscoped
+  // rather than carrying a value the kernel would refuse the whole mint over.
+  const r2 = fire(s, 'review-receipt', {
+    hook_event_name: 'SubagentStop', agent_type: 'legion:code-reviewer', agent_id: 'rev-g',
+    agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: s.worktree,
+    last_assistant_message: '{"verdict":"pass","subject":"whatever:thing","findings":[]}',
+  });
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.equal(readTasksJson(s).reviewReceipts.at(-1).subject, null);
+});
+
+test('codex-consult reporting available:false mints ATTENDANCE-ONLY — a missing lens is not a fail', () => {
+  // The loop never records an unavailable consult, so a schema-forced 'fail' minted here would
+  // strand an unconsumable fail receipt that anti-fold-blocks the honest pass after codex
+  // comes back at the same tree — the codex lens's own top finding on this feature.
+  const s = scenario();
+  const r = fire(s, 'review-receipt', {
+    hook_event_name: 'SubagentStop', agent_type: 'legion:codex-consult', agent_id: 'codex-1',
+    agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: s.worktree,
+    last_assistant_message: '{"available":false,"verdict":"fail","findings":[],"raw":"codex CLI not found"}',
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const receipt = readTasksJson(s).reviewReceipts.at(-1);
+  assert.equal(receipt.verdict, null, 'a missing lens has no verdict to certify');
+  assert.equal(receipt.role, 'codex-consult');
+});
+
+test('the transcript TAIL is the fallback source when last_assistant_message carries no verdict', () => {
+  const s = scenario();
+  const transcript = join(s.base, 'reviewer-transcript.jsonl');
+  writeFileSync(transcript, `${'x'.repeat(200)}\n{"type":"assistant","message":"…"}\n{"toolu":"structured","input":{"verdict":"fail","findings":[]}}\n`);
+  const r = fire(s, 'review-receipt', {
+    hook_event_name: 'SubagentStop', agent_type: 'legion:visual-reviewer', agent_id: 'vis-1',
+    agent_transcript_path: transcript, stop_hook_active: false, cwd: s.worktree,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(readTasksJson(s).reviewReceipts.at(-1).verdict, 'fail');
+});
+
+test('available:false voids the verdict for the CONSULT LENS ONLY — any other reviewer keeps its fail', () => {
+  // The orphan-receipt argument is codex-consult's alone: the loop never records an unavailable
+  // consult, so its schema-forced 'fail' would strand an unconsumable receipt. `available` is not
+  // in any other reviewer's contract, so honouring it there would let one off-contract field
+  // retire the anti-fold rule — a later `review-record --verdict pass` at that subject and tree
+  // would meet no live fail receipt and be accepted.
+  const s = scenario();
+  for (const agent_type of ['legion:product-reviewer', 'legion:code-reviewer', 'legion:visual-reviewer', 'legion:plan-critic']) {
+    const r = fire(s, 'review-receipt', {
+      hook_event_name: 'SubagentStop', agent_type, agent_id: `av-${agent_type}`,
+      agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: s.worktree,
+      last_assistant_message: '{"available":false,"verdict":"fail","subject":"milestone:M1","findings":[]}',
+    });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(readTasksJson(s).reviewReceipts.at(-1).verdict, 'fail', `${agent_type} keeps its verdict`);
+  }
+});
+
+test('verdict and subject come from the SAME source — a quoted subject never re-scopes a tail verdict', () => {
+  // The subject used to be read from last_assistant_message with the tail as a fallback, while the
+  // verdict picked its own source. A message that merely QUOTES a subject (an echoed brief, an
+  // earlier draft) without a verdict literal therefore paired the tail's verdict with the
+  // message's subject: a `fail` receipt at a subject nobody reviewed, which anti-fold-blocks the
+  // honest pass there while the reviewed subject's record is refused for want of evidence.
+  const s = scenario();
+  const transcript = join(s.base, 'mixed-source-transcript.jsonl');
+  writeFileSync(transcript, `${'x'.repeat(200)}\n{"toolu":"structured","input":{"verdict":"fail","subject":"milestone:M1","findings":[]}}\n`);
+  const r = fire(s, 'review-receipt', {
+    hook_event_name: 'SubagentStop', agent_type: 'legion:code-reviewer', agent_id: 'rev-mixed',
+    agent_transcript_path: transcript, stop_hook_active: false, cwd: s.worktree,
+    // No verdict literal ⇒ the tail is the source. The quoted subject must NOT be picked up.
+    last_assistant_message: 'I reviewed the milestone; my brief quoted "subject":"task:T1" as the example shape.',
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const receipt = readTasksJson(s).reviewReceipts.at(-1);
+  assert.equal(receipt.verdict, 'fail');
+  assert.equal(receipt.subject, 'milestone:M1', 'the subject must come from the source the verdict came from');
+});
+
+test('review-receipt is inert for non-reviewers and unregistered cwds', () => {
+  const s = scenario();
+  const before = readTasksJson(s).revision;
+  for (const agent_type of ['legion:builder', 'legion:architect', 'general-purpose', 'legion:kernel-op', '']) {
+    const r = fire(s, 'review-receipt', { agent_type, agent_id: 'x', cwd: s.worktree, stop_hook_active: false });
+    assert.equal(r.status, 0, `${agent_type} must not trigger the reviewer hook`);
+    assert.equal(r.stderr, '', `${agent_type}: silence, not a refusal`);
+  }
+  assert.equal(readTasksJson(s).revision, before, 'nothing minted for any of them');
+  const outside = fire(s, 'review-receipt', {
+    agent_type: 'legion:code-reviewer', agent_id: 'x', cwd: tmpdir(), stop_hook_active: false,
+    last_assistant_message: '{"verdict":"pass"}',
+  });
+  assert.equal(outside.status, 0);
+  assert.equal(outside.stderr, '', 'not a legion worktree — the one sanctioned silence');
+});
+
+test('a CORRUPT tasks.json is LOUD but RELEASES (exit 0) — review-record is the fail-closed layer', () => {
+  const s = scenario();
+  writeFileSync(join(s.dossier, 'tasks.json'), '{ not json !\n');
+  const r = fire(s, 'review-receipt', {
+    hook_event_name: 'SubagentStop', agent_type: 'legion:code-reviewer', agent_id: 'rev-1',
+    agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: s.worktree,
+    last_assistant_message: '{"verdict":"pass"}',
+  });
+  assert.equal(r.status, 0, 'blocking a reviewer stop cannot mend a manifest or mint anything');
+  assert.match(r.stderr, /DOSSIER CORRUPT/);
+  assert.match(r.stderr, /tasks\.json/, 'the broken file is named');
+  assert.match(r.stderr, /review-record/, 'and the layer that will refuse is named');
+});
+
+test('a kernel REFUSAL of the mint is surfaced on stderr, never swallowed — and still releases', () => {
+  const s = scenario();
+  const r = fire(s, 'review-receipt', {
+    hook_event_name: 'SubagentStop', agent_type: 'legion:code-reviewer', agent_id: '',
+    agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: s.worktree,
+    last_assistant_message: '{"verdict":"pass"}',
+  });
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /review receipt mint refused/);
+  assert.match(r.stderr, /agent id/);
+});
+
+test('two lenses stopping CONCURRENTLY both mint — the manifest lock loses neither', async () => {
+  const s = scenario();
+  const payload = (id) => JSON.stringify({
+    hook_event_name: 'SubagentStop', agent_type: 'legion:code-reviewer', agent_id: id,
+    agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: s.worktree,
+    last_assistant_message: '{"verdict":"pass","findings":[]}',
+  });
+  const fireAsync = (id) => new Promise((resolve) => {
+    const p = spawn(NODE, [HOOK('review-receipt')], { env: s.env });
+    let stderr = '';
+    p.stderr.on('data', (d) => { stderr += d; });
+    p.on('close', (code) => resolve({ code, stderr }));
+    p.stdin.end(payload(id));
+  });
+  const [a, b] = await Promise.all([fireAsync('lens-a'), fireAsync('lens-b')]);
+  assert.equal(a.code, 0, a.stderr);
+  assert.equal(b.code, 0, b.stderr);
+  const ids = readTasksJson(s).reviewReceipts.map((x) => x.agentId).sort();
+  assert.deepEqual(ids, ['lens-a', 'lens-b'], 'a lost update here IS a lost review');
 });
 
 // --- Notification ----------------------------------------------------------------------------

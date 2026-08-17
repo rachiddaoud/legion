@@ -1,6 +1,11 @@
-// gate.mjs — `legion gate run|verify-receipt`. Runs tier-0 self-protection plus tiered
-// project-owned commands, cheap → expensive, stopping at the first failure. Locking,
+// gate.mjs — `legion gate run|verify-receipt|review-receipt`. Runs tier-0 self-protection plus
+// tiered project-owned commands, cheap → expensive, stopping at the first failure. Locking,
 // paths and events are kernel concerns, not this file's.
+// `review-receipt` is the OTHER minter this file hosts: it records attendance (and, when the
+// hook could extract one, verdict) evidence that a REVIEWER agent ran, consumed later by
+// `legion state review-record`. Its honesty note lives at the branch below — same residual as
+// gate receipts: the ordinary caller is the reviewer's SubagentStop hook with harness-supplied
+// identity, a Bash-holder can invoke it directly, and that is not closed and not claimed to be.
 //
 // PROTOCOL: edit → self-test → COMMIT → `legion gate run`.
 //
@@ -321,13 +326,15 @@ import { git, worktreeDirt } from '../kernel/git.mjs';
 import { readJson } from '../kernel/fsatomic.mjs';
 import { projectsIndexPath, safeSegment } from '../kernel/paths.mjs';
 import {
-  commandPolicyHash, commandPolicyPin, receiptProvenance, recordGateReceipt, repinCommandPolicy,
+  commandPolicyHash, commandPolicyPin, receiptProvenance, recordGateReceipt, recordReviewReceipt,
+  repinCommandPolicy,
 } from '../kernel/state.mjs';
 import { resolveDossier } from './state.mjs';
 
 const USAGE =
   'legion gate run [--task <id> | --boundary] [--allow-config] [--repin] [--org <org>] [--feature <name>] [--now <iso>]\n' +
-  '       legion gate verify-receipt [--task <id> | --boundary] [--org <org>] [--feature <name>]';
+  '       legion gate verify-receipt [--task <id> | --boundary] [--org <org>] [--feature <name>]\n' +
+  '       legion gate review-receipt --agent-type <type> --agent-id <id> [--verdict <pass|fail>] [--subject <s>] [--org <org>] [--feature <name>] [--now <iso>]';
 
 // --- tier-0 policy -----------------------------------------------------------------------
 // Lint/format/type configs are the gate's own definition: a builder must fix the code, not
@@ -962,13 +969,32 @@ export async function run(argv) {
   // argv UNSPLIT: parseArgs binds `--task=T1` inline itself (mirrors state.mjs).
   const { flags, positional } = parseArgs(argv, { bools: ['boundary', 'allow-config', 'repin'] });
   const sub = positional[0];
-  if (positional.length !== 1 || (sub !== 'run' && sub !== 'verify-receipt')) {
+  if (positional.length !== 1 || (sub !== 'run' && sub !== 'verify-receipt' && sub !== 'review-receipt')) {
     throw new Error(`unknown or malformed subcommand '${positional.join(' ')}'. usage:\n${USAGE}`);
   }
   // --repin MOVES THE PIN and is meaningless where nothing is recorded; verify-receipt writes no
   // state, so accepting it there would be advertising a re-pin that never happened.
   if (flags.repin === true && sub !== 'run') {
     throw new Error(`--repin is only valid on \`legion gate run\` (it records a new pin). usage:\n${USAGE}`);
+  }
+  // REVIEW-RECEIPT MINT, before the --task/--boundary arbitration (that pair belongs to the gate
+  // tiers; a review receipt has neither). The ordinary caller is the reviewer agent's
+  // SubagentStop hook, where --agent-type/--agent-id are HARNESS-supplied facts. Honesty note,
+  // per the header: a Bash-holder can invoke this directly and mint attendance for a reviewer
+  // that never ran, exactly as one can hand-write tasks.json — not closed, not claimed to be.
+  // What stays closed is the advertised surface: no `legion state` op mints one, and the bare
+  // review-record assertion no longer records reviewer roles.
+  if (sub === 'review-receipt') {
+    const mintNow = flags.now ?? new Date().toISOString();
+    if (Number.isNaN(Date.parse(mintNow))) throw new Error(`invalid --now '${flags.now}' — must be a parseable timestamp`);
+    const out = recordReviewReceipt(resolveDossier(flags), {
+      agentType: flags['agent-type'],
+      agentId: flags['agent-id'],
+      verdict: flags.verdict ?? null,
+      subject: flags.subject ?? null,
+    }, mintNow);
+    process.stdout.write(`${out}\n`);
+    return 0;
   }
   const wantTask = flags.task != null;
   const wantBoundary = flags.boundary === true;

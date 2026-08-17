@@ -15,7 +15,8 @@
 // TWO EXCEPTIONS to "every write lives here", named rather than left implicit:
 //   1. `legion finalize` (src/cli/finalize.mjs) records the read-back MR into feature.json. It
 //      is not a typed op because its evidence is a REMOTE fact this kernel cannot derive.
-//   2. `legion gate` (src/cli/gate.mjs) MINTS RECEIPTS — recordGateReceipt writes tasks.json —
+//   2. `legion gate` (src/cli/gate.mjs) MINTS RECEIPTS — recordGateReceipt and
+//      recordReviewReceipt write tasks.json —
 //      and, under `--repin`, moves the pin — repinCommandPolicy writes feature.json. A single
 //      `gate run --repin` therefore writes BOTH manifests, which is the one command in the
 //      kernel that does; it is two writes through two exported writers, each obeying the
@@ -62,6 +63,19 @@
 // PREDICATE (reviewBindingHolds), re-derived wherever a review is a PREREQUISITE: the plan row
 // (the LATEST plan-critic pass must bind to the CURRENT plan), the review row (each profile role's
 // latest product-scope verdict must bind to the CURRENT tree), and finalize's C5.
+// A REVIEWER-ROLE VERDICT ADDITIONALLY REQUIRES ATTENDANCE EVIDENCE: an unconsumed review
+// receipt (`reviewReceipts[]`, minted by the reviewer agent's SubagentStop hook through
+// `legion gate review-receipt` — never by an op here) whose binding hash equals the subject
+// hash being recorded, SCOPED to the recorded subject when the receipt carries one (the
+// reviewer states what it reviewed; extraction failure degrades to a fungible null-subject
+// receipt — several same-role reviews legitimately share one tree, so hash alone must not let
+// one record consume a sibling subject's evidence). Recording consumes every matching receipt
+// in the same write, and a `pass` refuses while a matching receipt says `fail` (the anti-fold
+// rule: N lenses mint N receipts, one folded record answers for all of them) — the waiver does
+// NOT lift that rule. `--no-receipt-attest '<reason>'` is the audited human waiver for the
+// EXISTENCE requirement only; it consumes what matches and writes a synthetic `waived` receipt.
+// Receipts live OUTSIDE reviews[], so canonicalReviews() — and with it the frozen pre-merge
+// formula below — is untouched by their existence, their consumption, or a waiver.
 // CONSEQUENCE FOR THE FROZEN PRE-MERGE FORMULA, deliberate and taken exactly once, with no
 // real features in flight: adding `subjectHash` to review records changes canonicalReviews()
 // output, so every pre-merge approval recorded under an earlier formula no longer validates —
@@ -248,7 +262,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readJson, writeJson } from './fsatomic.mjs';
+import { readJson, writeJson, withLock } from './fsatomic.mjs';
 import { git, isWorktreeClean } from './git.mjs';
 import { safeSegment } from './paths.mjs';
 // THE shared ticket-ref validator (kernel/ticket.mjs). Imported, never re-implemented: `feature
@@ -1404,46 +1418,146 @@ function taskAnswer(dossier, { flags, positional }, now) {
   return `recorded answer for task ${id}`;
 }
 
+// --- review receipts: attendance evidence behind review-record (header REVIEWS BIND) --------
+// agentType (minus an optional `legion:` namespace) → the recorded role. Identity today, a map
+// on purpose: the role on a receipt is DERIVED from the harness-supplied agent type, never from
+// a caller flag, and this is the one place the relation lives if the vocabularies ever split.
+export const REVIEW_RECEIPT_AGENT_ROLES = {
+  'code-reviewer': 'code-reviewer',
+  'product-reviewer': 'product-reviewer',
+  'visual-reviewer': 'visual-reviewer',
+  'plan-critic': 'plan-critic',
+  'codex-consult': 'codex-consult',
+};
+// The roles review-record demands a receipt for. Any OTHER role records exactly as before:
+// role has never had a whitelist, no stage predicate counts an unknown role, and refusing one
+// would break a human's ad-hoc review for zero enforcement gain.
+export const ENFORCED_REVIEW_ROLES = new Set(Object.keys(REVIEW_RECEIPT_AGENT_ROLES));
+
+/** The unconsumed receipts of `role` whose binding equals the subject hash being recorded AND
+ * whose subject — when the receipt carries one — is the subject being recorded.
+ * The binding forks per SUBJECT KIND exactly as reviewSubjectHash does — `plan` binds the plan
+ * hash, everything else the tree — so minter and consumer cannot diverge. Freshness IS the hash
+ * equality (no wall-clock TTL): a receipt minted before the subject moved matches nothing,
+ * the same rule taskDone applies to a stale gate receipt.
+ * SUBJECT SCOPING: several reviews of the same role can legitimately share one tree (one fix
+ * commit re-certifies every milestone), so hash equality alone would let the first record
+ * consume — or a stray fail block — a SIBLING subject's receipts. A receipt whose minter could
+ * state the subject (the reviewer emits it; the hook extracts it like the verdict) matches
+ * only that subject; a `subject: null` receipt (degraded extraction) stays fungible across
+ * subjects at its hash — attendance evidence, honestly unscoped. Pure; exported for tests. */
+export function freshReviewReceipts(receipts, role, subject, subjectHash) {
+  const binding = (r) => (subject === 'plan' ? r.planHash : r.treeHash);
+  return (receipts ?? []).filter((r) =>
+    r.role === role && r.consumed == null && binding(r) === subjectHash
+    && ((r.subject ?? null) === null || r.subject === subject));
+}
+
 /** Record a verdict BOUND to what it judged (header REVIEWS BIND — R3). The caller supplies
  * role/verdict/subject (content, like a task title); the kernel derives the subjectHash itself
  * and validates that the subject NAMES SOMETHING REAL — there is no --subject-hash flag, and a
  * syntactically valid subject naming no task/milestone refuses rather than recording a verdict
- * about nothing. */
+ * about nothing. For the reviewer roles the kernel additionally demands ATTENDANCE EVIDENCE —
+ * an unconsumed review receipt, minted by the reviewer agent's SubagentStop hook, bound to the
+ * same subject hash — because a bare review-record is a caller's assertion that a review
+ * happened, not evidence of one (the same argument that keeps `receipt-record` out of OPS).
+ * `--no-receipt-attest '<reason>'` is the audited HUMAN waiver: it skips the requirement and
+ * writes a synthetic, born-consumed, `waived` receipt instead — the absence of evidence is
+ * marked, never silently accepted. The review ROW itself is field-identical either way: the
+ * frozen pre-merge formula hashes rows, and receipts live outside it. */
 function reviewRecord(dossier, { flags }, now) {
   const role = flags.role;
   const verdict = flags.verdict;
   const subject = flags.subject;
+  const waiver = flags['no-receipt-attest'];
   if (role == null) throw new Error('review-record requires --role <role>');
   if (verdict !== 'pass' && verdict !== 'fail') throw new Error(`review-record --verdict must be pass|fail, got '${verdict}'`);
   if (subject == null || !/^(task:.+|milestone:.+|feature|plan)$/.test(subject)) {
     throw new Error(`review-record --subject must be task:<id> | milestone:<id> | feature | plan, got '${subject}'`);
   }
-  const t = loadTasks(dossier);
-  const f = loadFeature(dossier);
-  if (subject.startsWith('task:')) {
-    const id = subject.slice('task:'.length);
-    if (!t.tasks.some((x) => x.id === id)) {
-      throw new Error(`review subject names unknown task '${id}' — not in tasks.json; a verdict about a task that does not exist is a caller assertion, not evidence`);
-    }
+  if (waiver !== undefined && (typeof waiver !== 'string' || waiver.trim().length === 0)) {
+    throw new Error('--no-receipt-attest requires a non-empty reason — the waiver is an audited human attestation, not a bypass flag');
   }
-  if (subject.startsWith('milestone:')) {
-    const id = subject.slice('milestone:'.length);
-    if (!t.tasks.some((x) => x.milestone === id)) {
-      throw new Error(`review subject names unknown milestone '${id}' — no task in tasks.json belongs to it`);
+  // The receipt judgment and the row append must see ONE consistent manifest: receipts are
+  // minted by hooks firing off concurrently-stopping reviewer lenses, so the whole
+  // read→judge→write cycle holds the same lock the minter takes.
+  return withLock(tasksPathOf(dossier), () => {
+    const t = loadTasks(dossier);
+    const f = loadFeature(dossier);
+    if (subject.startsWith('task:')) {
+      const id = subject.slice('task:'.length);
+      if (!t.tasks.some((x) => x.id === id)) {
+        throw new Error(`review subject names unknown task '${id}' — not in tasks.json; a verdict about a task that does not exist is a caller assertion, not evidence`);
+      }
     }
-  }
-  const subjectHash = reviewSubjectHash(subject, t, f); // derived NOW, by kind; throws loudly if the subject's evidence is missing
-  const reviews = [...t.reviews, { role, verdict, subject, subjectHash, at: now }];
-  bumpWrite(tasksPathOf(dossier), { ...t, reviews }, now);
-  return `recorded ${role} review: ${verdict} on ${subject} (subjectHash ${subjectHash})`;
+    if (subject.startsWith('milestone:')) {
+      const id = subject.slice('milestone:'.length);
+      if (!t.tasks.some((x) => x.milestone === id)) {
+        throw new Error(`review subject names unknown milestone '${id}' — no task in tasks.json belongs to it`);
+      }
+    }
+    const subjectHash = reviewSubjectHash(subject, t, f); // derived NOW, by kind; throws loudly if the subject's evidence is missing
+    let reviewReceipts = t.reviewReceipts ?? [];
+    let receiptsChanged = false;
+    if (ENFORCED_REVIEW_ROLES.has(role)) {
+      const matching = freshReviewReceipts(reviewReceipts, role, subject, subjectHash);
+      // The anti-fold rule has NO bypass — not even the waiver: a human attesting a pass while
+      // a live lens receipt at this very subject says 'fail' is exactly the fabrication this
+      // mechanism exists to catch, whoever types it.
+      const failing = verdict === 'pass' ? matching.find((r) => r.verdict === 'fail') : undefined;
+      if (failing) {
+        throw new Error(
+          `refusing to record a ${role} 'pass' on ${subject}: an unconsumed ${role} receipt at ` +
+          `this subject carries verdict 'fail' (agent ${failing.agentId}, minted ${failing.at}) — ` +
+          `a pass recorded over a lens that failed is exactly the fabrication receipts exist to ` +
+          `catch, and the waiver does not lift this rule. Record the honest 'fail' first ` +
+          `(recording consumes the matching receipts), or fix and re-dispatch the lens ` +
+          `(the moved subject strands the stale receipt)`,
+        );
+      }
+      if (waiver === undefined && matching.length === 0) {
+        throw new Error(
+          `refusing to record a ${role} review on ${subject}: no unconsumed ${role} review receipt ` +
+          `binds the current subject hash ${subjectHash} — a bare review-record is a caller's ` +
+          `assertion that a reviewer ran, not evidence of one, and the reviewer agent's ` +
+          `SubagentStop hook is the only ordinary minter. Dispatch the legion:${role} agent ` +
+          `against the current subject, then re-run this exact command — or, for a review a ` +
+          `human performed outside an agent, add --no-receipt-attest '<why no agent ran>' ` +
+          `(recorded in the audit trail)`,
+        );
+      }
+      const stamp = { subject, verdict, at: now };
+      if (matching.length > 0) {
+        // Consumed by the waived record too: receipts left dangling under a waiver could
+        // satisfy a later record no dispatch backs.
+        const consume = new Set(matching);
+        reviewReceipts = reviewReceipts.map((r) => (consume.has(r) ? { ...r, consumed: stamp } : r));
+      }
+      if (waiver !== undefined) {
+        let planHash;
+        try { planHash = computeSubjectHash('plan', t, f); } catch { planHash = null; }
+        reviewReceipts = [...reviewReceipts, {
+          agentType: null, agentId: null, role, subject, verdict,
+          treeHash: treeOf(f.worktree), planHash, at: now,
+          consumed: stamp, waived: true, reason: waiver.trim(),
+        }];
+      }
+      receiptsChanged = true;
+    }
+    const reviews = [...t.reviews, { role, verdict, subject, subjectHash, at: now }];
+    bumpWrite(tasksPathOf(dossier), receiptsChanged ? { ...t, reviews, reviewReceipts } : { ...t, reviews }, now);
+    return `recorded ${role} review: ${verdict} on ${subject} (subjectHash ${subjectHash})`;
+  });
 }
 
-// --- the receipt writer: EXPORTED, and deliberately NOT in OPS ------------------------------
-// These two are the second named exception in the header. They are ordinary exported functions
+// --- the receipt writers: EXPORTED, and deliberately NOT in OPS -----------------------------
+// These are the second named exception in the header. They are ordinary exported functions
 // rather than typed ops precisely so that `legion state` cannot reach them: there is no argv
 // shape, no flag surface and no dispatch entry that mints a receipt. `legion gate` (src/cli/
-// gate.mjs) is the only caller of either, which is what makes "the gate is the only minter"
-// a property of the code rather than a sentence in a document.
+// gate.mjs) is the only caller of any of them, which is what makes "the gate is the only
+// minter" a property of the code rather than a sentence in a document. recordReviewReceipt
+// below joins them under the same rule: review-record CONSUMES receipts, it must never be a
+// path that creates one.
 
 /** Mint the receipt for a GREEN gate run. ONE bumpWrite of tasks.json.
  *
@@ -1500,6 +1614,59 @@ export function recordGateReceipt(dossier, spec, now) {
   const receipts = { ...t.receipts, boundary: receipt };
   bumpWrite(tasksPathOf(dossier), { ...t, receipts }, now);
   return `recorded boundary receipt (HEAD ${head}, ${declaredCommands} declared boundary command(s)${weak})`;
+}
+
+/** Mint a REVIEW receipt: attendance (and, when extractable, verdict) evidence that a reviewer
+ * agent of `agentType` actually ran and stopped at the current subject state. Reached only via
+ * `legion gate review-receipt`, whose ordinary caller is the reviewer's SubagentStop hook —
+ * agentType and agentId are HARNESS-supplied facts there, not the recorder's claim about itself.
+ * WHAT THIS IS NOT: a closed identity channel. A Bash-holder can run the same command, exactly
+ * as a Bash-holder can hand-write tasks.json (gate.mjs header, "not closed and not claimed to
+ * be"). What it closes is the ADVERTISED surface: the bare review-record assertion, and any
+ * `legion state` path to a receipt.
+ * The role is DERIVED from agentType — there is no --role flag on the mint, for the same reason
+ * there is no --subject-hash on review-record.
+ * NO DIRTY-WORKTREE REFUSAL, a deliberate asymmetry with recordGateReceipt above and stated
+ * here so nobody "fixes" it: reviewSubjectHash reads HEAD's tree whether or not the worktree is
+ * dirty, and minter and consumer MUST derive identically — a receipt the consumer could never
+ * match is strictly worse than none. A gate receipt certifies tree CONTENT (dirt is a lie
+ * about it); a review receipt records attendance AT a subject hash. */
+export function recordReviewReceipt(dossier, spec, now) {
+  const { agentType, agentId, verdict = null, subject = null } = spec;
+  const base = String(agentType ?? '').replace(/^legion:/, '');
+  const role = REVIEW_RECEIPT_AGENT_ROLES[base];
+  if (role == null) {
+    throw new Error(
+      `not a reviewer agent type: '${agentType}' — review receipts are minted for ` +
+      `${Object.keys(REVIEW_RECEIPT_AGENT_ROLES).join(', ')} (with or without the legion: prefix)`,
+    );
+  }
+  if (typeof agentId !== 'string' || agentId.trim().length === 0) {
+    throw new Error('recordReviewReceipt requires the harness-supplied agent id');
+  }
+  if (verdict !== null && verdict !== 'pass' && verdict !== 'fail') {
+    throw new Error(`review receipt verdict must be pass|fail or absent (attendance-only), got '${verdict}'`);
+  }
+  // Subject is OPTIONAL evidence (the reviewer stated what it reviewed; the hook extracted it
+  // as it extracts the verdict). Present, it SCOPES the receipt to that subject; absent, the
+  // receipt is fungible attendance at its hash (freshReviewReceipts). Malformed is refused, not
+  // silently widened into fungibility a caller did not ask for.
+  if (subject !== null && !/^(task:.+|milestone:.+|feature|plan)$/.test(subject)) {
+    throw new Error(`review receipt subject must be task:<id> | milestone:<id> | feature | plan (or absent), got '${subject}'`);
+  }
+  const f = loadFeature(dossier);
+  const treeHash = treeOf(f.worktree);
+  const tp = tasksPathOf(dossier);
+  // Same lock review-record holds: N lenses stop, and therefore mint, at the same moment, and
+  // a lost update here IS a lost review the record step would then refuse on.
+  return withLock(tp, () => {
+    const t = loadTasks(dossier);
+    let planHash;
+    try { planHash = computeSubjectHash('plan', t, f); } catch { planHash = null; } // no plan artifact yet — a plan-bound record will simply never match
+    const receipt = { agentType: String(agentType), agentId: agentId.trim(), role, subject, verdict, treeHash, planHash, at: now, consumed: null };
+    bumpWrite(tp, { ...t, reviewReceipts: [...(t.reviewReceipts ?? []), receipt] }, now);
+    return `minted ${role} review receipt (agent ${receipt.agentId}, tree ${treeHash}${subject ? `, subject ${subject}` : ''}${verdict ? `, verdict ${verdict}` : ', attendance-only'})`;
+  });
 }
 
 /** Move the per-feature gate policy PIN to the live project policy, AND RECORD THE MOVE. ONE

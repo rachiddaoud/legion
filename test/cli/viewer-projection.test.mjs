@@ -473,6 +473,7 @@ test('the detail view: two-level milestones, verbatim spine, worktree as an fs f
       ...t, tasks: t.tasks.map((x) => (x.id === 'T3' ? { ...x, milestone: 'M2' } : x)),
     }));
     assert.equal(h.legion('state', 'task-start', 'T1').code, 0);
+    assert.equal(h.legion('gate', 'review-receipt', '--agent-type', 'legion:code-reviewer', '--agent-id', 'vp-rev', '--verdict', 'pass').code, 0);
     assert.equal(h.legion('state', 'review-record', '--role', 'code-reviewer', '--verdict', 'pass', '--subject', 'milestone:M1').code, 0);
     assert.equal(h.legion('state', 'session-record', '--session-id', 'sess-1').code, 0);
 

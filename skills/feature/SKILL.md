@@ -72,6 +72,18 @@ one, and there never will be: `legion gate run --task <id>` and `legion gate run
 record them as a side effect of a green run, and every consumer refuses a receipt that carries no
 gate provenance.
 
+**`review-record` for a reviewer role demands attendance evidence.** When a reviewer agent
+(code-reviewer, product-reviewer, visual-reviewer, plan-critic, codex-consult) stops, its
+SubagentStop hook mints a **review receipt**; the record verifies and consumes it. The
+dispatch-the-reviewer-then-record order is therefore **kernel-enforced**, not etiquette: a
+record refused for a missing receipt means the reviewer was never actually dispatched (or the
+subject moved since it ran) — dispatch it and record again, never work around the refusal.
+Receipts are **scoped by subject**, and the reviewer states its own subject from its brief: put
+the exact `--subject` string you will record with — `task:<id>`, `milestone:<id>`, `plan` — in
+the brief you dispatch it with, verbatim. A reviewer left to infer it (a close brief also names
+the tasks) mints a receipt at the wrong subject, and the refusal that follows is not
+self-repairing: the same brief re-dispatched produces the same wrong string.
+
 The gate command policy is **pinned per feature** at start, exactly like the base SHA. If the
 project's declared gate commands change under you, `legion gate run` refuses and prints the
 old→new command diff. Adopting the new policy is deliberate and explicit (the `--repin` flag on
@@ -336,7 +348,9 @@ unreadable fails **closed**, refusing the spec ops in both siblings until it is 
    `legion state review-record --role plan-critic --verdict <pass|fail> --subject plan`
    (subject `plan` binds the verdict to plan.md + the task rows — a tree-bound subject would
    survive the very plan edit the critic exists to catch, and `stage-complete plan` counts only
-   plan-bound critic verdicts).
+   plan-bound critic verdicts). The record consumes the review receipt the critic's stop just
+   minted, so it only succeeds **after** a real critic dispatch on the current plan bytes — a
+   refusal here means the critic never ran on this version of the plan.
 5. **REJECTION LOOP.** On `revise`: turn the findings into a change request, send it back to the
    architect, have it append a Revision note, re-run `legion plan check --feature <name>
    --import` (re-seeding the tasks and re-recording `plan.md` in one step), and re-review **warm —
@@ -422,7 +436,8 @@ in-session: `legion state task-start <id>`, dispatch `legion:builder`, confirm t
 `legion gate verify-receipt --task <id>`, dispatch `legion:code-reviewer`, record its verdict
 with `legion state review-record --role code-reviewer --verdict <pass|fail> --subject task:<id>`,
 then `legion state task-done <id>`. Same order, same gates, same records, same fail-closed
-rule — you just get to steer between steps. **The milestone boundaries are yours too in this
+rule — you just get to steer between steps; the dispatch-then-record order is kernel-enforced
+(each record consumes the review receipt the reviewer's stop minted). **The milestone boundaries are yours too in this
 mode**: at the end of each milestone, before the next one's first task, run its close — squash,
 `legion gate run --boundary`, milestone code review, product review, visual review where the
 milestone's tasks carry `notes.visual`, every verdict recorded at `--subject milestone:<id>` —
@@ -575,7 +590,8 @@ flags the milestone's tasks `notes.visual` — the visual reviewer, with every v
    `legion state stage-complete review` would refuse on it. The re-certification is a narrow
    diff-only confirmation in the role's own domain (never the other lens's findings), its fresh
    verdict recorded at `--subject milestone:<id>`; a role that cannot re-certify, or fails,
-   keeps the milestone open.
+   keeps the milestone open. Every one of these records rides the re-dispatched reviewer's own
+   receipt — the kernel refuses a re-certification no reviewer actually performed.
 4. Then `legion state stage-complete review`, `legion state stage-enter pre-merge`. That op counts
    the review set the **profile** requires, re-derived against the current tree — if it refuses,
    read which role and which subject it names rather than re-recording anything.
@@ -633,7 +649,8 @@ just earned.
    - **A defect in what was built** — the plan was right, the code is not. Fix it forward as a
      commit, `legion gate run --boundary` on a clean worktree for a fresh receipt, re-review
      **warm — the reviewer that raised it, its findings as the checklist** (RR1) — record the
-     verdict with `legion state review-record …`, then ask again. No new task: at
+     verdict with `legion state review-record …` (it consumes the re-dispatched reviewer's
+     receipt: no re-review, no record), then ask again. No new task: at
      pre-merge the evidence is boundary-level, and the recomputed `pre-merge` subject picks up
      the new HEAD, the new receipt and the new verdicts by itself.
    - **Missing work the plan never contained** — this is a plan change, not a fixup, so it goes

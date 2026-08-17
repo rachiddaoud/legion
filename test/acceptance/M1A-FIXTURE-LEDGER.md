@@ -141,9 +141,13 @@ ok(h, 'M1a-1b', 'state', 'stage-enter', 'build');
 PLAN-V3 decision 1 and `skills/feature/SKILL.md` RR1 require the re-review to be **warm**: *"the
 same critic that rejected the plan, its own findings as the checklist … A fresh critic only if that
 one is gone, and then its prompt carries the prior findings verbatim"* (SKILL.md plan step 5, §475
-RR1). To the kernel a warm re-review and a cold one are the same `review-record` call — there is no
-kernel surface that can tell them apart, and **fabricating a test for prose is worse than an honest
-gap**, because it reads as proof of something nothing checks.
+RR1). To the kernel a warm re-review and a cold one are ALMOST the same `review-record` call.
+Amended 2026-08-17, when review receipts landed: the record now consumes a receipt carrying the
+reviewer's harness-supplied `agentId`, so the kernel CAN distinguish *attendance* — which agent
+ran, and that one really did — where before it could distinguish nothing. What it still cannot
+tell is warmth: whether that agent's prompt carried the prior findings as its checklist remains
+prose-borne, and **fabricating a test for prose is worse than an honest gap**, because it reads
+as proof of something nothing checks.
 
 - **Session form: SKILL.md-borne.** `skills/feature/SKILL.md` plan step 5 and rule RR1. Enforced by
   the session reading its own skill; nothing else. Recorded here as such.

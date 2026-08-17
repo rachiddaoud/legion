@@ -193,6 +193,7 @@ function approvePlan(s) {
     milestones: [{ id: 'M1', title: 'the milestone', tasks: [planTask('T1'), planTask('T2', { depends_on: ['T1'] }), planTask('T3')] }],
   }, null, 2)}\n`);
   ok(s, 'plan', 'check', '--feature', s.name, '--import');
+  ok(s, 'gate', 'review-receipt', '--agent-type', 'legion:plan-critic', '--agent-id', 'm1b-critic', '--verdict', 'pass');
   ok(s, 'state', 'review-record', '--role', 'plan-critic', '--verdict', 'pass', '--subject', 'plan');
   ok(s, 'state', 'decision-record', 'plan');
 }
@@ -444,6 +445,7 @@ test('M1b-3 a NON-initiative feature\'s spec subject is sha256(spec bytes) alone
     'a contract edit must be invisible to a feature that never joined an initiative');
   assert.equal(h.legion('state', 'stage-enter', 'plan').code, 0);
   h.seedPlan([planTask('T1'), planTask('T2', { depends_on: ['T1'] }), planTask('T3')]);
+  assert.equal(h.legion('gate', 'review-receipt', '--agent-type', 'legion:plan-critic', '--agent-id', 'm1b-critic', '--verdict', 'pass').code, 0);
   assert.equal(h.legion('state', 'review-record', '--role', 'plan-critic', '--verdict', 'pass', '--subject', 'plan').code, 0);
   assert.equal(h.legion('state', 'decision-record', 'plan').code, 0);
   assert.equal(h.legion('state', 'stage-complete', 'plan').code, 0);

@@ -30,7 +30,7 @@ import { mkdtempSync, readdirSync, readFileSync, statSync, accessSync, constants
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { STATE_OPS, ARTIFACT_KINDS } from '../src/kernel/state.mjs';
+import { STATE_OPS, ARTIFACT_KINDS, REVIEW_RECEIPT_AGENT_ROLES } from '../src/kernel/state.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -195,8 +195,12 @@ test('hooks/hooks.json matches the 2.1.219 plugin hook shape — exactly three e
   // (server-only decision — src/kernel/githooks.mjs header). Asserted absent so the local deny
   // layer cannot come back casually either.
   assert.ok(!('PreToolUse' in manifest.hooks), 'the Bash remote-write guard was removed — server-only');
+  // SubagentStop carries TWO matcher entries — the builder verifier and the reviewer minter —
+  // every other event exactly one. Asserted per event so a third cannot arrive unread.
+  const ENTRY_COUNT = { Notification: 1, SessionStart: 1, SubagentStop: 2 };
   for (const [event, entries] of Object.entries(manifest.hooks)) {
-    assert.ok(Array.isArray(entries) && entries.length === 1, `${event}: one matcher entry`);
+    assert.ok(Array.isArray(entries) && entries.length === ENTRY_COUNT[event],
+      `${event}: expected ${ENTRY_COUNT[event]} matcher entr${ENTRY_COUNT[event] === 1 ? 'y' : 'ies'}`);
     for (const entry of entries) {
       assert.deepEqual(Object.keys(entry).sort(), ['hooks', 'matcher'], `${event}: {matcher, hooks}`);
       assert.ok(typeof entry.matcher === 'string' && entry.matcher.length > 0, `${event}: matcher`);
@@ -214,13 +218,47 @@ test('hooks/hooks.json matches the 2.1.219 plugin hook shape — exactly three e
   }
   // The matchers are compared against source / agent_type / notification_type respectively.
   assert.equal(manifest.hooks.SessionStart[0].matcher, 'startup|resume|clear|compact');
+  const builderMatcher = new RegExp(manifest.hooks.SubagentStop[0].matcher);
   assert.match(manifest.hooks.SubagentStop[0].matcher, /builder/);
-  assert.ok(new RegExp(manifest.hooks.SubagentStop[0].matcher).test('legion:builder'),
+  assert.ok(builderMatcher.test('legion:builder'),
     'the SubagentStop matcher must match the namespaced plugin agent type');
-  assert.ok(new RegExp(manifest.hooks.SubagentStop[0].matcher).test('builder'),
+  assert.ok(builderMatcher.test('builder'),
     'and the bare type, in case the runtime does not namespace it');
-  assert.ok(!new RegExp(manifest.hooks.SubagentStop[0].matcher).test('legion:code-reviewer'),
+  assert.ok(!builderMatcher.test('legion:code-reviewer'),
     'it must NOT catch other legion agents');
+  // The reviewer minter's matcher covers exactly the kernel's REVIEW_RECEIPT_AGENT_ROLES —
+  // ITERATED FROM THE IMPORTED MAP, never hand-listed (this file's own convention): hooks.json
+  // is the one copy that cannot be derived at runtime, so this is what force-breaks it on
+  // drift when a reviewer role is added to the kernel.
+  const reviewerMatcher = new RegExp(manifest.hooks.SubagentStop[1].matcher);
+  for (const t of Object.keys(REVIEW_RECEIPT_AGENT_ROLES)) {
+    assert.ok(reviewerMatcher.test(`legion:${t}`), `reviewer matcher must catch legion:${t}`);
+    assert.ok(reviewerMatcher.test(t), `and the bare ${t}`);
+  }
+  for (const t of ['legion:builder', 'legion:kernel-op', 'legion:architect', 'general-purpose']) {
+    assert.ok(!reviewerMatcher.test(t), `reviewer matcher must NOT catch ${t}`);
+  }
+});
+
+// The waiver flag (`review-record`'s human attestation) must never be TAUGHT by shipped prose:
+// the loop never emits it, kernel-op never runs it, and no skill or agent file may name it —
+// an agent that learns it from its own instructions is the self-attestation hole reopened. The
+// refusal MESSAGE may name it (a refusal is kernel output to the operator, not shipped prose),
+// which is exactly where a human — and only a human at a real refusal — discovers it.
+test('no shipped component names the review-record waiver flag, and kernel-op cannot mint', () => {
+  for (const parts of componentFiles()) {
+    const src = read(...parts);
+    assert.ok(!src.includes('no-receipt-attest'),
+      `${parts.join('/')} must not name the waiver flag — it is the human's, discovered at the refusal`);
+  }
+  // kernel-op's CLOSED SET gains no minting form: the agent that records verdicts must never be
+  // the agent that can create the evidence those verdicts consume. The prose around the set may
+  // (and does) name `gate run` in prohibitions; the fenced command block is the permission.
+  const kernelOp = read('agents', 'kernel-op.md');
+  const fence = kernelOp.match(/## The closed command set[^\n]*\n+```\n([\s\S]*?)```/);
+  assert.ok(fence, 'kernel-op.md must carry its closed command set as a fenced block');
+  assert.ok(!fence[1].includes('review-receipt'), 'the closed set must not carry the mint command');
+  assert.ok(!fence[1].includes('gate run'), 'nor any gate-run form (pre-existing rule, re-pinned)');
 });
 
 test('every hook command resolves to a real executable and every hook script parses', () => {
@@ -246,7 +284,7 @@ test('every hook command resolves to a real executable and every hook script par
       }
     }
   }
-  assert.equal(scripts.length, 3); // SessionStart, SubagentStop, Notification
+  assert.equal(scripts.length, 4); // SessionStart, SubagentStop ×2 (builder verifier + reviewer minter), Notification
   for (const abs of [...scripts, join(ROOT, 'hooks', '_common.mjs')]) {
     const r = spawnSync(process.execPath, ['--check', abs], { encoding: 'utf8' });
     assert.equal(r.status, 0, `node --check ${abs}: ${r.stderr}`);
@@ -504,6 +542,7 @@ function componentFiles() {
     ['hooks', '_common.mjs'],
     ['hooks', 'session-start.mjs'],
     ['hooks', 'builder-receipt.mjs'],
+    ['hooks', 'review-receipt.mjs'],
     ['hooks', 'notify.mjs'],
     // (Until 2026-08-07 the two remote-write guards — hooks/bash-remote-write.mjs and
     // hooks/pre-push.mjs — were scanned here too; they were removed with the layer, server-only
@@ -527,7 +566,7 @@ test('every kernel command a component names is one the router actually dispatch
 
   const SUBS = {
     state: new Set(STATE_OPS),            // imported from the kernel, never copied
-    gate: new Set(['run', 'verify-receipt']),
+    gate: new Set(['run', 'verify-receipt', 'review-receipt']),
     // Hand-maintained mirror of `legion feature`'s dispatch table (src/cli/feature.mjs `run`) —
     // and it WENT STALE: T19 landed `clean` on the router and in USAGE (PLAN-V3 §The kernel,
     // §Startup) while this set kept three entries. The staleness was latent only because no

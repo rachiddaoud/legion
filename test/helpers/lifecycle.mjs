@@ -42,10 +42,22 @@ export const REVIEW_ROLES = [
   'architect', 'builder', 'kernel-op', 'milestone-reviewer',
 ];
 
+/** MINT the review receipt an enforced reviewer-role record consumes, through the REAL surface
+ * the reviewer's SubagentStop hook calls (`legion gate review-receipt`) — never by hand-writing
+ * `reviewReceipts[]` (a forgery belongs at a case's own call site, per the header). Returns
+ * whether a receipt was minted: the kernel refuses non-reviewer agent types, which is the
+ * correct outcome for the deliberately-unknown roles satisfyReviews probes with. */
+export function mintReviewReceipt(h, role, verdict = 'pass') {
+  const r = h.legion('gate', 'review-receipt', '--agent-type', `legion:${role}`,
+    '--agent-id', `acc-${role}`, ...(verdict ? ['--verdict', verdict] : []));
+  return r.code === 0;
+}
+
 /** The plan review's SUBJECT vocabulary is the kernel's (a plan review carries the PLAN subject
  * hash, not the tree — PLAN-V3 §State corollary 2). Accept either spelling so this setup does not
  * dictate an interface it is not testing. */
 export function recordPlanCritic(h, verdict = 'pass') {
+  mintReviewReceipt(h, 'plan-critic', verdict); // the record consumes attendance evidence
   for (const subject of ['plan', 'feature']) {
     const r = h.legion('state', 'review-record', '--role', 'plan-critic', '--verdict', verdict, '--subject', subject);
     if (r.code === 0) return subject;
@@ -60,6 +72,9 @@ export function satisfyReviews(h) {
   let r = h.legion('state', 'stage-complete', 'review');
   for (const role of REVIEW_ROLES) {
     if (r.code === 0) break;
+    // Reviewer roles record only over a receipt; the probe roles the kernel does not know
+    // (architect, builder, …) have no receipt to mint and record bare, as before.
+    mintReviewReceipt(h, role);
     ok(h, `satisfyReviews(${role})`, 'state', 'review-record', '--role', role, '--verdict', 'pass', '--subject', 'feature');
     recorded.push(role);
     r = h.legion('state', 'stage-complete', 'review');

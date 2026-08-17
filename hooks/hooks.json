@@ -27,6 +27,18 @@
             "statusMessage": "legion: verifying gate receipt"
           }
         ]
+      },
+      {
+        "matcher": "^(legion:)?(code-reviewer|product-reviewer|visual-reviewer|plan-critic|codex-consult)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/review-receipt.mjs"],
+            "timeout": 60,
+            "statusMessage": "legion: minting review receipt"
+          }
+        ]
       }
     ],
     "Notification": [

@@ -22,6 +22,7 @@ import {
   sha256, combinedPlanHash, canonicalReviews, cascadeInvalidate,
   APPROVAL_CHAIN, STATE_OPS, dispatch,
   commandPolicyHash, commandPolicyPin, commandPolicyTriples, receiptProvenance, recordGateReceipt,
+  freshReviewReceipts, recordReviewReceipt, REVIEW_RECEIPT_AGENT_ROLES, ENFORCED_REVIEW_ROLES,
 } from '../../src/kernel/state.mjs';
 
 const h = (s) => createHash('sha256').update(s).digest('hex');
@@ -771,4 +772,72 @@ test('stage-enter refuses a closed feature, forward and backward, naming the sta
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// --- review receipts: the pure half (the CLI test carries the lifecycle) --------------------
+// freshReviewReceipts is THE match predicate review-record consumes through; its filters are
+// the enforcement, so each one is pinned: role, unconsumed, and the per-kind binding fork
+// (plan → planHash, everything else → treeHash — the same fork reviewSubjectHash takes).
+
+test('freshReviewReceipts filters by role, consumption, and the per-kind binding hash', () => {
+  const T = 'tree-aaa';
+  const P = 'plan-bbb';
+  const mk = (over) => ({
+    agentType: 'legion:code-reviewer', agentId: 'a1', role: 'code-reviewer',
+    verdict: 'pass', treeHash: T, planHash: P, at: 't1', consumed: null, ...over,
+  });
+  const receipts = [
+    mk({ agentId: 'match-tree' }),
+    mk({ agentId: 'other-role', role: 'product-reviewer' }),
+    mk({ agentId: 'spent', consumed: { subject: 'task:T1', verdict: 'pass', at: 't2' } }),
+    mk({ agentId: 'stale-tree', treeHash: 'tree-old' }),
+    mk({ agentId: 'critic', role: 'plan-critic' }),
+    mk({ agentId: 'critic-no-plan', role: 'plan-critic', planHash: null }),
+    mk({ agentId: 'scoped-m1', subject: 'milestone:M1' }),
+    mk({ agentId: 'scoped-m2', subject: 'milestone:M2' }),
+  ];
+  // tree-bound subjects match on treeHash, whatever the planHash says; a subject-less receipt
+  // (no `subject` key at all — the pre-scoping shape, and the degraded-extraction one) is
+  // fungible, so it rides along with the scoped match
+  assert.deepEqual(freshReviewReceipts(receipts, 'code-reviewer', 'task:T1', T).map((r) => r.agentId), ['match-tree']);
+  assert.deepEqual(freshReviewReceipts(receipts, 'product-reviewer', 'feature', T).map((r) => r.agentId), ['other-role']);
+  // plan binds planHash: the critic minted before a plan artifact existed (planHash null) never matches
+  assert.deepEqual(freshReviewReceipts(receipts, 'plan-critic', 'plan', P).map((r) => r.agentId), ['critic']);
+  // SUBJECT SCOPING at one shared tree: M1's record sees M1's receipt plus the fungible one —
+  // never M2's; a subject the tree never reviewed gets only the fungible attendance
+  assert.deepEqual(freshReviewReceipts(receipts, 'code-reviewer', 'milestone:M1', T).map((r) => r.agentId), ['match-tree', 'scoped-m1']);
+  assert.deepEqual(freshReviewReceipts(receipts, 'code-reviewer', 'milestone:M3', T).map((r) => r.agentId), ['match-tree']);
+  // and a receipts-less manifest (pre-feature dossiers) reads as no match, never a throw
+  assert.deepEqual(freshReviewReceipts(undefined, 'code-reviewer', 'task:T1', T), []);
+});
+
+test('the reviewer role map and the enforced set agree, and cover exactly the five reviewers', () => {
+  assert.deepEqual(
+    Object.keys(REVIEW_RECEIPT_AGENT_ROLES).sort(),
+    ['code-reviewer', 'codex-consult', 'plan-critic', 'product-reviewer', 'visual-reviewer'],
+  );
+  for (const [agent, role] of Object.entries(REVIEW_RECEIPT_AGENT_ROLES)) {
+    assert.equal(agent, role, 'agentType base name IS the role — divergence needs a new argument here');
+    assert.ok(ENFORCED_REVIEW_ROLES.has(role));
+  }
+  assert.equal(ENFORCED_REVIEW_ROLES.size, 5);
+});
+
+// recordReviewReceipt's INPUT guards fire before any manifest or git read — provable with a
+// dossier path that does not exist (reaching loadFeature would throw about feature.json).
+test('recordReviewReceipt refuses a non-reviewer type, a missing agent id and a bad verdict before touching anything', () => {
+  const ghost = join(tmpdir(), 'legion3-no-such-dossier');
+  assert.throws(
+    () => recordReviewReceipt(ghost, { agentType: 'general-purpose', agentId: 'a1' }, 't'),
+    /not a reviewer agent type: 'general-purpose'/,
+  );
+  assert.throws(
+    () => recordReviewReceipt(ghost, { agentType: 'legion:code-reviewer', agentId: '   ' }, 't'),
+    /harness-supplied agent id/,
+  );
+  assert.throws(
+    () => recordReviewReceipt(ghost, { agentType: 'legion:code-reviewer', agentId: 'a1', verdict: 'revise' }, 't'),
+    /verdict must be pass\|fail or absent/,
+    'revise is the HOOK\'s vocabulary to map, never the kernel\'s to store',
+  );
 });

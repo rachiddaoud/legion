@@ -1,6 +1,7 @@
-// _common.mjs — the shared seam for legion's Claude Code hooks (three: session-start,
-// builder-receipt, notify — T26's PreToolUse guard was the fourth until 2026-08-07, when the
-// local remote-write guards were removed by owner decision, server-only). Not itself a hook
+// _common.mjs — the shared seam for legion's Claude Code hooks (four: session-start,
+// builder-receipt, review-receipt, notify — T26's PreToolUse guard also existed until
+// 2026-08-07, when the local remote-write guards were removed by owner decision, server-only).
+// Not itself a hook
 // (leading underscore: bin/legion.mjs's CMD_RE convention for "not invokable"; nothing
 // dispatches it).
 //

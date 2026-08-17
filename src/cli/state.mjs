@@ -10,11 +10,15 @@
 // deterministic timestamps (validated via Date.parse; timestamps are non-authoritative so
 // a flag is acceptable — unlike hashes/HEADs, which have NO flag).
 //
-// Flag surface, deliberately minimal: --role/--verdict/--subject (review-record),
+// Flag surface, deliberately minimal: --role/--verdict/--subject/--no-receipt-attest
+// (review-record),
 // --session-id (session-record), --question/--answer (task-answer — the session's recorded Q&A
 // is CONTENT, like plan text, not authoritative evidence), plus --org/--feature/--now. There is
 // NO --hash/--sha/--subject-hash/--head: authoritative identifiers are derived by the kernel, so
-// no flag can inject one. `ticket-record <ref>` adds NO flag either — the ref is a POSITIONAL, like
+// no flag can inject one. `--no-receipt-attest '<reason>'` clears that bar from the other side:
+// it injects no evidence — it MARKS THE ABSENCE of a review receipt, audited (the kernel writes
+// a synthetic `waived` receipt carrying the reason). It is the human's flag: the build loop
+// never emits it and the kernel-op agent's closed command set refuses it, both test-pinned. `ticket-record <ref>` adds NO flag either — the ref is a POSITIONAL, like
 // `escalate-profile <profile>` and `close <mode>`: it is the op's subject, not a modifier, and the
 // kernel's only judgment over it is refusing garbage (kernel/ticket.mjs: a ticket is operator
 // DATA, never evidence — which is why supplying it is not the `--subject-hash` hazard above).
@@ -39,7 +43,7 @@ import { dispatch, STATE_OPS } from '../kernel/state.mjs';
 const USAGE =
   `legion state <op> [args] [--org <org>] [--feature <name>] [--now <iso>]\n` +
   `  ops: ${STATE_OPS.join(', ')}\n` +
-  `  op flags: review-record --role <r> --verdict <pass|fail> --subject <s> · ` +
+  `  op flags: review-record --role <r> --verdict <pass|fail> --subject <s> [--no-receipt-attest <reason>] · ` +
   `session-record --session-id <id> · task-answer --question <q> --answer <a>\n` +
   `  op args:  ticket-record <ref>   (the issue reference: 123, #123 or group/project#123)`;
 

@@ -108,6 +108,13 @@ function gateOk(s, ...args) {
   assert.equal(r.status, 0, `legion gate run ${args.join(' ')}: ${r.stderr}`);
   return r;
 }
+/** MINT a review receipt through the real surface the reviewer's SubagentStop hook calls. */
+function mintReceipt(s, agentType, verdict = 'pass') {
+  const r = spawnSync(NODE, [BIN, 'gate', 'review-receipt', '--agent-type', agentType,
+    '--agent-id', 'fin-test', '--verdict', verdict, ...NOW], { cwd: s.worktree, encoding: 'utf8', env: s.env });
+  assert.equal(r.status, 0, `legion gate review-receipt ${agentType}: ${r.stderr}`);
+  return r;
+}
 /** Patch project.json's gates block AFTER `feature start` pinned the policy — i.e. cause DRIFT. */
 function setGates(s, gates) {
   const cfg = readJson(s.configPath);
@@ -167,6 +174,7 @@ function ladder(s, { review = ['--role', 'product', '--verdict', 'pass', '--subj
   stateOk(s, 'stage-enter', 'plan');
   writeArtifact(s, 'plan.md', '# plan\n');
   stateOk(s, 'artifact-record', 'plan', 'plan.md');
+  mintReceipt(s, 'legion:plan-critic'); // the record consumes attendance evidence
   stateOk(s, 'review-record', '--role', 'plan-critic', '--verdict', 'pass', '--subject', 'plan');
   stateOk(s, 'decision-record', 'plan');
   stateOk(s, 'stage-complete', 'plan');

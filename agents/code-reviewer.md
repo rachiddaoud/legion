@@ -139,7 +139,7 @@ finding is not allowed.
 
 ## Return contract
 
-Return a JSON object: `{ "verdict": "pass" | "fail", "findings": [{ "tier", "title", "where",
+Return a JSON object: `{ "verdict": "pass" | "fail", "subject": "task:<id>" (or "milestone:<id>" — the exact subject your brief dispatched, verbatim; it scopes your stop's review receipt), "findings": [{ "tier", "title", "where",
 "issue", "proof", "fix", "category" (optional) }], "counts": { "block": n, "mustFix": n,
 "note": n } }`, and append the same pass, in the numbered `F<n>` block format — with a
 `category:` line where one is set — to `review-code.md` in the dossier — **append, never
@@ -147,7 +147,10 @@ overwrite**: the file is the run's full review history.
 
 You do **not** record the review in state. The session (or the build workflow's caller) runs
 `legion state review-record --role code-reviewer --verdict <pass|fail> --subject task:<id>` from
-your verdict.
+your verdict. Your **stop** is what makes that record possible: the SubagentStop hook mints a
+review receipt (your agent type, id and verdict, bound to the current tree) that the record
+verifies and consumes — a record refused for a missing receipt means the reviewer dispatch
+never actually ran.
 
 ## Constraints
 

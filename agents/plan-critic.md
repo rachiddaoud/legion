@@ -193,7 +193,7 @@ manufacture findings to look thorough.
 
 ## Return contract
 
-Return a JSON object: `{ "verdict": "pass" | "revise", "findings": [{ "tier", "title", "where",
+Return a JSON object: `{ "verdict": "pass" | "revise", "subject": "plan", "findings": [{ "tier", "title", "where",
 "issue", "proof", "fix" }], "counts": { "block": n, "mustFix": n, "note": n }, "needsHuman":
 ["…"] }`, and write the same pass, in the block format above, appended to `plan-review.md` in
 the dossier.
@@ -202,7 +202,9 @@ You do **not** record the review in state. The session runs
 `legion state review-record --role plan-critic --verdict <pass|fail> --subject plan` from
 your verdict — a review the model narrated but never recorded does not exist to
 `legion state stage-complete plan`, which requires a passing plan-critic review before the plan
-stage can complete.
+stage can complete. Your **stop** is what makes that record possible: the SubagentStop hook
+mints a review receipt (a `revise` verdict is minted as `fail`) that the record verifies and
+consumes — a record refused for a missing receipt means the critic dispatch never actually ran.
 
 ## Constraints
 

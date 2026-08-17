@@ -75,7 +75,7 @@ milestone changed, not to re-litigate the whole app.
 
 ## Return contract
 
-Return a JSON object: `{ "verdict": "pass" | "fail", "findings": [{ "tier", "title", "where",
+Return a JSON object: `{ "verdict": "pass" | "fail", "subject": "milestone:<id>" (the exact subject your brief dispatched, verbatim; it scopes your stop's review receipt), "findings": [{ "tier", "title", "where",
 "issue", "proof", "fix" }], "screenshots": ["<dossier-relative paths>"], "counts": { "block": n,
 "mustFix": n, "note": n } }`, and append the same pass, in the numbered `F<n>` block format, to
 `review-visual.md` in the dossier — **append, never overwrite**: the file is the run's full
@@ -83,7 +83,9 @@ review history.
 
 You do **not** record the review in state. The build workflow runs
 `legion state review-record --role visual-reviewer --verdict <pass|fail> --subject
-milestone:<id>` from your verdict.
+milestone:<id>` from your verdict. Your **stop** is what makes that record possible: the
+SubagentStop hook mints a review receipt the record verifies and consumes — a record refused
+for a missing receipt means the reviewer dispatch never actually ran.
 
 ## Constraints
 
