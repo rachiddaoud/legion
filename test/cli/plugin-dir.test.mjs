@@ -112,6 +112,28 @@ test('isMarketplaceClone follows CLAUDE_CONFIG_DIR at call time, like the plugin
   assert.equal(isMarketplaceClone(clone), false, 'and the answer follows the env back');
 });
 
+test('containment survives Unicode normalization — one path, two spellings', () => {
+  // The two sides reach these predicates from different producers: one from argv or a manifest,
+  // the other composed from homedir(). A directory carrying any non-ASCII character can be spelled
+  // decomposed on one side and composed on the other for the SAME directory, and realpathSync
+  // canonicalizes symlinks and case — not Unicode form. Both predicates then go false TOGETHER,
+  // which is the dangerous direction: setup reads the clone as a dev checkout and runs
+  // `marketplace add <clone path>`, the directory-source re-registration that ends auto-update.
+  const home = join(TMP, 'Développement');
+  const nfc = join(home, 'plugins', 'marketplaces', 'legion').normalize('NFC');
+  const nfd = nfc.normalize('NFD');
+  assert.notEqual(nfc, nfd, 'the two spellings must genuinely differ, or this test proves nothing');
+  process.env.CLAUDE_CONFIG_DIR = home.normalize('NFD');
+  try {
+    assert.equal(isMarketplaceInstall(nfc), true, 'NFC root against an NFD-spelled base');
+    assert.equal(isMarketplaceClone(nfc), true);
+    process.env.CLAUDE_CONFIG_DIR = home.normalize('NFC');
+    assert.equal(isMarketplaceClone(nfd), true, 'and NFD root against an NFC-spelled base');
+  } finally {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  }
+});
+
 test('launchCommand omits --plugin-dir for cache AND clone roots alike — the split does not touch it', () => {
   // The new clone/cache distinction exists for setup only; a launch printed from either copy
   // must stay flagless, because either way the plugin is genuinely installed.

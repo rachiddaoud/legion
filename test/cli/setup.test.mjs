@@ -225,6 +225,30 @@ test('npm link success that VERIFIABLY landed on PATH keeps the success line', a
   assert.doesNotMatch(out, /WARNING/);
 });
 
+test('a link that lands a FOREIGN `legion` on PATH does not claim success either', async () => {
+  // The shimmed-toolchain case (Volta, a pnpm-shimmed npm): the entry npm link produces is a
+  // launcher that never realpaths into any package directory, so 'own' is UNREACHABLE there. A
+  // branch that printed the success line for everything-but-absent claimed a link it could not
+  // see, forever — while doctor went on warning about the same PATH.
+  const root = mkCheckout();
+  const shimBin = join(mkBox(), 'shim-bin');
+  const elsewhere = join(mkBox(), 'toolchain-shims');
+  mkdirSync(shimBin, { recursive: true });
+  mkdirSync(elsewhere, { recursive: true });
+  writeFileSync(join(elsewhere, 'legion'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(elsewhere, 'legion'), 0o755);
+  const { run } = fakeRun((file) => {
+    if (file === 'npm') symlinkSync(join(elsewhere, 'legion'), join(shimBin, 'legion'));
+    return {};
+  });
+  const out = await withStdout(async () => {
+    assert.equal(await setupCore([], depsFor(root, run, { pathEnv: shimBin })), 0);
+  });
+  assert.doesNotMatch(out, /linked `legion` onto PATH via npm link/, 'no success claim without evidence');
+  assert.match(out, /is on PATH at .*but it resolves to/, 'both measured paths are named');
+  assert.match(out, /Volta, pnpm/, 'the benign explanation comes with the alarming one');
+});
+
 test('a DIRECTORY named `legion` on PATH is not a legion: whichLegion skips it and setup links', async () => {
   // X_OK on a directory merely means searchable; treating it as found would mask a broken
   // install as "foreign" and skip the npm link that repairs it.
@@ -346,6 +370,23 @@ test('clone marketplace update dying on a SPAWN error names the claude CLI, not 
   );
 });
 
+test('a marketplace update that TIMED OUT is not "claude is missing" — output and remedy survive', async () => {
+  // ETIMEDOUT means the CLI ran and was killed at the step budget (a git pull over a slow link),
+  // so the re-add remedy still applies and the captured output IS the diagnosis. Folding it in
+  // with ENOENT sent operators off to reinstall a `claude` that works fine.
+  const { base, root } = mkClone();
+  const { run } = fakeRun((file, args) => (args[1] === 'marketplace'
+    ? { ok: false, code: null, spawnError: 'ETIMEDOUT', stdout: 'Cloning into legion...\n' }
+    : {}));
+  await assert.rejects(
+    () => setupCore([], cloneDepsFor(base, root, run)),
+    (e) => /killed after 120s/.test(e.message)
+      && /Cloning into legion/.test(e.message)
+      && /marketplace add <owner>\/<repo>/.test(e.message)
+      && !/Is the `claude` CLI installed/.test(e.message),
+  );
+});
+
 test('clone mode RE-READS the identity after the refresh — the pull may have renamed the plugin', async () => {
   // The marketplace update git-pulls the very tree the manifest lives in. The fake update
   // rewrites the manifest the way a pulled rename would; the install spec must use the fresh one.
@@ -363,6 +404,29 @@ test('clone mode RE-READS the identity after the refresh — the pull may have r
   const install = calls.find((c) => c.args[1] === 'install');
   assert.deepEqual(install.args, ['plugin', 'install', 'legion-next@legion'],
     'the install spec must come from the POST-pull manifest');
+});
+
+test('the re-read takes the PLUGIN name from the pull, never the marketplace KEY', async () => {
+  // A pull cannot rename a REGISTRATION: the key Claude Code knows this marketplace by is the one
+  // it was added under, and `marketplace update` was just run with it. Taking the name from the
+  // pulled manifest would spec `<plugin>@<new name>` against a marketplace nobody has registered
+  // — breaking the install on exactly the upgrade that renamed it.
+  const { base, root } = mkClone(); // registered as 'legion'
+  const { run, calls } = fakeRun((file, args) => {
+    if (file === 'claude' && args[1] === 'marketplace' && args[2] === 'update') {
+      writeFileSync(join(root, '.claude-plugin', 'marketplace.json'),
+        JSON.stringify({ name: 'legion-forge', plugins: [{ name: 'legion-next', source: './' }] }));
+    }
+    return {};
+  });
+  await withStdout(async () => {
+    assert.equal(await setupCore([], cloneDepsFor(base, root, run)), 0);
+  });
+  assert.deepEqual(calls[0].args, ['plugin', 'marketplace', 'update', 'legion'],
+    'the update names the registered key');
+  const install = calls.find((c) => c.args[1] === 'install');
+  assert.deepEqual(install.args, ['plugin', 'install', 'legion-next@legion'],
+    'plugin name from the pull, marketplace key from the registration');
 });
 
 test('clone-mode output never speaks checkout: the snapshot line names auto-update instead', async () => {

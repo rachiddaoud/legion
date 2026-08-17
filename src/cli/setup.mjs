@@ -170,13 +170,21 @@ function createOrRefresh(run, what, createArgv, refreshArgv, okCreate, okRefresh
 function refreshOnly(run, what, refreshArgv, okLine, remedy) {
   const r = run('claude', refreshArgv, { timeoutMs: STEP_TIMEOUT_MS });
   if (r.ok) return okLine;
-  // A SPAWN error means the `claude` CLI itself never ran — the caller's remedy (re-registering
-  // a marketplace) would need the same missing CLI, so the honest diagnosis wins over it.
-  if (r.spawnError !== null && r.spawnError !== undefined) {
-    throw new Error(`${what} failed:\n  claude ${refreshArgv.join(' ')} → ${r.spawnError}\n`
+  // ENOENT — and ONLY ENOENT — means the `claude` CLI itself never ran, so the caller's remedy
+  // (re-registering a marketplace, which needs that same CLI) is replaced by the honest
+  // diagnosis. Every OTHER spawn error is a CLI that DID run: ETIMEDOUT above all, where claude
+  // spent the full step budget on a git pull over a slow link and was killed. Treating that as
+  // "not installed" would send an operator to reinstall a working CLI while throwing away both
+  // the captured output and the remedy that actually applies.
+  if (r.spawnError === 'ENOENT') {
+    throw new Error(`${what} failed:\n  claude ${refreshArgv.join(' ')} → ENOENT: no \`claude\` on PATH\n`
       + 'Is the `claude` CLI installed and current? Fix that and re-run `legion setup`.');
   }
-  const detail = `${r.stdout}${r.stderr}`.trim() || `exit ${r.code}`;
+  const why = r.spawnError === 'ETIMEDOUT'
+    ? `killed after ${Math.round(STEP_TIMEOUT_MS / 1000)}s`
+    : (r.spawnError !== null && r.spawnError !== undefined ? r.spawnError : `exit ${r.code}`);
+  const output = `${r.stdout}${r.stderr}`.trim();
+  const detail = output === '' ? why : `${why}\n${output}`;
   throw new Error(`${what} failed:\n  claude ${refreshArgv.join(' ')} → ${detail}\n${remedy}`);
 }
 
@@ -233,11 +241,15 @@ export async function setupCore(argv, deps = {}) {
       `Is the marketplace still registered? Re-add it from its repository — `
       + `\`claude plugin marketplace add <owner>/<repo>\` — then re-run setup. `
       + `(Never \`marketplace add\` this clone's path: a directory-source re-registration would end auto-update.)`) + '\n');
-    // RE-READ after the refresh: the update above git-pulled this very tree, and an upstream
-    // rename of the marketplace or plugin would leave the pre-pull identity naming a spec the
-    // post-pull marketplace no longer carries. The pre-pull read stays correct for the UPDATE
-    // (it named the marketplace as registered); the install below must use the fresh one.
-    ({ marketName, pluginName } = readMarketplaceIdentity(root));
+    // RE-READ after the refresh, BUT ONLY THE PLUGIN NAME. The update above git-pulled this very
+    // tree, so an upstream rename of the PLUGIN would leave the pre-pull name spec'ing something
+    // the post-pull marketplace no longer offers — that half must come from the fresh manifest.
+    // THE MARKETPLACE NAME MUST NOT: it is the KEY Claude Code registered this marketplace under
+    // at `marketplace add` time, and a pull cannot rename a registration. Taking it from the
+    // pulled manifest would build `<plugin>@<new name>` against a marketplace registered as the
+    // old one — an install spec for a marketplace nobody has, on exactly the upgrade that renamed
+    // it. Renaming a marketplace is a remove-and-re-add on the operator's side, by construction.
+    ({ pluginName } = readMarketplaceIdentity(root));
   } else {
     process.stdout.write('setup: ' + createOrRefresh(run, `registering marketplace '${marketName}'`,
       ['plugin', 'marketplace', 'add', root],
@@ -271,15 +283,31 @@ export async function setupCore(argv, deps = {}) {
     // is common). Claiming success there would send the operator into a loop where doctor says
     // "not on PATH, run setup" and setup says "linked" — so the claim is re-measured, and the
     // miss is a warning that carries the one remedy setup cannot apply itself: fixing PATH.
+    // THE SUCCESS LINE IS THE 'own' BRANCH, AND ONLY IT — the re-measure has three outcomes, not
+    // two, and the third is not a success. 'foreign' after a link that exited 0 means a `legion`
+    // IS now reachable but does not resolve into this root: either another install still wins the
+    // PATH order, or — the common, harmless case — the toolchain shims its bins (Volta, a
+    // pnpm-shimmed npm), so the PATH entry is a launcher that never realpaths into any package
+    // directory. That case can NEVER report 'own', so a branch that printed success for
+    // everything-but-absent would claim a link it cannot see while doctor warns about it forever.
+    // Both non-own outcomes therefore say what was measured and leave the operator the judgement.
     const linked = legionPathState(pathEnv, root);
-    if (linked.state === 'absent') {
+    if (linked.state === 'own') {
+      process.stdout.write(`setup: linked \`legion\` onto PATH via npm link (from ${root})\n`);
+    } else if (linked.state === 'absent') {
       process.stdout.write(
         `setup: WARNING — npm link completed, but \`legion\` is STILL not on PATH: npm's prefix `
         + `bin directory is not on this shell's PATH. Add it (see \`npm prefix -g\`), or use this `
         + `install's bin directly: export PATH="${join(root, 'bin')}:$PATH"\n`,
       );
     } else {
-      process.stdout.write(`setup: linked \`legion\` onto PATH via npm link (from ${root})\n`);
+      process.stdout.write(
+        `setup: npm link completed and \`legion\` is on PATH at ${linked.found}, but it resolves to `
+        + `${linked.resolved}, which is not inside this install (${root}). If your toolchain shims `
+        + `its binaries (Volta, pnpm), that is expected and legion will run. Otherwise another `
+        + `install owns PATH — \`legion doctor\` reports which, and this install's bin is `
+        + `export PATH="${join(root, 'bin')}:$PATH"\n`,
+      );
     }
   } else if (path.state === 'own') {
     process.stdout.write(`setup: \`legion\` already on PATH → ${path.found}\n`);
@@ -302,19 +330,25 @@ export async function setupCore(argv, deps = {}) {
   // A failure WARNS and setup carries on: the kernel runs features with no viewer at all, so
   // letting a frontend toolchain fail a kernel install would be the tail wagging the dog. It is
   // not silent either — the warning names `legion viewer-build` as the retry.
-  let viewerPlan = viewerBuildCore([], { pluginRoot: root });
-  if (viewerPlan.refusal === null && viewerPlan.digest === null) {
-    viewerPlan = viewerBuildCore(['--force'], { pluginRoot: root });
-  }
+  const planned = viewerBuildCore([], { pluginRoot: root });
+  // FORCING IS A PROPERTY OF THE PLAN IN HAND, not a reason to make a second one: viewerBuildCore
+  // is deterministic over the same tree, so re-planning with --force would re-walk viewer/ only
+  // to fail its way to the identical digest:null — the very failure being reacted to — and pay
+  // the whole walk twice for a flag this code already knows the value of.
+  const viewerPlan = planned.refusal === null && planned.digest === null
+    ? { ...planned, force: true, skip: false }
+    : planned;
   if (!viewerPlan.haveSource) {
     process.stdout.write(`setup: no viewer/ frontend source in ${root} — skipping the bundle build\n`);
   } else {
     const built = buildViewer(run, viewerPlan, { write: (s) => process.stdout.write(s) });
     if (!built.ok) {
       process.stdout.write(
-        // --force on the retry, deliberately: this build was forced, so a dist from BEFORE the
-        // upgrade may still be sitting there intact, and an unforced retry would skip on it and
-        // report success for the bundle that just failed to rebuild.
+        // --force on the retry, deliberately — for the ONE case that needs it: when the digest
+        // was uncomputable, a dist from before the upgrade may still be sitting there intact and
+        // an unforced retry would SKIP on it, reporting success for the bundle that just failed
+        // to rebuild. When the digest was computable (the ordinary stale rebuild) the flag is
+        // merely redundant: the stamp would have made the retry rebuild anyway.
         'setup: WARNING — the viewer bundle did not build. The kernel is installed and works '
         + 'without it; run `legion viewer-build --force` to retry.\n'
         + built.failure,

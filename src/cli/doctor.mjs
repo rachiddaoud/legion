@@ -322,12 +322,13 @@ function checkLegionOnPath(pathEnv, pluginRoot) {
         + '`node <config dir>/plugins/marketplaces/<name>/bin/legion.mjs setup` for a marketplace install',
     };
   }
+  // THE ANCHOR QUESTION, ASKED FOR EVERY OUTCOME AND NOT JUST THE FOREIGN ONE: is the install
+  // this doctor speaks for the SWEPT SNAPSHOT CACHE (`plugins/cache/<market>/<plugin>/<sha>`,
+  // which Claude Code orphan-marks and deletes on the next update) rather than a durable home?
+  // It shapes the FOREIGN branch's remedy — never prescribe `npm link` into a directory that is
+  // about to be deleted — and it is the whole verdict in the OWN branch below.
+  const snapshotResident = isMarketplaceInstall(pluginRoot) && !isMarketplaceClone(pluginRoot);
   if (s.state === 'foreign') {
-    // THE REMEDY IS ANCHOR-AWARE: `npm link` is only ever prescribed for a root that may durably
-    // own PATH. A doctor running from the SWEPT SNAPSHOT CACHE (an operator debugging with
-    // `node <cache>/<sha>/bin/legion.mjs doctor`) must not hand out a command that anchors the
-    // global `legion` in a directory Claude Code orphan-marks and deletes on the next update.
-    const snapshotResident = isMarketplaceInstall(pluginRoot) && !isMarketplaceClone(pluginRoot);
     return {
       level: 'warn',
       detail: `\`legion\` on PATH resolves to ${s.resolved}, which is NOT this install `
@@ -335,6 +336,21 @@ function checkLegionOnPath(pathEnv, pluginRoot) {
         + (snapshotResident
           ? '; this doctor runs from the swept plugin snapshot — never npm link here; run doctor from the checkout or the marketplace clone instead'
           : `; if this install should win: cd ${resolve(pluginRoot)} && npm link`),
+    };
+  }
+  // 'own' AND SNAPSHOT-RESIDENT IS THE STATE THE GUARD ABOVE WAS WRITTEN TO PREVENT, ARRIVED AT.
+  // PATH's `legion` resolves INTO the swept cache — someone did npm link here, or npm's prefix
+  // bin happens to point at it — so the link dangles the moment Claude Code sweeps this
+  // directory, and every skill and agent dispatch dies with it. Reporting that as a green "(this
+  // install)" because the two paths agree would make the check pass loudest exactly where it
+  // matters most. A warn, not a fail: nothing is broken YET, and doctor does not repoint PATH.
+  if (snapshotResident) {
+    return {
+      level: 'warn',
+      detail: `\`legion\` on PATH → ${s.found} resolves into this install, but this install is the `
+        + `swept plugin snapshot (${resolve(pluginRoot)}) — Claude Code deletes it on the next `
+        + 'update and the link will dangle. Re-link from a durable install: run setup from the '
+        + 'marketplace clone or your checkout',
     };
   }
   return { level: 'pass', detail: `\`legion\` on PATH → ${s.found} (this install)` };

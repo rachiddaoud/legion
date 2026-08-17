@@ -33,7 +33,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../kernel/args.mjs';
 import { safeSegment } from '../kernel/paths.mjs';
-import { STAMP_FILE, bundleBuilt, computeSourceDigest } from './_viewer-bundle.mjs';
+import { bundleBuilt, readBundleEvidence } from './_viewer-bundle.mjs';
 import { createViewerServer } from './_viewer/server.mjs';
 
 const USAGE = 'legion viewer [--port <n>] [--host <addr>] [--api-only] [--org <org>]';
@@ -86,12 +86,10 @@ export function staleWarning(distDir) {
  * it. Called from run(), not viewerCore, so the pure core stays independent of the real
  * filesystem the digest must read. EXPORTED for its own test. */
 export function bundleStale(distDir, { listSources = undefined, readFile = readFileSync } = {}) {
-  let digest = null;
-  try {
-    digest = computeSourceDigest(dirname(distDir), listSources === undefined ? { readFile } : { listSources, readFile });
-  } catch { digest = null; }
-  let stampDigest = null;
-  try { stampDigest = String(readFile(join(distDir, STAMP_FILE))).trim(); } catch { stampDigest = null; }
+  // ONE measurement, shared with viewerBuildCore (readBundleEvidence) — this file only supplies
+  // the POLICY: both nulls are unknowns, and an unknown is not a warning.
+  const opts = listSources === undefined ? { readFile } : { listSources, readFile };
+  const { digest, stampDigest } = readBundleEvidence(dirname(distDir), distDir, opts);
   return digest !== null && stampDigest !== null && digest !== stampDigest;
 }
 

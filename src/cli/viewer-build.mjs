@@ -43,17 +43,22 @@
 // staleness machinery may cost a spare rebuild, but it can never CAUSE a stale serve that the
 // pre-stamp behavior would have caught. The stamp lives IN dist because vite empties dist before
 // refilling it: an interrupted rebuild destroys the stale stamp along with the stale bundle.
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../kernel/args.mjs';
 import { runCapture } from '../kernel/runner.mjs';
-import { STAMP_FILE, bundleBuilt, computeSourceDigest, listViewerSources } from './_viewer-bundle.mjs';
+import {
+  LOCK_FILE, STAMP_FILE, bundleBuilt, computeSourceDigest, listViewerSources, readBundleEvidence,
+} from './_viewer-bundle.mjs';
 
 // The digest machinery lives in _viewer-bundle.mjs so `legion viewer` can ANSWER the staleness
 // question read-only, behind its seal, with the same definition this command DECIDES it with.
-// Re-exported here because this command is where operators and tests meet it.
-export { STAMP_FILE, computeSourceDigest, listViewerSources };
+// LOCK_FILE lives there too — its name and the digest's exclusion list are one decision, made in
+// one place (that file says why). Re-exported here because this command is where operators and
+// tests meet all of it.
+export { LOCK_FILE, STAMP_FILE, computeSourceDigest, listViewerSources };
 
 const USAGE = 'legion viewer-build [--force]';
 
@@ -68,13 +73,26 @@ export const BUILD_TIMEOUT_MS = 600_000;
 /** The build, in order. `npm ci` and not `npm install` (header). */
 export const STEPS = [['npm', ['ci']], ['npm', ['run', 'build']]];
 
-/** The concurrency lock, in viewer/ and NOT in dist (vite empties dist mid-build, which would
- * delete a lock that must outlive exactly that window). On the marketplace-install route the
- * viewer directory is SHARED across every session on the machine — the auto-pulled clone — and
- * this command now runs unconditionally from the viewer skill, so two sessions observing "stale"
- * after the same pull would otherwise interleave `npm ci`'s node_modules deletion and vite's
- * emptyOutDir in one tree and stamp a half-written dist as verified-fresh. */
-export const LOCK_FILE = '.legion-build-lock';
+// THE CONCURRENCY LOCK (LOCK_FILE, defined in _viewer-bundle.mjs beside the digest exclusion it
+// has to agree with). On the marketplace-install route the viewer directory is SHARED across
+// every session on the machine — the auto-pulled clone — and this command runs unconditionally
+// from the viewer skill, so two sessions observing "stale" after the same pull would otherwise
+// interleave `npm ci`'s node_modules deletion and vite's emptyOutDir in one tree and stamp a
+// half-written dist as verified-fresh.
+
+/** HOW OLD a lock must be before it counts as a dead build's leftover. DERIVED FROM THE STEP
+ * LIST, never a hand-picked constant: every step gets its own BUILD_TIMEOUT_MS, so a LEGITIMATE
+ * build can hold the lock for the whole list's worth of timeouts before the runner kills it — a
+ * bound of one timeout would let a second builder lawfully steal the lock out from under a live
+ * `npm run build` at minute 10 and hand two vites one dist. Adding a third step moves this bound
+ * with it, which is the reason it is computed rather than written down. */
+export const LOCK_STALE_MS = STEPS.length * BUILD_TIMEOUT_MS;
+
+/** How many times takeLock re-races for a lock that vanished under it before giving up and
+ * treating the contention itself as "another build is here". Small on purpose: each retry costs
+ * one create attempt, and a tree where the lock appears and disappears this fast has a builder
+ * in it either way. */
+const LOCK_ATTEMPTS = 3;
 
 /** The flag surface, exhaustive — an unlisted flag is a typo, and building anyway while ignoring
  * it is worse than refusing (viewerCore's rule, same reasoning). */
@@ -104,29 +122,80 @@ export function lockfileRefusal(viewerDir) {
     + '  (reaching for an unpinned install instead would build a bundle nobody else can reproduce)\n';
 }
 
-/** Another build holds the lock. Age-bounded: a crashed build's leftover lock counts as stale
- * once older than the build timeout, so this refusal can never outlive the longest legitimate
- * build — and the remedy names the file so a human who KNOWS the other build is dead can act. */
+/** Another build holds the lock. Age-bounded: a crashed build's leftover counts as stale once
+ * older than LOCK_STALE_MS, so this refusal can never outlive the longest legitimate build — and
+ * the remedy names the file so a human who KNOWS the other build is dead can act. */
 export function lockRefusal(lockPath, ageMs) {
   return `legion viewer-build: another build appears to be running in this viewer/ — lock ${lockPath} is ${Math.round(ageMs / 1000)}s old\n`
-    + `  wait for it to finish (a cold build can take ${Math.round(BUILD_TIMEOUT_MS / 60_000)} minutes), then re-run: legion viewer-build\n`
+    + `  wait for it to finish (a cold build takes a minute or two; a lock older than ${Math.round(LOCK_STALE_MS / 60_000)} minutes is treated as dead and reclaimed), then re-run: legion viewer-build\n`
     + '  if you are certain that build is dead, delete the lock file and re-run\n';
 }
 
-/** Take the build lock, `wx`-exclusive. A lock older than the build timeout is a dead build's
- * leftover and is overwritten. Throws only on filesystem surprises — the CALLER degrades those to
- * building unlocked, because lock machinery failing must never block the build it protects. */
-function defaultTakeLock(lockPath) {
-  try {
-    writeFileSync(lockPath, `${process.pid}\n`, { flag: 'wx' });
-    return { ok: true };
-  } catch (e) {
-    if (e?.code !== 'EEXIST') throw e;
-    const ageMs = Date.now() - statSync(lockPath).mtimeMs;
-    if (ageMs < BUILD_TIMEOUT_MS) return { ok: false, ageMs };
-    writeFileSync(lockPath, `${process.pid}\n`);
-    return { ok: true };
+/** What this process writes into the lock: its pid, for the human the refusal sends to look, and
+ * a uuid, for the machine. THE UUID IS WHY THE PID IS NOT ENOUGH — pids are reused, and the drop
+ * side has to answer "is the lock sitting here still MINE?" across a window in which the file may
+ * have been reclaimed and re-taken by a build this process knows nothing about. */
+const lockToken = () => `${process.pid} ${randomUUID()}\n`;
+
+/**
+ * Take the build lock. `{ok: true, owner}` when this process holds it, `{ok: false, ageMs}` when
+ * another build does. Throws only on filesystem surprises — the CALLER degrades those to building
+ * unlocked, because lock machinery failing must never block the build it protects.
+ *
+ * EVERY ACQUISITION IS `wx`, INCLUDING THE STALE RECLAIM. The obvious reclaim — stat, see it is
+ * old, writeFileSync over it — is a check-then-act race with itself: two waiters that both
+ * observe the same aged-out lock both "win" it and build concurrently in one tree, which is the
+ * exact outcome the lock exists to prevent. So a stale lock is DELETED and then re-created
+ * exclusively; whoever loses that race sees EEXIST against a lock that is now FRESH and refuses,
+ * which is correct.
+ *
+ * A LOCK THAT VANISHES MID-CHECK IS A RETRY, NOT A CRASH. Between the failed `wx` and the stat,
+ * the holder may finish and drop it — statSync then throws ENOENT, and letting that escape would
+ * degrade a perfectly ordinary hand-off into an UNLOCKED build (the caller's catch treats any
+ * throw as "lock machinery unavailable"). The loop re-races instead, bounded by LOCK_ATTEMPTS.
+ */
+export function defaultTakeLock(lockPath, { attempts = LOCK_ATTEMPTS } = {}) {
+  // Age, never negative: mtime is the OTHER process's clock (or a filesystem's, or an NFS
+  // server's), so a lock stamped in the future would otherwise read as fresh for the whole skew
+  // AND print `-4231s old` at the operator. Clamped at zero, skew merely costs patience.
+  const ageOf = (path) => Math.max(0, Date.now() - statSync(path).mtimeMs);
+  let lastAgeMs = 0;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const owner = lockToken();
+    try {
+      writeFileSync(lockPath, owner, { flag: 'wx' });
+      return { ok: true, owner };
+    } catch (e) {
+      if (e?.code !== 'EEXIST') throw e;
+      try {
+        lastAgeMs = ageOf(lockPath);
+      } catch (statErr) {
+        if (statErr?.code !== 'ENOENT') throw statErr;
+        continue; // the holder dropped it between our write and our stat — race for it again
+      }
+      if (lastAgeMs < LOCK_STALE_MS) return { ok: false, ageMs: lastAgeMs };
+      // Stale. Unlink, then loop back to the exclusive create — a losing racer's unlink is a
+      // no-op (force) and its next `wx` fails against the winner's fresh lock.
+      try { rmSync(lockPath, { force: true }); } catch { /* someone else reclaimed it first */ }
+    }
   }
+  // Contention this persistent is indistinguishable from a live build, so it is reported as one:
+  // fail closed. The age is re-read best-effort purely so the refusal can say something true.
+  try { lastAgeMs = ageOf(lockPath); } catch { /* gone again — keep the last age we measured */ }
+  return { ok: false, ageMs: lastAgeMs };
+}
+
+/** Drop the lock — but ONLY if it is still the one this process took. A build that overran the
+ * stale bound has already had its lock reclaimed by someone else; deleting that lock on the way
+ * out would silently open the tree to a THIRD builder while the second is mid-`npm ci`. The
+ * token comparison is what makes the release side as exclusive as the acquire side. */
+export function defaultDropLock(lockPath, owner) {
+  if (owner !== undefined) {
+    let held;
+    try { held = readFileSync(lockPath, 'utf8'); } catch { return; } // already gone: nothing to drop
+    if (held !== owner) return; // reclaimed — not ours to delete
+  }
+  rmSync(lockPath, { force: true });
 }
 
 /** A step that ran and failed, or never started. npm's own output, verbatim (header). */
@@ -182,18 +251,19 @@ export function viewerBuildCore(argv, {
   if (!haveSource) refusal = sourceRefusal(viewerDir);
   else if (!haveLock) refusal = lockfileRefusal(viewerDir);
 
-  // THE STALENESS QUESTION (header): does the present bundle match the present sources? Any
-  // failure to answer — unreadable tree, absent/unreadable stamp — degrades toward the OLD
-  // semantics or a rebuild, never toward serving a bundle known to be stale.
-  let digest = null;
-  if (refusal === null) {
-    try { digest = computeSourceDigest(viewerDir, { listSources, readFile }); } catch { digest = null; }
-  }
+  // THE STALENESS QUESTION (header): does the present bundle match the present sources? The
+  // EVIDENCE is gathered by _viewer-bundle.mjs's readBundleEvidence, the same call `legion
+  // viewer` makes — the POLICY below is this command's own. A refused plan gathers nothing: it
+  // is not going to build, and walking a tree whose package.json is missing would only be a slow
+  // way to reach the same nulls.
+  const { digest, stampDigest } = refusal === null
+    ? readBundleEvidence(viewerDir, distDir, { listSources, readFile })
+    : { digest: null, stampDigest: null };
   const stampPath = join(distDir, STAMP_FILE);
-  let stampDigest = null;
-  if (haveDist) {
-    try { stampDigest = String(readFile(stampPath)).trim(); } catch { stampDigest = null; }
-  }
+  // THE POLICY: anything unreadable on the stamp side counts as STALE and rebuilds, which is the
+  // cheap direction — the opposite of `legion viewer`'s, which stays quiet on the same unknown
+  // rather than warning on every pre-stamp install. An UNCOMPUTABLE digest (null) is the one
+  // unknown that cannot decide anything, so it falls back to the old skip-if-built semantics.
   const stale = digest !== null && digest !== stampDigest;
 
   return {
@@ -227,7 +297,7 @@ export function buildViewer(run, plan, {
   write = (s) => process.stdout.write(s),
   writeStamp = (path, digest) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, `${digest}\n`); },
   takeLock = defaultTakeLock,
-  dropLock = (path) => rmSync(path, { force: true }),
+  dropLock = defaultDropLock,
 } = {}) {
   if (plan.refusal !== null) return { ok: false, skipped: false, ran: [], failure: plan.refusal };
   if (plan.skip) {
@@ -270,7 +340,9 @@ export function buildViewer(run, plan, {
     write(`legion viewer-build: bundle ready at ${plan.distDir}\n`);
     return { ok: true, skipped: false, ran, failure: null };
   } finally {
-    if (lock.unlocked !== true) { try { dropLock(lockPath); } catch { /* the age bound reclaims it */ } }
+    // The owner token goes back so the drop can verify the lock is still THIS build's (see
+    // defaultDropLock): a build that overran the stale bound must not delete its successor's lock.
+    if (lock.unlocked !== true) { try { dropLock(lockPath, lock.owner); } catch { /* the age bound reclaims it */ } }
   }
 }
 

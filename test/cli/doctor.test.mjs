@@ -440,6 +440,37 @@ test('a SNAPSHOT-resident doctor never prescribes npm link — the cache is swep
   }
 });
 
+test('a snapshot-resident doctor whose PATH `legion` resolves INTO the cache warns — never green', async () => {
+  // The state the guard above exists for, actually ARRIVED AT: someone npm linked from the cache
+  // (or npm's prefix bin points into it), so PATH and this install agree — and both are about to
+  // be deleted by the next update, taking every skill and agent dispatch with them. Reporting
+  // that agreement as a green "(this install)" would silence the check exactly where it matters.
+  const s = scenario();
+  const cfg = join(TMP, `snapshot-own-cfg-${n++}`);
+  const snapRoot = join(cfg, 'plugins', 'cache', 'legion', 'legion', 'def456');
+  mkdirSync(join(snapRoot, '.claude-plugin'), { recursive: true });
+  for (const d of ['skills', 'agents', 'hooks', 'bin']) mkdirSync(join(snapRoot, d), { recursive: true });
+  writeFileSync(join(snapRoot, 'bin', 'legion.mjs'), '#!/usr/bin/env node\n');
+  writeJson(join(snapRoot, '.claude-plugin', 'plugin.json'), { name: 'legion', description: 'x', author: { name: 'a' } });
+  writeJson(join(snapRoot, 'package.json'), { name: 'legion', bin: { legion: './bin/legion.mjs' } });
+  // PATH's `legion` IS this install's own bin — the 'own' state, from inside the swept cache.
+  writeFileSync(join(snapRoot, 'bin', 'legion'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(snapRoot, 'bin', 'legion'), 0o755);
+
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    const r = await inScenario(s, [], DEPS(green(), { pluginRoot: snapRoot, pathEnv: join(snapRoot, 'bin') }));
+    assert.equal(r.code, 0, 'nothing is broken yet — this is a warn, not a fail');
+    assert.equal(levels(r)['legion-on-path'], 'warn');
+    assert.match(r.checks[3].detail, /swept plugin snapshot/);
+    assert.match(r.checks[3].detail, /will dangle/);
+    assert.doesNotMatch(r.checks[3].detail, /\(this install\)/, 'agreement here is not a pass');
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+  }
+});
+
 test('legion-on-path spawns NOTHING — it reads PATH, not processes', async () => {
   const s = scenario();
   const run = green();

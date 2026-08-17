@@ -52,13 +52,28 @@ export function bundleBuilt(exists, distDir) {
  * interrupted rebuild destroys the stale stamp along with the stale bundle. */
 export const STAMP_FILE = '.legion-build-stamp';
 
+/** The concurrency lock, at viewer/ top level and NOT in dist (viewer-build.mjs explains the
+ * placement: vite empties dist mid-build, which would delete a lock that must outlive exactly
+ * that window). DEFINED HERE, where the digest exclusions are, because those two facts have to
+ * be decided together: a lock file the walk hashed would make every digest depend on whether a
+ * build happened to be running — the stamp of a locked build would disagree with every
+ * lock-free digest after it, turning "up to date" into a coin flip and costing one guaranteed
+ * spurious rebuild after any hard-killed build (whose lock file survives). viewer-build.mjs
+ * re-exports it; it lives in the read-only leaf so the walk cannot forget it. */
+export const LOCK_FILE = '.legion-build-lock';
+
 /** Names excluded from the digest walk at any depth: filesystem litter no build reads. */
 const DIGEST_EXCLUDES_ANY = new Set(['.DS_Store']);
-/** Top-level exclusions: outputs and other package managers' litter, not bundle inputs. dist/ is
- * what the build writes; node_modules/ is what `npm ci` materializes from the lockfile (which IS
- * hashed); the pnpm files are the local-convenience artifacts the repo .gitignore anticipates —
- * hashing any of these would be either a 200MB walk or a spurious multi-minute rebuild. */
-const DIGEST_EXCLUDES_TOP = new Set(['dist', 'node_modules', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']);
+/** Top-level exclusions: outputs, legion's own build-time bookkeeping, and other package
+ * managers' litter — none of them bundle inputs. dist/ is what the build writes; node_modules/
+ * is what `npm ci` materializes from the lockfile (which IS hashed); LOCK_FILE is this command's
+ * own concurrency lock (see its definition — hashing it would make the digest depend on whether
+ * a build was running); the pnpm files are the local-convenience artifacts the repo .gitignore
+ * anticipates. Hashing any of these would be either a 200MB walk or a spurious multi-minute
+ * rebuild. */
+const DIGEST_EXCLUDES_TOP = new Set([
+  'dist', 'node_modules', LOCK_FILE, 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
+]);
 
 /** The bundle's INPUTS: every file under viewer/, sorted, as relative paths — minus the
  * exclusions above. THROWS on a symlink, deliberately: Dirent cannot see through it, vite can,
@@ -77,6 +92,15 @@ export function listViewerSources(viewerDir) {
       }
       if (entry.isDirectory()) walk(childRel);
       else if (entry.isFile()) out.push(childRel);
+      // NEITHER FILE, DIRECTORY, NOR SYMLINK — and therefore not something this walk can hash.
+      // Two ways to get here: an actual oddity (a FIFO, a socket, a device node), or — the one
+      // that matters — a filesystem whose readdir reports NO type at all, where libuv hands Node
+      // a Dirent for which EVERY isX() is false. Dropping those silently would produce a
+      // partial-but-perfectly-stable listing: the digest would match its own stamp forever while
+      // covering none of the real sources, which is precisely the "up to date over changed
+      // content" failure the symlink throw above exists to prevent. So this throws too, and the
+      // caller falls back to digest:null — one spare rebuild instead of a silent stale serve.
+      else throw new Error(`unhashable entry at ${childRel} — the source digest covers files and directories only`);
     }
   };
   walk('');
@@ -95,4 +119,26 @@ export function computeSourceDigest(viewerDir, { listSources = listViewerSources
     hash.update('\0');
   }
   return hash.digest('hex');
+}
+
+/**
+ * THE EVIDENCE both commands judge staleness on, gathered ONCE: `{digest, stampDigest}` — what
+ * the sources hash to now, and what the built bundle recorded being built from. Either is null
+ * when it could not be read (unreadable tree, absent or unreadable stamp, no bundle at all);
+ * NEITHER throws, because "unanswerable" is a legitimate answer here and every caller has to
+ * handle it anyway.
+ *
+ * The two callers apply DIFFERENT POLICIES to the same evidence, and that is the point of
+ * separating gathering from judging: `legion viewer-build` treats an unreadable stamp as stale
+ * (rebuild — the cheap direction), while `legion viewer` treats it as unknown and stays quiet
+ * (a warning that fired on every pre-stamp install would teach operators to ignore it). What
+ * they must never differ on is the MEASUREMENT, so it lives here in one function rather than as
+ * a try/catch pair copied into each.
+ */
+export function readBundleEvidence(viewerDir, distDir, { listSources = listViewerSources, readFile = readFileSync } = {}) {
+  let digest = null;
+  try { digest = computeSourceDigest(viewerDir, { listSources, readFile }); } catch { digest = null; }
+  let stampDigest = null;
+  try { stampDigest = String(readFile(join(distDir, STAMP_FILE))).trim(); } catch { stampDigest = null; }
+  return { digest, stampDigest };
 }

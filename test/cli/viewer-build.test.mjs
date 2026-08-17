@@ -8,13 +8,15 @@
 // matters most on a bad day — that a failed step stops the build and reports npm's own output
 // rather than a re-worded summary.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  BUILD_TIMEOUT_MS, LOCK_FILE, STAMP_FILE, STEPS, buildViewer, computeSourceDigest,
-  listViewerSources, lockRefusal, lockfileRefusal, sourceRefusal, stepFailure, viewerBuildCore,
+  BUILD_TIMEOUT_MS, LOCK_FILE, LOCK_STALE_MS, STAMP_FILE, STEPS, buildViewer, computeSourceDigest,
+  defaultDropLock, defaultTakeLock, listViewerSources, lockRefusal, lockfileRefusal, sourceRefusal,
+  stepFailure, viewerBuildCore,
 } from '../../src/cli/viewer-build.mjs';
 
 const ROOT = '/fake/checkout';
@@ -305,6 +307,46 @@ test('listViewerSources excludes outputs and litter, and THROWS on a symlink (fa
   }
 });
 
+test('the build LOCK is not a bundle input — a build in progress cannot change the digest', () => {
+  // The lock lives at viewer/ top level (dist is emptied mid-build), so a walk that hashed it
+  // would make every digest depend on whether a build happened to be running: the stamp written
+  // under a lock would disagree with every lock-free digest after it, and a hard-killed build's
+  // surviving lock would buy one guaranteed spurious rebuild.
+  const box = mkdtempSync(join(tmpdir(), 'legion-vb-lockwalk-'));
+  try {
+    const v = join(box, 'viewer');
+    mkdirSync(join(v, 'src'), { recursive: true });
+    writeFileSync(join(v, 'package.json'), '{}');
+    writeFileSync(join(v, 'src', 'App.tsx'), 'x');
+    const clean = computeSourceDigest(v);
+
+    writeFileSync(join(v, LOCK_FILE), '4711 8f1c-…\n');
+    assert.deepEqual(listViewerSources(v), ['package.json', 'src/App.tsx'], 'the lock is not a source');
+    assert.equal(computeSourceDigest(v), clean, 'the digest must be blind to whether a build is running');
+  } finally {
+    rmSync(box, { recursive: true, force: true });
+  }
+});
+
+test('an entry that is neither file nor directory THROWS — a partial listing would be stably wrong', async () => {
+  // Sockets, FIFOs, device nodes — and the case that matters: a filesystem whose readdir reports
+  // no type at all, where every Dirent.isX() is false. Dropping those silently produced a
+  // partial-but-STABLE listing that matched its own stamp forever while covering none of the real
+  // sources: "up to date" over changed content, the exact failure the symlink throw prevents.
+  const box = mkdtempSync(join(tmpdir(), 'legion-vb-odd-'));
+  const srv = createServer();
+  try {
+    const v = join(box, 'viewer');
+    mkdirSync(v, { recursive: true });
+    writeFileSync(join(v, 'package.json'), '{}');
+    await new Promise((res, rej) => { srv.once('error', rej); srv.listen(join(v, 'ipc.sock'), res); });
+    assert.throws(() => listViewerSources(v), /unhashable entry at ipc\.sock/);
+  } finally {
+    srv.close();
+    rmSync(box, { recursive: true, force: true });
+  }
+});
+
 // --- the concurrency lock (LOCK_FILE) -----------------------------------------------------------
 
 test('a HELD lock refuses before the first spawn, naming the file and its age', () => {
@@ -364,6 +406,96 @@ test('skips and refusals never touch the lock', () => {
   const refused = buildViewer(fakeRun().run, plan([], existsOf()), { write: sink().write, takeLock });
   assert.equal(refused.ok, false);
 });
+
+test('the executor hands the drop the token it took — release is as exclusive as acquire', () => {
+  // Without the token, a build that overran the stale bound would delete the lock its SUCCESSOR
+  // now holds on the way out, admitting a third builder into a tree already being rebuilt.
+  const dropped = [];
+  const r = buildViewer(fakeRun().run, stampedPlan([], { stamped: false }), {
+    write: sink().write,
+    writeStamp: () => {},
+    takeLock: () => ({ ok: true, owner: 'pid-token-1' }),
+    dropLock: (...a) => dropped.push(a),
+  });
+  assert.equal(r.ok, true);
+  assert.deepEqual(dropped, [[join(VIEWER, LOCK_FILE), 'pid-token-1']]);
+});
+
+// --- the lock primitives, against a REAL filesystem ---------------------------------------------
+// Everything above drives the lock through injected seams; these drive defaultTakeLock and
+// defaultDropLock themselves, because the failures they answer (a stolen live lock, two waiters
+// reclaiming one stale lock, a stat that ENOENTs mid-check) are filesystem races, not shapes.
+
+/** A temp directory holding one lock path. */
+function lockBox(fn) {
+  const box = mkdtempSync(join(tmpdir(), 'legion-vb-lock-'));
+  try { return fn(join(box, LOCK_FILE)); } finally { rmSync(box, { recursive: true, force: true }); }
+}
+
+test('the stale bound covers a WHOLE build, not one step — a live builder is never lawfully robbed', () => {
+  // Each step carries its own BUILD_TIMEOUT_MS, so a legitimate build can hold the lock for the
+  // whole step list's worth of timeouts. A one-timeout bound let a second builder take the lock
+  // out from under a live `npm run build` at minute 10.
+  assert.equal(LOCK_STALE_MS, STEPS.length * BUILD_TIMEOUT_MS);
+  assert.ok(LOCK_STALE_MS > BUILD_TIMEOUT_MS, 'the bound must outlast a single step, not equal it');
+});
+
+test('a FRESH lock is refused and left byte-untouched; only a lock past the bound is reclaimed', () => lockBox((lockPath) => {
+  const mine = defaultTakeLock(lockPath);
+  assert.equal(mine.ok, true);
+  const held = readFileSync(lockPath, 'utf8');
+  assert.equal(held, mine.owner);
+
+  const other = defaultTakeLock(lockPath);
+  assert.equal(other.ok, false, 'a fresh lock means another build owns this tree');
+  assert.ok(other.ageMs >= 0 && other.ageMs < LOCK_STALE_MS);
+  assert.equal(readFileSync(lockPath, 'utf8'), held, 'a refused take must not touch the holder’s lock');
+
+  // Age it past the bound: NOW it is a dead build's leftover, and the reclaim is a fresh
+  // exclusive create (a new owner token), never an overwrite in place.
+  const old = (Date.now() - LOCK_STALE_MS - 60_000) / 1000;
+  utimesSync(lockPath, old, old);
+  const reclaimed = defaultTakeLock(lockPath);
+  assert.equal(reclaimed.ok, true);
+  assert.equal(readFileSync(lockPath, 'utf8'), reclaimed.owner);
+  assert.notEqual(reclaimed.owner, held, 'the reclaimer must own the lock it took');
+}));
+
+test('a lock stamped in the FUTURE reads as age 0 — never fresh-forever, never a negative age', () => lockBox((lockPath) => {
+  // mtime comes from the OTHER process's clock (or an NFS server's). Unclamped, skew made the
+  // age negative: "fresh" for the whole skew, and `-4231s old` printed at the operator.
+  writeFileSync(lockPath, 'someone else\n');
+  const ahead = (Date.now() + 3_600_000) / 1000;
+  utimesSync(lockPath, ahead, ahead);
+  const r = defaultTakeLock(lockPath);
+  assert.equal(r.ok, false);
+  assert.equal(r.ageMs, 0);
+  assert.doesNotMatch(lockRefusal(lockPath, r.ageMs), /-\d+s old/, 'the refusal must never print a negative age');
+}));
+
+test('a lock that VANISHES mid-check is re-raced, never thrown out of', () => lockBox((lockPath) => {
+  // A DANGLING SYMLINK reproduces the race deterministically: `wx` fails EEXIST against the link,
+  // while the stat that follows it ENOENTs. Letting that throw would reach buildViewer's catch,
+  // which reads any throw as "lock machinery unavailable" and builds UNLOCKED — the one outcome
+  // the lock exists to prevent.
+  symlinkSync(join(lockPath, '..', 'nothing-here'), lockPath);
+  let r;
+  assert.doesNotThrow(() => { r = defaultTakeLock(lockPath, { attempts: 2 }); });
+  assert.equal(r.ok, false, 'contention this persistent is reported as a held lock — fail closed');
+  assert.equal(r.ageMs, 0);
+}));
+
+test('the drop releases only the lock this build still owns', () => lockBox((lockPath) => {
+  const mine = defaultTakeLock(lockPath);
+  writeFileSync(lockPath, 'a successor that reclaimed it\n');
+  defaultDropLock(lockPath, mine.owner);
+  assert.equal(existsSync(lockPath), true, 'a reclaimed lock belongs to its new owner, not to us');
+
+  writeFileSync(lockPath, mine.owner);
+  defaultDropLock(lockPath, mine.owner);
+  assert.equal(existsSync(lockPath), false, 'our own lock is released');
+  assert.doesNotThrow(() => defaultDropLock(lockPath, mine.owner), 'dropping an absent lock is quiet');
+}));
 
 // --- the executor -------------------------------------------------------------------------------
 
