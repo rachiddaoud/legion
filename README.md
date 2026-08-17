@@ -1,43 +1,50 @@
 # legion
 
-Legion runs a software feature end to end inside Claude Code — interview, spec, plan, build,
-review, merge/pull request — with a human approving at every gate that matters. It drives
-GitLab through `glab` and GitHub through `gh`, picked per project from the origin remote.
+Legion runs a software feature end-to-end inside Claude Code — interview, spec, plan, build,
+review, and finalize — with a human approving at every gate. It provides a small, zero-dependency
+CLI (`legion`) that enforces typed operations and records evidence so operations are auditable
+and fail closed when needed.
 
-What makes it more than a long prompt: a small zero-dependency CLI kernel (`legion`) owns every
-state change, every piece of evidence and every gate. Agents propose; the kernel decides. It
-fails closed rather than guessing.
+Requirements: Node >= 22.
 
-Plain ESM, Node >= 22, zero runtime dependencies. Distributed as a Claude Code plugin.
+## Install (recommended — GitHub)
 
-## Install
+```sh
+claude plugin marketplace add rachiddaoud/legion
+claude plugin install legion@legion
+node ~/.claude/plugins/marketplaces/legion/bin/legion.mjs setup
+```
+
+These commands register the marketplace and install the plugin. Claude Code keeps a git clone at
+`~/.claude/plugins/marketplaces/legion` (or `$CLAUDE_CONFIG_DIR/plugins/marketplaces/legion`), and
+will pull updates when auto-update is enabled.
+
+To run from a local checkout:
 
 ```sh
 cd <this repo> && ./bin/legion setup
 ```
 
-Registers this checkout as a Claude Code plugin marketplace, installs the plugin from it, puts
-`legion` on your PATH, then runs `legion doctor`.
+## Update
 
-### Update
-
-Enable auto-update once — `/plugin` → *Marketplaces* → *legion*, or in `~/.claude/settings.json`:
+Enable automatic updates once via `/plugin` → Marketplaces → *legion* or add to
+`~/.claude/settings.json`:
 
 ```json
 {
   "extraKnownMarketplaces": {
     "legion": {
-      "source": { "source": "directory", "path": "<this repo>" },
+      "source": { "source": "github", "repo": "rachiddaoud/legion" },
       "autoUpdate": true
     }
   }
 }
 ```
 
-Then updates apply on restart, nothing to run. Manual update:
+Manual update:
 
 ```sh
-claude plugin update legion@legion
+claude plugin marketplace update legion && claude plugin update legion
 ```
 
 ## Start a feature
@@ -48,22 +55,15 @@ From a Claude Code session, in any repo:
 /legion:start
 ```
 
-That's it. It asks two or three questions (what the feature is, which branch it builds on, an
-optional ticket), creates the worktree, branch and dossier, and keeps going as the feature
-session — no second window, no launch command to copy. If legion has never seen this repository
-it registers it for you first.
-
-To come back to a feature later, from its worktree — or just paste the launch command legion
-printed when it created the feature, which opens a session there for you:
+This creates the worktree, branch and dossier and runs the feature session. To resume:
 
 ```
 /legion:feature resume <feature-id>
 ```
 
-## How it works
+## How it works (overview)
 
-Seven stages. Every arrow is a typed kernel operation, not a convention — and the ones that say
-*human* do not move without you.
+Legion drives features through a small typed kernel across seven stages. High-level flow:
 
 ```mermaid
 flowchart TD
@@ -82,102 +82,20 @@ flowchart TD
     R -->|verdicts recorded| M
     M -->|human approves| F
     F --> H([human merges])
-
-    S -.->|reopened ⇒ downstream approvals drop| P
-    P -.->|reopened ⇒ downstream approvals drop| B
 ```
 
-On **express**, the two top human stops collapse into one: the spec is a mini-spec whose
-approval is fused into the intake recap, so `intake → spec → plan` moves on a single yes.
-
-Approvals are bound to content, not to stages: edit an approved `plan.md` and its approval
-drops automatically. That is the safety net, not a bug.
-
-Inside the build stage, every task runs the same loop. Note who talks to the kernel, and what
-the kernel refuses to take anyone's word for:
-
-```mermaid
-sequenceDiagram
-    participant You
-    participant BL as Build loop
-    participant K as legion kernel
-    participant Builder as builder
-    participant Rev as reviewers
-
-    BL->>K: state task-start T3
-    K-->>BL: ok (or refuses — task already done)
-    BL->>Builder: implement T3 from the approved plan
-    Builder->>Builder: edit, commit, run the gate
-    Builder-->>BL: summary + commit
-    BL->>K: gate verify-receipt T3
-    Note over BL,K: the builder's "I passed" is not evidence —<br/>the kernel is asked, every time
-    K-->>BL: receipt valid for this tree
-    BL->>Rev: review the diff (code + optional external lens)
-    Rev-->>BL: pass / fail with findings
-    BL->>Builder: fix round (only on fail)
-    BL->>K: state task-done T3
-    BL-->>You: blocked? the question comes back to you, unanswered
-```
-
-A builder that hits a real decision returns it as a question instead of guessing. You answer it,
-and only that task retries.
-
-## Profiles
-
-Chosen at intake, escalated (never lowered) the moment evidence says so:
-
-| Profile | Spec | Plan critic | Per-task review | Milestone product review | External second opinion |
-|---|---|---|---|---|---|
-| **express** | mini-spec, approval fused into the intake recap | skipped | one lens | no | no |
-| **standard** (default) | full spec, own approval gate | yes | one lens, plan risk tiers honoured | yes | no |
-| **full** | full spec, own approval gate | yes | three dimension lenses — correctness, tests, design — risk tiers ignored | yes | yes, advisory |
-
-`full` is the profile that costs more on *any* machine: its per-task review is three reviewers with
-narrow, disjoint mandates instead of one reviewer covering everything, and the plan's per-task risk
-tiers — which buy review cheapness on the other profiles — are ignored. The external second opinion
-(the `codex` CLI, at plan stage and each milestone close) is advisory on top of that, and simply
-absent when the CLI is not installed.
+Agents propose; the kernel records evidence and enforces safety gates. The intent is to keep operations auditable and fail closed rather than guessing.
 
 ## Day to day
 
-**Fewer permission prompts.** A feature session calls the read-only kernel commands dozens of
-times per stage. Allowlist them in `~/.claude/settings.json`:
+- Add common read-only kernel commands to `~/.claude/settings.json` to reduce prompts.
+- Use `gh` or `glab` configured for your forge; some doctor checks and finalize operations require them.
+- Run `legion doctor` to validate environment and get actionable remedies for common issues.
 
-```json
-{
-  "permissions": {
-    "allow": [
-      "Bash(legion state *)",
-      "Bash(legion gate *)",
-      "Bash(legion plan *)",
-      "Bash(legion feature status*)",
-      "Bash(legion doctor*)"
-    ]
-  }
-}
-```
+## Quick reference
 
-Deliberately not on that list: `legion feature start|abandon|clean` and `legion finalize` — they
-create, destroy, or write to the remote, and they stay rare enough to be worth a prompt.
+- Install: use the three commands in Install (recommended).
+- Update: enable auto-update or run the manual update command.
+- Start: run `/legion:start` in a Claude Code session.
 
-**When something refuses:** `legion doctor` checks git, node, the home layout, your forge CLI's
-authentication and branch protection, and prints a remedy per probe.
-
-**Which forge:** detected from the origin remote at every use — `github.com` (and `*.ghe.com`)
-means GitHub and `gh`, anything else means GitLab and `glab`. `legion project init` prints what
-it detected, and `legion doctor`'s `forge` row shows the effective value plus which level decided
-it. A self-hosted GitHub Enterprise Server is indistinguishable from a self-managed GitLab by
-URL, so override it there — per project with `legion project init --forge github`, or org-wide
-with `{"forge": "github"}` in `~/.legion/orgs/<org>/org.json`. Only an explicit choice is
-recorded; detection is never written down, so an org-wide setting stays in force.
-Install and authenticate the CLI your forge uses (`glab auth login` /
-[`gh auth login`](https://cli.github.com)); `legion finalize` and doctor's branch-protection
-check both need it.
-
-**To watch what happened:** `/legion:viewer` opens a read-only dashboard over the manifests,
-artifacts and feature git history. Legion behaves identically with it closed.
-
-**To declare your real gate** (tests, lint) instead of the tier-0 default:
-`legion project init --gates ./gates.json` — structured argv arrays only, never shell strings;
-`--bootstrap ./bootstrap.json` does the same for per-worktree setup. Both file shapes are
-documented in the header of `src/cli/project.mjs`, and a bad file dies naming the offending key.
+For developer details and migration steps, see the repository history and PRs.
