@@ -20,12 +20,13 @@ allowed-tools: [Bash, Read]
 
 The user wants the observation UI.
 
-1. **Launch it in the background**, passing through any flags they gave (`--port`, `--host`,
+1. **Bring the bundle up to date first**: `legion viewer-build`. Always run it, not only on a
+   refusal — on a marketplace install, Claude Code auto-pulls new viewer sources under a
+   previously built bundle, and this command is what notices (it skips in a second when the
+   bundle already matches the sources, builds on first use, rebuilds when they drifted).
+2. **Launch it in the background**, passing through any flags they gave (`--port`, `--host`,
    `--org`, `--api-only`): `legion viewer`. It prints the URL on stdout as soon as it is
    listening.
-2. **If it refuses because the bundle is missing** — the ordinary first-run state, not a defect —
-   run `legion viewer-build`, then launch again. That command is safe to run at any time: it skips
-   in a second when the bundle is already there.
 3. **Hand the user the URL.** That is the deliverable.
 
 Worth saying once when you report, in your own words: the viewer is read-only and disposable —

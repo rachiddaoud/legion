@@ -1,8 +1,14 @@
 // setup.mjs — `legion setup`: the one installation path made ONE
-// COMMAND. Run from a CHECKOUT, it makes that checkout the installed legion: registers the
-// checkout as a Claude Code marketplace, installs (or refreshes) the plugin snapshot from it,
-// puts `legion` on PATH when nothing does, builds the viewer bundle, and finishes by running
-// `legion doctor` — the same verification the README tells the operator to run after any install.
+// COMMAND, from either of the TWO LEGITIMATE HOMES a legion may run from:
+//   - a CHECKOUT (development): registers the checkout as a directory-source marketplace,
+//     installs (or refreshes) the plugin snapshot from it;
+//   - the MARKETPLACE CLONE (`<config dir>/plugins/marketplaces/<name>`, the git clone Claude
+//     Code keeps for a github-source marketplace and auto-pulls): refreshes the registration
+//     and snapshot from the clone's own registered source.
+// Both modes then put `legion` on PATH when nothing does (npm link FROM the running root — in
+// clone mode that is what makes the PATH kernel follow Claude Code's pulls), build the viewer
+// bundle, and finish by running `legion doctor` — the same verification the README tells the
+// operator to run after any install.
 // Idempotent by construction: every step either succeeds, falls back to its refresh form, or dies
 // loudly — re-running setup after upgrading the checkout IS the snapshot-refresh path the
 // marketplace manifest's own description promises ("refresh it after upgrading the checkout").
@@ -27,17 +33,33 @@
 // manifest refuses loudly — a setup that guessed 'legion@legion' would keep working until the
 // day the manifest moved, and then install something else.
 //
-// THE CHECKOUT-ONLY REFUSAL: a legion running FROM the marketplace snapshot refuses setup.
-// The snapshot is this command's OUTPUT, not its input — registering the snapshot directory as
-// a marketplace would freeze the plugin at whatever the snapshot holds and detach it from the
-// checkout it came from. The CLI's own location is the evidence (the launchCommand rule,
-// feature.mjs): under `<config dir>/plugins` ⇒ snapshot ⇒ refuse, naming the checkout remedy.
+// THE SNAPSHOT REFUSAL, FAIL-CLOSED: a legion running from under `<config dir>/plugins` but NOT
+// from a marketplace clone refuses setup. That covers the plugin snapshot cache
+// (`plugins/cache/<market>/<plugin>/<sha>` — per-commit directories Claude Code orphan-marks and
+// sweeps; anchoring a PATH link or a viewer build there dies with the next update) and any
+// plugins-dir layout this build does not know: an unrecognized subtree refuses rather than being
+// treated as a checkout, because the wrong guess would run `marketplace add` against a directory
+// Claude Code owns. The CLI's own location is the evidence (the launchCommand rule, feature.mjs).
 //
-// FALLBACK, NOT OUTPUT-PARSING: `claude plugin marketplace add` fails when the marketplace is
-// already registered, and the failure WORDING is Claude Code's to change. So each step tries
-// its create form and falls back to its refresh form (`marketplace update <name>`,
+// WHY CLONE MODE NEVER RUNS THE CREATE FORM: the clone's existence IS Claude Code's own record
+// that the marketplace is registered — and `marketplace add <clone path>`, were it accepted,
+// would re-register the marketplace as a DIRECTORY source pointing into the config dir, silently
+// ending the auto-pull that is this install route's whole point. So clone mode runs
+// `marketplace update <name>` only, and a failure there is loud with a re-add-from-the-repository
+// remedy instead of any fallback.
+//
+// FALLBACK, NOT OUTPUT-PARSING (checkout mode): `claude plugin marketplace add` fails when the
+// marketplace is already registered, and the failure WORDING is Claude Code's to change. So each
+// step tries its create form and falls back to its refresh form (`marketplace update <name>`,
 // `plugin update <name>`) on ANY failure; only when BOTH fail does setup die, reporting both
 // outputs verbatim. Wording-independent, and fail-closed: a real breakage fails both forms.
+// The refresh form updates from the marketplace's REGISTERED source, which need not be this
+// checkout — the ok-line says so instead of claiming a checkout refresh it cannot verify.
+//
+// THE DOCTOR MODULE IS IMPORTED BEFORE THE FIRST SPAWN: in clone mode, `marketplace update`
+// git-pulls the very tree this process was loaded from; importing doctor.mjs lazily AFTER that
+// pull would graft post-pull modules onto a pre-pull graph. Resolving the import up front pins
+// the whole run to one version of the code.
 //
 // THE PATH STEP IS DELIBERATELY ASYMMETRIC. `legion` absent from PATH ⇒ run `npm link` in the
 // checkout (idempotent, and already the README's documented route). `legion` present and
@@ -56,10 +78,10 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../kernel/args.mjs';
 import { readJson } from '../kernel/fsatomic.mjs';
 import { runCapture } from '../kernel/runner.mjs';
-import { isMarketplaceInstall } from './feature.mjs';
+import { isMarketplaceClone, isMarketplaceInstall } from './feature.mjs';
 import { buildViewer, viewerBuildCore } from './viewer-build.mjs';
 
-const USAGE = 'legion setup   (no arguments — run it from the legion checkout)';
+const USAGE = 'legion setup   (no arguments — run it from the legion checkout or the installed marketplace clone)';
 
 /** src/cli/setup.mjs → the checkout that contains this CLI (the DEFAULT_PLUGIN_ROOT pattern:
  * derived from THIS file's location, never cwd — `npm link` resolves symlinks at load, so a
@@ -72,6 +94,21 @@ const STEP_TIMEOUT_MS = 120_000;
 
 /** Best-effort realpath (feature.mjs's realish): a PATH entry need not exist. */
 const realish = (p) => { try { return realpathSync(p); } catch { return p; } };
+
+/** How bare `legion` reaches (or fails to reach) the install at `root`:
+ * `{found, resolved, state}` where state is 'absent' (nothing on PATH), 'own' (resolves into
+ * `root`) or 'foreign' (resolves somewhere else — another checkout, an old link). `found` is the
+ * raw PATH hit (null when absent), `resolved` its best-effort realpath. EXPORTED so doctor's
+ * legion-on-path check reads the exact same evidence as setup's PATH step — the two can never
+ * disagree about what PATH holds. */
+export function legionPathState(pathEnv, root) {
+  const found = whichLegion(pathEnv);
+  if (found === null) return { found: null, resolved: null, state: 'absent' };
+  const resolved = realish(found);
+  const own = resolved === realish(join(root, 'bin', 'legion'))
+    || resolved.startsWith(realish(resolve(root)) + sep);
+  return { found, resolved, state: own ? 'own' : 'foreign' };
+}
 
 /** First executable named `legion` on PATH, or null. Scanned segment by segment — never a
  * shelled-out `command -v`, for the same no-shell reason as everything else here. */
@@ -120,6 +157,16 @@ function createOrRefresh(run, what, createArgv, refreshArgv, okCreate, okRefresh
   );
 }
 
+/** One refresh-only step — clone mode's marketplace refresh, which deliberately has NO create
+ * fallback (header: WHY CLONE MODE NEVER RUNS THE CREATE FORM). Returns the line to print;
+ * throws with the verbatim output plus the caller's remedy when the one form fails. */
+function refreshOnly(run, what, refreshArgv, okLine, remedy) {
+  const r = run('claude', refreshArgv, { timeoutMs: STEP_TIMEOUT_MS });
+  if (r.ok) return okLine;
+  const detail = `${r.stdout}${r.stderr}`.trim() || r.spawnError || `exit ${r.code}`;
+  throw new Error(`${what} failed:\n  claude ${refreshArgv.join(' ')} → ${detail}\n${remedy}`);
+}
+
 /**
  * The testable core. `deps.run` is the kernel/runner.mjs seam (required); `pluginRoot`,
  * `marketplaceBase`, `pathEnv` and `runDoctor` exist so tests drive every layout without
@@ -131,7 +178,6 @@ export async function setupCore(argv, deps = {}) {
     pluginRoot = DEFAULT_PLUGIN_ROOT,
     marketplaceBase = undefined, // isMarketplaceInstall's own default when undefined
     pathEnv = process.env.PATH,
-    runDoctor = async () => (await import('./doctor.mjs')).run([]),
   } = deps;
   if (typeof run !== 'function') throw new Error('setupCore requires deps.run — the kernel/runner.mjs seam');
 
@@ -140,53 +186,74 @@ export async function setupCore(argv, deps = {}) {
     throw new Error(`legion setup takes no arguments (got '${argv.join(' ')}'). usage:\n${USAGE}`);
   }
 
-  // --- the checkout-only refusal (header) ----------------------------------------------------
+  // --- the snapshot refusal, fail-closed (header) --------------------------------------------
   const root = resolve(pluginRoot);
-  const snapshot = marketplaceBase === undefined
+  const underPlugins = marketplaceBase === undefined
     ? isMarketplaceInstall(root)
     : isMarketplaceInstall(root, marketplaceBase);
-  if (snapshot) {
+  const clonesBase = marketplaceBase === undefined
+    ? undefined // isMarketplaceClone's own default
+    : join(marketplaceBase, 'marketplaces');
+  const fromClone = clonesBase === undefined
+    ? isMarketplaceClone(root)
+    : isMarketplaceClone(root, clonesBase);
+  if (underPlugins && !fromClone) {
     throw new Error(
       `this legion runs from the INSTALLED SNAPSHOT (${root}), which is setup's output, not its input — `
-      + `run \`legion setup\` from the checkout (e.g. \`cd <checkout> && ./bin/legion setup\`)`,
+      + `run \`legion setup\` from the marketplace clone `
+      + `(e.g. \`node <config dir>/plugins/marketplaces/<name>/bin/legion.mjs setup\`) `
+      + `or from a checkout (e.g. \`cd <checkout> && ./bin/legion setup\`)`,
     );
   }
   const { marketName, pluginName } = readMarketplaceIdentity(root);
 
-  // --- register the marketplace, install the plugin (create → refresh, fail-closed) ----------
-  process.stdout.write(`setup: checkout ${root} (marketplace '${marketName}', plugin '${pluginName}')\n`);
-  process.stdout.write('setup: ' + createOrRefresh(run, `registering marketplace '${marketName}'`,
-    ['plugin', 'marketplace', 'add', root],
-    ['plugin', 'marketplace', 'update', marketName],
-    `registered marketplace '${marketName}' → ${root}`,
-    `marketplace '${marketName}' already registered — refreshed from the checkout`) + '\n');
+  // --- doctor, resolved BEFORE the first spawn (header: the pre-pull import) -----------------
+  const runDoctor = deps.runDoctor
+    ?? await import('./doctor.mjs').then((doctor) => () => doctor.run([]));
+
+  // --- register/refresh the marketplace, install the plugin (fail-closed) --------------------
+  process.stdout.write(`setup: ${fromClone ? 'marketplace clone' : 'checkout'} ${root} (marketplace '${marketName}', plugin '${pluginName}')\n`);
+  if (fromClone) {
+    process.stdout.write('setup: ' + refreshOnly(run, `refreshing marketplace '${marketName}'`,
+      ['plugin', 'marketplace', 'update', marketName],
+      `marketplace '${marketName}' refreshed from its registered source`,
+      `Is the marketplace still registered? Re-add it from its repository — `
+      + `\`claude plugin marketplace add <owner>/<repo>\` — then re-run setup. `
+      + `(Never \`marketplace add\` this clone's path: a directory-source re-registration would end auto-update.)`) + '\n');
+  } else {
+    process.stdout.write('setup: ' + createOrRefresh(run, `registering marketplace '${marketName}'`,
+      ['plugin', 'marketplace', 'add', root],
+      ['plugin', 'marketplace', 'update', marketName],
+      `registered marketplace '${marketName}' → ${root}`,
+      `marketplace '${marketName}' already registered — refreshed from its registered source `
+      + `(if that is not this checkout, \`claude plugin marketplace remove ${marketName}\` and re-add it from here)`) + '\n');
+  }
   process.stdout.write('setup: ' + createOrRefresh(run, `installing '${pluginName}@${marketName}'`,
     ['plugin', 'install', `${pluginName}@${marketName}`],
     ['plugin', 'update', pluginName],
     `installed plugin '${pluginName}@${marketName}' (the installed copy is a snapshot — re-run setup after upgrading the checkout)`,
     `plugin '${pluginName}' already installed — snapshot updated`) + '\n');
 
-  // --- PATH (header: deliberately asymmetric) ------------------------------------------------
-  const found = whichLegion(pathEnv);
-  const ownBin = realish(join(root, 'bin', 'legion'));
-  if (found === null) {
+  // --- PATH (header: deliberately asymmetric; same policy in both modes) ---------------------
+  const path = legionPathState(pathEnv, root);
+  if (path.state === 'absent') {
     const r = run('npm', ['link'], { cwd: root, timeoutMs: STEP_TIMEOUT_MS });
     if (!r.ok) {
       const detail = `${r.stdout}${r.stderr}`.trim() || r.spawnError || `exit ${r.code}`;
       throw new Error(
         `\`legion\` is not on PATH and \`npm link\` (in ${root}) failed: ${detail}\n`
-        + `Link it by hand — \`cd ${root} && npm link\` — or add the checkout's bin to PATH: `
+        + `Link it by hand — \`cd ${root} && npm link\` — or add this install's bin to PATH: `
         + `export PATH="${join(root, 'bin')}:$PATH"`,
       );
     }
     process.stdout.write(`setup: linked \`legion\` onto PATH via npm link (from ${root})\n`);
-  } else if (realish(found) === ownBin || realish(found).startsWith(realish(root) + sep)) {
-    process.stdout.write(`setup: \`legion\` already on PATH → ${found}\n`);
+  } else if (path.state === 'own') {
+    process.stdout.write(`setup: \`legion\` already on PATH → ${path.found}\n`);
   } else {
     process.stdout.write(
-      `setup: WARNING — \`legion\` on PATH resolves to ${realish(found)}, which is NOT this checkout `
+      `setup: WARNING — \`legion\` on PATH resolves to ${path.resolved}, which is NOT this install `
       + `(${root}). Left untouched: repointing PATH is your call, not setup's. `
-      + `If this checkout should win: cd ${root} && npm link\n`,
+      + `If this install should win: cd ${root} && npm link\n`,
     );
   }
 

@@ -4,8 +4,9 @@
 // fake doctor. What is under test is the CONTRACT the header states: derived-not-guessed
 // install identity, create→refresh fallback that dies loudly only when BOTH forms fail,
 // fail-closed step ordering (a dead step means later steps never run), the asymmetric PATH
-// policy (link when absent, hands off when a FOREIGN legion resolves), the checkout-only
-// refusal, and doctor owning the exit code.
+// policy (link when absent, hands off when a FOREIGN legion resolves), the snapshot refusal
+// (fail-closed: under plugins/ but not a marketplace clone ⇒ refuse), the clone mode's
+// update-only marketplace step, and doctor owning the exit code.
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,8 +25,20 @@ test.after(() => { for (const b of boxes) rmSync(b, { recursive: true, force: tr
 /** A temp legion checkout: marketplace manifest + an executable bin/legion. `viewer` adds the
  * frontend source, which is what makes setup attempt the bundle build — WITHOUT it the build step
  * skips and spawns nothing, which is why every pre-existing test here still records zero npm calls. */
-function mkCheckout({ marketName = 'legion', pluginName = 'legion', manifest, viewer = false, viewerBuilt = false } = {}) {
-  const root = join(mkBox(), 'checkout');
+function mkCheckout(opts = {}) {
+  return populate(join(mkBox(), 'checkout'), opts);
+}
+
+/** The same checkout shape, but living where Claude Code keeps a git-source marketplace's CLONE —
+ * `<plugins base>/marketplaces/<name>` — the layout that makes setup take its from-clone mode.
+ * Returns both the plugins base (the injectable marketplaceBase) and the clone root. */
+function mkClone(opts = {}) {
+  const base = join(mkBox(), 'claude-config', 'plugins');
+  const root = populate(join(base, 'marketplaces', opts.marketName ?? 'legion'), opts);
+  return { base, root };
+}
+
+function populate(root, { marketName = 'legion', pluginName = 'legion', manifest, viewer = false, viewerBuilt = false } = {}) {
   mkdirSync(join(root, '.claude-plugin'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
   writeFileSync(join(root, 'bin', 'legion'), '#!/bin/sh\nexit 0\n');
@@ -74,6 +87,11 @@ function depsFor(root, run, over = {}) {
   };
 }
 
+/** deps for the clone layout: marketplaceBase is the plugins dir that CONTAINS the clone. */
+function cloneDepsFor(base, root, run, over = {}) {
+  return depsFor(root, run, { marketplaceBase: base, ...over });
+}
+
 /** Capture process.stdout.write for one call. */
 async function withStdout(fn) {
   const real = process.stdout.write;
@@ -120,9 +138,14 @@ test('marketplace add fails → update fallback succeeds → setup proceeds', as
   const root = mkCheckout();
   const { run, calls } = fakeRun((file, args) =>
     (args[1] === 'marketplace' && args[2] === 'add' ? { ok: false, code: 1, stderr: 'marketplace already exists' } : {}));
-  const code = await setupCore([], depsFor(root, run));
+  let code;
+  const out = await withStdout(async () => { code = await setupCore([], depsFor(root, run)); });
   assert.equal(code, 0);
   assert.deepEqual(verbs(calls), ['claude plugin marketplace add', 'claude plugin marketplace update', 'claude plugin install legion@legion']);
+  // The refresh form updates from the REGISTERED source, which need not be this checkout (it may
+  // be a github source on the hybrid machine) — the ok-line must not claim a checkout refresh.
+  assert.match(out, /refreshed from its registered source/);
+  assert.doesNotMatch(out, /refreshed from the checkout/);
 });
 
 test('marketplace add AND update both fail → loud throw carrying BOTH outputs; install never attempted', async () => {
@@ -198,9 +221,11 @@ test('a FOREIGN `legion` on PATH: warn naming both paths, touch nothing, still r
   assert.equal(doctorRan, true);
 });
 
-test('checkout-only refusal: a snapshot-resident legion refuses with ZERO spawns', async () => {
+test('snapshot refusal: a cache-resident legion refuses with ZERO spawns', async () => {
+  // The snapshot cache is per-commit and garbage-swept — anchoring anything there dies with the
+  // next update, so setup refuses before it spawns a thing.
   const base = join(mkBox(), 'claude-config', 'plugins');
-  const root = join(base, 'marketplaces', 'legion');
+  const root = join(base, 'cache', 'legion', 'legion', '3abc27f');
   mkdirSync(join(root, '.claude-plugin'), { recursive: true });
   writeFileSync(join(root, '.claude-plugin', 'marketplace.json'), JSON.stringify({ name: 'legion', plugins: [{ name: 'legion' }] }));
   const { run, calls } = fakeRun();
@@ -209,6 +234,104 @@ test('checkout-only refusal: a snapshot-resident legion refuses with ZERO spawns
     /INSTALLED SNAPSHOT/,
   );
   assert.equal(calls.length, 0);
+});
+
+test('snapshot refusal FAILS CLOSED: an unknown subtree under plugins/ refuses too, ZERO spawns', async () => {
+  // Not the cache, not a marketplace clone — a layout this build does not know. Treating it as a
+  // checkout would run `marketplace add` against a directory Claude Code owns, so: refuse.
+  const base = join(mkBox(), 'claude-config', 'plugins');
+  const root = join(base, 'some-future-layout', 'legion');
+  mkdirSync(join(root, '.claude-plugin'), { recursive: true });
+  writeFileSync(join(root, '.claude-plugin', 'marketplace.json'), JSON.stringify({ name: 'legion', plugins: [{ name: 'legion' }] }));
+  const { run, calls } = fakeRun();
+  await assert.rejects(
+    () => setupCore([], { run, pluginRoot: root, marketplaceBase: base, pathEnv: '', runDoctor: async () => 0 }),
+    /INSTALLED SNAPSHOT/,
+  );
+  assert.equal(calls.length, 0);
+});
+
+// --- from-clone mode: the github-source install route (src/cli/setup.mjs header) ---------------
+// The clone at <plugins>/marketplaces/<name> is a real git checkout Claude Code auto-pulls; setup
+// run from it must refresh, never re-register — `marketplace add <clone path>` would re-register
+// the marketplace as a DIRECTORY source and silently end auto-update.
+
+test('clone happy path: marketplace UPDATE only (never add), install, doctor code returned', async () => {
+  const { base, root } = mkClone();
+  const { run, calls } = fakeRun();
+  let doctorRan = false;
+  const out = await withStdout(async () => {
+    const code = await setupCore([], cloneDepsFor(base, root, run, { runDoctor: async () => { doctorRan = true; return 0; } }));
+    assert.equal(code, 0);
+  });
+  assert.equal(doctorRan, true);
+  assert.deepEqual(verbs(calls), ['claude plugin marketplace update', 'claude plugin install legion@legion']);
+  assert.deepEqual(calls[0].args, ['plugin', 'marketplace', 'update', 'legion']);
+  assert.equal(calls.some((c) => c.args[1] === 'marketplace' && c.args[2] === 'add'), false,
+    'the create form must NEVER run from the clone — it would re-register as a directory source');
+  assert.match(out, /marketplace clone/, 'the banner names the mode');
+});
+
+test('clone marketplace update fails → loud throw with verbatim output and the re-add remedy; install never attempted', async () => {
+  const { base, root } = mkClone();
+  const { run, calls } = fakeRun((file, args) =>
+    (args[1] === 'marketplace' ? { ok: false, code: 1, stderr: 'update-broke' } : {}));
+  await assert.rejects(
+    () => setupCore([], cloneDepsFor(base, root, run)),
+    (e) => /update-broke/.test(e.message)
+      && e.message.includes('claude plugin marketplace add <owner>/<repo>')
+      && !e.message.includes(`marketplace add ${root}`),
+  );
+  assert.equal(calls.some((c) => c.args[1] === 'install'), false, 'a dead marketplace step must stop setup before install');
+});
+
+test('clone plugin install fails → plugin update fallback succeeds — symmetric with dev mode', async () => {
+  const { base, root } = mkClone();
+  const { run, calls } = fakeRun((file, args) =>
+    (args[1] === 'install' ? { ok: false, code: 1, stderr: 'already installed' } : {}));
+  const code = await setupCore([], cloneDepsFor(base, root, run));
+  assert.equal(code, 0);
+  assert.deepEqual(verbs(calls).slice(-1), ['claude plugin update legion']);
+});
+
+test('clone mode, `legion` absent from PATH → npm link runs IN the clone', async () => {
+  // THE point of the route: the PATH kernel is linked from the directory Claude Code pulls, so
+  // marketplace auto-update updates what every `legion …` callsite runs.
+  const { base, root } = mkClone();
+  const { run, calls } = fakeRun();
+  const code = await setupCore([], cloneDepsFor(base, root, run, { pathEnv: join(mkBox(), 'empty-bin') }));
+  assert.equal(code, 0);
+  const npm = calls.find((c) => c.file === 'npm');
+  assert.deepEqual(npm.args, ['link']);
+  assert.equal(npm.cwd, root, 'npm link must run in the clone');
+});
+
+test('clone mode, FOREIGN `legion` on PATH (the checkout-linked hybrid): warn naming both, touch nothing', async () => {
+  const { base, root } = mkClone();
+  const foreignBin = join(mkBox(), 'other-bin');
+  mkdirSync(foreignBin, { recursive: true });
+  writeFileSync(join(foreignBin, 'legion'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(foreignBin, 'legion'), 0o755);
+  const { run, calls } = fakeRun();
+  let doctorRan = false;
+  const out = await withStdout(async () => {
+    const code = await setupCore([], cloneDepsFor(base, root, run, { pathEnv: foreignBin, runDoctor: async () => { doctorRan = true; return 0; } }));
+    assert.equal(code, 0);
+  });
+  assert.equal(calls.some((c) => c.file === 'npm'), false, 'repointing PATH is the operator\'s call, not setup\'s');
+  assert.match(out, /WARNING/);
+  assert.match(out, /other-bin/);
+  assert.equal(doctorRan, true);
+});
+
+test('clone with viewer/ gets its bundle built in the clone, forced', async () => {
+  const { base, root } = mkClone({ viewer: true, viewerBuilt: true });
+  const { run, calls } = fakeRun();
+  const code = await setupCore([], cloneDepsFor(base, root, run));
+  assert.equal(code, 0);
+  const npm = calls.filter((c) => c.file === 'npm');
+  assert.deepEqual(npm.map((c) => c.args.join(' ')), ['ci', 'run build'], 'forced: a pre-pull dist must not skip the rebuild');
+  for (const c of npm) assert.equal(c.cwd, join(root, 'viewer'), 'the build runs in the clone\'s viewer/');
 });
 
 test('missing marketplace.json refuses naming the path, ZERO spawns', async () => {

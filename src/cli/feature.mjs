@@ -635,20 +635,45 @@ export const marketplacePluginsRoot = () =>
  * non-existent path is compared verbatim rather than treated as an error. */
 const realish = (p) => { try { return realpathSync(p); } catch { return p; } };
 
+/** Segment-wise containment, realpath'd where possible: `root` is `base` or lives under it.
+ * Never a string prefix — `~/.claude/pluginsfoo` is not inside `~/.claude/plugins`. */
+const underSegmentOf = (root, base) => {
+  const r = realish(resolve(root));
+  const b = realish(resolve(base));
+  return r === b || r.startsWith(b + sep);
+};
+
 /** THE RULE ("Development launches additionally carry `--plugin-dir <plugin root>` when the
  * plugin is not installed from the marketplace"): THE CLI'S OWN LOCATION
  * IS THE EVIDENCE OF HOW LEGION IS INSTALLED. A marketplace install lives under Claude Code's
  * `<config dir>/plugins` by its own layout, so a root anywhere else is a development install and
  * its session gets nothing — no skill, no agents, no hooks — unless the launch names the root.
- * Containment is compared on path SEGMENTS (realpath'd where
- * possible), never as a string prefix — `~/.claude/pluginsfoo` is not inside `~/.claude/plugins`.
+ * This is the CONTAINMENT half only — it says "somewhere under `<config dir>/plugins`", nothing
+ * finer; setup composes it with isMarketplaceClone below to tell the durable clone from the
+ * swept snapshot cache.
  * FAILURE DIRECTIONS, deliberately asymmetric: misjudging a dev root as marketplace prints a
  * broken launch (a plugin-less session), while misjudging a marketplace root as dev prints a
  * redundant flag naming the directory the plugin already loads from. EXPORTED for the layout tests. */
 export function isMarketplaceInstall(pluginRoot, base = marketplacePluginsRoot()) {
-  const root = realish(resolve(pluginRoot));
-  const mkt = realish(resolve(base));
-  return root === mkt || root.startsWith(mkt + sep);
+  return underSegmentOf(pluginRoot, base);
+}
+
+/** Where Claude Code keeps its MARKETPLACE CLONES: `<config dir>/plugins/marketplaces/<name>`.
+ * Verified against Claude Code 2.1.219/2.1.220: a git-sourced marketplace is a full clone here
+ * (stable path, auto-pulled when the marketplace has auto-update on), while installed plugin
+ * SNAPSHOTS live under `<config dir>/plugins/cache/<market>/<plugin>/<sha>` — per-commit
+ * directories that get `.orphaned_at`-marked and garbage-swept on update. Read at CALL time,
+ * same rule as marketplacePluginsRoot. */
+export const marketplaceClonesRoot = () => join(marketplacePluginsRoot(), 'marketplaces');
+
+/** Is this root inside a marketplace CLONE (durable, pull-updated) as opposed to elsewhere under
+ * `<config dir>/plugins` (the snapshot cache, or a layout this build does not know)? Consumers
+ * compose it FAIL-CLOSED: setup allows `isMarketplaceInstall && isMarketplaceClone` and refuses
+ * the rest, because the failure directions are asymmetric — misjudging a clone as snapshot merely
+ * re-refuses setup, while misjudging a snapshot as clone would anchor PATH links and viewer
+ * builds in a directory Claude Code sweeps. EXPORTED for the layout tests. */
+export function isMarketplaceClone(pluginRoot, base = marketplaceClonesRoot()) {
+  return underSegmentOf(pluginRoot, base);
 }
 
 /** The exact launch command for a resumed feature session. EVERY interpolated path and identifier

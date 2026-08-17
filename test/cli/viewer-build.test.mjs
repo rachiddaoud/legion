@@ -11,7 +11,8 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  BUILD_TIMEOUT_MS, STEPS, buildViewer, lockfileRefusal, sourceRefusal, stepFailure, viewerBuildCore,
+  BUILD_TIMEOUT_MS, STAMP_FILE, STEPS, buildViewer, computeSourceDigest, lockfileRefusal,
+  sourceRefusal, stepFailure, viewerBuildCore,
 } from '../../src/cli/viewer-build.mjs';
 
 const ROOT = '/fake/checkout';
@@ -128,6 +129,152 @@ test('no lockfile: refuse rather than fall back to `npm install`', () => {
 test('the source refusal wins over the lockfile refusal — the outer cause is the actionable one', () => {
   const p = plan([], existsOf(LOCK)); // lockfile without a package.json: nonsense, name the real fault
   assert.equal(p.refusal, sourceRefusal(VIEWER));
+});
+
+// --- staleness: the stamp and the digest (src/cli/viewer-build.mjs header, STALENESS) -----------
+// The default listSources/readFile hit the real fs and THROW on /fake/checkout — which is exactly
+// the digest:null fallback every pre-existing case above rides on. These cases inject both.
+
+const STAMP = join(DIST, STAMP_FILE);
+
+/** A plan over the fake tree WITH a computable digest: sources are two in-memory files, and the
+ * stamp (when `stamped`) holds whatever the same digest machinery computes for them. */
+function stampedPlan(argv, { built = true, stamped = true, sources = { 'src/App.tsx': 'v1' } } = {}) {
+  const files = Object.keys(sources).sort();
+  const bytesOf = (p) => {
+    for (const [rel, bytes] of Object.entries(sources)) if (p === join(VIEWER, rel)) return bytes;
+    throw new Error(`unexpected read: ${p}`);
+  };
+  const digest = computeSourceDigest(VIEWER, { listSources: () => files, readFile: bytesOf });
+  const exists = wholeCheckout(built);
+  return viewerBuildCore(argv, {
+    exists,
+    pluginRoot: ROOT,
+    listSources: () => files,
+    readFile: (p) => (p === STAMP
+      ? (stamped ? `${digest}\n` : (() => { throw new Error('ENOENT'); })())
+      : bytesOf(p)),
+  });
+}
+
+test('a built bundle with a MATCHING stamp skips — the verified skip', () => {
+  const p = stampedPlan([]);
+  assert.equal(p.stale, false);
+  assert.equal(p.skip, true);
+  assert.equal(p.digest, p.stampDigest);
+});
+
+test('sources drifted from the stamp → stale, rebuild WITHOUT --force', () => {
+  // The auto-pull case: Claude Code pulled new viewer sources over a dist built from the old ones.
+  const fresh = stampedPlan([]);
+  const p = viewerBuildCore([], {
+    exists: wholeCheckout(true),
+    pluginRoot: ROOT,
+    listSources: () => ['src/App.tsx'],
+    readFile: (path) => (path === STAMP ? `${fresh.digest}\n` : 'v2-pulled'),
+  });
+  assert.equal(p.stale, true);
+  assert.equal(p.force, false);
+  assert.equal(p.skip, false, 'a stale bundle must never make the bare command a no-op');
+  assert.deepEqual(p.steps, STEPS);
+});
+
+test('a built bundle with NO stamp rebuilds once — pre-stamp installs self-heal', () => {
+  const p = stampedPlan([], { stamped: false });
+  assert.equal(p.stampDigest, null);
+  assert.equal(p.stale, true);
+  assert.equal(p.skip, false);
+});
+
+test('an uncomputable digest falls back to the OLD skip-if-built semantics', () => {
+  // The no-.git/cache/tarball analogue and every unreadable-tree mode in one: listSources throws.
+  const p = viewerBuildCore([], {
+    exists: wholeCheckout(true),
+    pluginRoot: ROOT,
+    listSources: () => { throw new Error('EACCES'); },
+    readFile: () => { throw new Error('unreachable'); },
+  });
+  assert.equal(p.digest, null);
+  assert.equal(p.stale, false, 'staleness is a claim, and an unanswerable question must not make it');
+  assert.equal(p.skip, true, 'the pre-stamp behavior is the fallback, not a refusal');
+});
+
+test('refusals still win over staleness: a stale-but-lockfileless plan refuses with no steps', () => {
+  const p = viewerBuildCore([], {
+    exists: existsOf(PKG, ENTRY),
+    pluginRoot: ROOT,
+    listSources: () => ['src/App.tsx'],
+    readFile: () => 'bytes',
+  });
+  assert.equal(p.refusal, lockfileRefusal(VIEWER));
+  assert.deepEqual(p.steps, []);
+  assert.equal(p.digest, null, 'a refused plan computes no digest — refusal precedence is total');
+});
+
+test('--force still rebuilds a verified-fresh bundle — force is a superset of staleness', () => {
+  const p = stampedPlan(['--force']);
+  assert.equal(p.stale, false);
+  assert.equal(p.skip, false);
+  assert.deepEqual(p.steps, STEPS);
+});
+
+test('computeSourceDigest: deterministic across listing order, sensitive to renames', () => {
+  const bytes = { a: 'aa', 'b/c': 'cc' };
+  const read = (p) => bytes[p.slice(VIEWER.length + 1)] ?? (() => { throw new Error(p); })();
+  const d1 = computeSourceDigest(VIEWER, { listSources: () => ['a', 'b/c'], readFile: read });
+  const d2 = computeSourceDigest(VIEWER, { listSources: () => ['b/c', 'a'].sort(), readFile: read });
+  assert.equal(d1, d2, 'insertion order must not matter — the digest is over the SORTED listing');
+  const renamed = computeSourceDigest(VIEWER, {
+    listSources: () => ['a', 'b/d'],
+    readFile: (p) => (p === join(VIEWER, 'b/d') ? 'cc' : read(p)),
+  });
+  assert.notEqual(d1, renamed, 'identical bytes under a new path IS a different bundle input');
+});
+
+test('the executor stamps AFTER both steps, with the plan digest, and not on failure', () => {
+  const stamps = [];
+  const order = [];
+  const { run } = (() => {
+    const run = (file, args) => { order.push(`${file} ${args.join(' ')}`); return { ok: true, code: 0, signal: null, stdout: '', stderr: '', spawnError: null }; };
+    return { run };
+  })();
+  const p = stampedPlan([], { stamped: false }); // stale ⇒ builds
+  const r = buildViewer(run, p, { write: sink().write, writeStamp: (path, digest) => { order.push('stamp'); stamps.push([path, digest]); } });
+  assert.equal(r.ok, true);
+  assert.deepEqual(order, ['npm ci', 'npm run build', 'stamp'], 'the stamp is the LAST act of a successful build');
+  assert.deepEqual(stamps, [[STAMP, p.digest]]);
+
+  const stamps2 = [];
+  const { run: failRun } = (() => ({ run: (file, args) => ({ ok: args[0] !== 'ci', code: args[0] === 'ci' ? 1 : 0, signal: null, stdout: '', stderr: 'boom', spawnError: null }) }))();
+  const r2 = buildViewer(failRun, stampedPlan([], { stamped: false }), { write: sink().write, writeStamp: (...a) => stamps2.push(a) });
+  assert.equal(r2.ok, false);
+  assert.deepEqual(stamps2, [], 'a failed build must not stamp — the dist does not match the sources');
+});
+
+test('a THROWING stamp write is a warning, never a failed build', () => {
+  const s = sink();
+  const { run } = (() => ({ run: () => ({ ok: true, code: 0, signal: null, stdout: '', stderr: '', spawnError: null }) }))();
+  const r = buildViewer(run, stampedPlan([], { stamped: false }), {
+    write: s.write,
+    writeStamp: () => { throw new Error('EROFS'); },
+  });
+  assert.equal(r.ok, true, 'the bundle IS ready — recording what it was built from is best-effort');
+  assert.match(s.text, /WARNING/);
+  assert.match(s.text, /EROFS/);
+  assert.match(s.text, /bundle ready at/);
+});
+
+test('a digest-less plan (fallback mode) stamps nothing', () => {
+  const stamps = [];
+  const { run } = (() => ({ run: () => ({ ok: true, code: 0, signal: null, stdout: '', stderr: '', spawnError: null }) }))();
+  const p = viewerBuildCore(['--force'], {
+    exists: wholeCheckout(true),
+    pluginRoot: ROOT,
+    listSources: () => { throw new Error('EACCES'); },
+  });
+  const r = buildViewer(run, p, { write: sink().write, writeStamp: (...a) => stamps.push(a) });
+  assert.equal(r.ok, true);
+  assert.deepEqual(stamps, [], 'a stamp claiming an uncomputed digest would be a lie the next run trusts');
 });
 
 // --- the executor -------------------------------------------------------------------------------

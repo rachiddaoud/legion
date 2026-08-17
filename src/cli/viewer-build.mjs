@@ -31,8 +31,21 @@
 //
 // A FAILED STEP IS REPORTED VERBATIM AND STOPS THE BUILD. npm's own output is the diagnosis; a
 // re-worded summary of it is how an operator loses the one line that said which dependency failed.
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+//
+// STALENESS: a present bundle is only as good as the sources it was built FROM. On the
+// github-marketplace install route, Claude Code auto-pulls the clone this command runs from —
+// nothing else would ever rebuild a present-but-stale dist, and `legion viewer` would serve it
+// silently. So a successful build stamps dist with a CONTENT DIGEST of the viewer/ sources
+// (never git state: kernel/runner.mjs structurally refuses git, and half the places a legion
+// runs from carry no .git at all), and a bare `legion viewer-build` rebuilds when the digest no
+// longer matches the stamp. FAILURE DIRECTION: an uncomputable digest (unreadable tree) or an
+// unreadable/absent stamp falls back to the old skip-if-built semantics or to a rebuild — the
+// staleness machinery may cost a spare rebuild, but it can never CAUSE a stale serve that the
+// pre-stamp behavior would have caught. The stamp lives IN dist because vite empties dist before
+// refilling it: an interrupted rebuild destroys the stale stamp along with the stale bundle.
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../kernel/args.mjs';
 import { runCapture } from '../kernel/runner.mjs';
@@ -50,6 +63,42 @@ export const BUILD_TIMEOUT_MS = 600_000;
 
 /** The build, in order. `npm ci` and not `npm install` (header). */
 export const STEPS = [['npm', ['ci']], ['npm', ['run', 'build']]];
+
+/** The build stamp, IN dist (header: STALENESS). One line: the source digest the bundle was
+ * built from. */
+export const STAMP_FILE = '.legion-build-stamp';
+
+/** The bundle's INPUTS: every file under viewer/, sorted, as relative paths — excluding the two
+ * top-level trees that are outputs, not inputs (`dist/` is what the build writes, `node_modules/`
+ * is what `npm ci` materializes from the lockfile, which IS hashed). The exclusion list is what
+ * keeps the digest milliseconds instead of a 200MB walk. EXPORTED for its own determinism test. */
+export function listViewerSources(viewerDir) {
+  const out = [];
+  const walk = (rel) => {
+    for (const entry of readdirSync(rel === '' ? viewerDir : join(viewerDir, rel), { withFileTypes: true })) {
+      if (rel === '' && (entry.name === 'dist' || entry.name === 'node_modules')) continue;
+      const childRel = rel === '' ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isDirectory()) walk(childRel);
+      else if (entry.isFile()) out.push(childRel);
+    }
+  };
+  walk('');
+  return out.sort();
+}
+
+/** sha256 over `relPath NUL bytes NUL` in sorted order. The path is part of the hash input on
+ * purpose: a rename with identical bytes IS a different bundle input (vite resolves by path).
+ * Throws on any unreadable entry — the CALLER maps that to digest:null and the fallback semantics. */
+export function computeSourceDigest(viewerDir, { listSources = listViewerSources, readFile = readFileSync } = {}) {
+  const hash = createHash('sha256');
+  for (const rel of listSources(viewerDir)) {
+    hash.update(rel);
+    hash.update('\0');
+    hash.update(readFile(join(viewerDir, rel)));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
+}
 
 /** The flag surface, exhaustive — an unlisted flag is a typo, and building anyway while ignoring
  * it is worse than refusing (viewerCore's rule, same reasoning). */
@@ -107,7 +156,9 @@ export function stepFailure(file, args, cwd, r) {
  * @param {string[]} argv unsplit argv (kernel/args.mjs invariant)
  * @param {{exists?: Function, pluginRoot?: string}} deps
  */
-export function viewerBuildCore(argv, { exists = existsSync, pluginRoot = REPO_ROOT } = {}) {
+export function viewerBuildCore(argv, {
+  exists = existsSync, pluginRoot = REPO_ROOT, listSources = listViewerSources, readFile = readFileSync,
+} = {}) {
   const { flags, positional } = parseArgs(argv, { bools: ['force'] });
   // Usage errors die BEFORE anything is resolved: a typo must not be answered with a build.
   if (positional.length > 0) {
@@ -130,6 +181,20 @@ export function viewerBuildCore(argv, { exists = existsSync, pluginRoot = REPO_R
   if (!haveSource) refusal = sourceRefusal(viewerDir);
   else if (!haveLock) refusal = lockfileRefusal(viewerDir);
 
+  // THE STALENESS QUESTION (header): does the present bundle match the present sources? Any
+  // failure to answer — unreadable tree, absent/unreadable stamp — degrades toward the OLD
+  // semantics or a rebuild, never toward serving a bundle known to be stale.
+  let digest = null;
+  if (refusal === null) {
+    try { digest = computeSourceDigest(viewerDir, { listSources, readFile }); } catch { digest = null; }
+  }
+  const stampPath = join(distDir, STAMP_FILE);
+  let stampDigest = null;
+  if (haveDist) {
+    try { stampDigest = String(readFile(stampPath)).trim(); } catch { stampDigest = null; }
+  }
+  const stale = digest !== null && digest !== stampDigest;
+
   return {
     viewerDir,
     distDir,
@@ -137,10 +202,15 @@ export function viewerBuildCore(argv, { exists = existsSync, pluginRoot = REPO_R
     haveSource,
     haveLock,
     haveDist,
+    digest,
+    stampPath,
+    stampDigest,
+    stale,
     // ALREADY BUILT IS NOT AN ERROR. It makes the command cheap to call unconditionally, which is
     // exactly what /legion:viewer does — the alternative is a skill that has to decide, and that
-    // decision is what this command exists to take away from it.
-    skip: refusal === null && haveDist && !force,
+    // decision is what this command exists to take away from it. Built-but-STALE, though, is what
+    // this command exists to repair — a stale plan never skips.
+    skip: refusal === null && haveDist && !force && !stale,
     steps: refusal === null ? STEPS : [],
     refusal,
   };
@@ -152,10 +222,16 @@ export function viewerBuildCore(argv, { exists = existsSync, pluginRoot = REPO_R
  * @param {Function} run kernel/runner.mjs's runCapture, or a fake
  * @param {ReturnType<typeof viewerBuildCore>} plan
  */
-export function buildViewer(run, plan, { write = (s) => process.stdout.write(s) } = {}) {
+export function buildViewer(run, plan, {
+  write = (s) => process.stdout.write(s),
+  writeStamp = (path, digest) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, `${digest}\n`); },
+} = {}) {
   if (plan.refusal !== null) return { ok: false, skipped: false, ran: [], failure: plan.refusal };
   if (plan.skip) {
-    write(`legion viewer-build: bundle already built at ${plan.distDir} — --force to rebuild it\n`);
+    // A skip with a computed digest is a VERIFIED skip — the message may say so; the pinned
+    // "already built" + "--force" shape stays either way.
+    write(`legion viewer-build: bundle already built at ${plan.distDir}`
+      + `${plan.digest !== null ? ' and up to date with viewer/ sources' : ''} — --force to rebuild it\n`);
     return { ok: true, skipped: true, ran: [], failure: null };
   }
   write(`legion viewer-build: building in ${plan.viewerDir} — a minute or two, and each step`
@@ -168,6 +244,17 @@ export function buildViewer(run, plan, { write = (s) => process.stdout.write(s) 
     // FAIL CLOSED: `npm run build` after a failed `npm ci` would either fail confusingly or, worse,
     // succeed against a stale node_modules and ship a bundle nobody asked for.
     if (!r.ok) return { ok: false, skipped: false, ran, failure: stepFailure(file, args, plan.viewerDir, r) };
+  }
+  // The stamp records what this bundle was built FROM (header: STALENESS) — only after BOTH steps,
+  // and only when the digest was computable. A failed stamp write degrades to a warning: the next
+  // run rebuilds a fresh bundle, which is the cheap direction.
+  if (plan.digest !== null) {
+    try {
+      writeStamp(plan.stampPath, plan.digest);
+    } catch (e) {
+      write(`legion viewer-build: WARNING — could not record the build stamp at ${plan.stampPath}`
+        + ` (${e?.message ?? e}); the next run will rebuild\n`);
+    }
   }
   write(`legion viewer-build: bundle ready at ${plan.distDir}\n`);
   return { ok: true, skipped: false, ran, failure: null };

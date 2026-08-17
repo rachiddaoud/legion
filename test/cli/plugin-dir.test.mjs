@@ -18,7 +18,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isMarketplaceInstall, launchCommand, marketplacePluginsRoot, shellQuote } from '../../src/cli/feature.mjs';
+import { isMarketplaceClone, isMarketplaceInstall, launchCommand, marketplaceClonesRoot, marketplacePluginsRoot, shellQuote } from '../../src/cli/feature.mjs';
 
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
@@ -83,6 +83,46 @@ test('CLAUDE_CONFIG_DIR relocates the marketplace root, and is read at call time
     delete process.env.CLAUDE_CONFIG_DIR;
   }
   assert.equal(isMarketplaceInstall(root), false, 'and the answer follows the env back');
+});
+
+test('isMarketplaceClone tells the durable clone from everything else under plugins/', () => {
+  // The finer predicate setup composes with isMarketplaceInstall: true only under
+  // <config dir>/plugins/marketplaces — the git clone Claude Code pulls — never for the
+  // swept snapshot cache or a dev checkout.
+  const plugins = join(homedir(), '.claude', 'plugins');
+  assert.equal(isMarketplaceClone(join(plugins, 'marketplaces', 'legion')), true);
+  assert.equal(isMarketplaceClone(join(plugins, 'marketplaces', 'legion', 'src', 'cli')), true, 'children of a clone are inside it');
+  assert.equal(isMarketplaceClone(join(plugins, 'cache', 'legion', 'legion', 'abc123')), false, 'the snapshot cache is NOT a clone');
+  assert.equal(isMarketplaceClone(join(TMP, 'checkouts', 'legion3')), false, 'a dev checkout is not a clone');
+  assert.equal(isMarketplaceClone(join(plugins, 'marketplacesfoo', 'legion')), false, 'containment is by segment, not string prefix');
+  assert.equal(marketplaceClonesRoot(), join(plugins, 'marketplaces'));
+});
+
+test('isMarketplaceClone follows CLAUDE_CONFIG_DIR at call time, like the plugins root', () => {
+  const relocated = join(TMP, 'claude-config-clone');
+  const clone = join(relocated, 'plugins', 'marketplaces', 'legion');
+  assert.equal(isMarketplaceClone(clone), false, 'without the env var, that path is ordinary');
+  process.env.CLAUDE_CONFIG_DIR = relocated;
+  try {
+    assert.equal(marketplaceClonesRoot(), join(relocated, 'plugins', 'marketplaces'));
+    assert.equal(isMarketplaceClone(clone), true);
+  } finally {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  }
+  assert.equal(isMarketplaceClone(clone), false, 'and the answer follows the env back');
+});
+
+test('launchCommand omits --plugin-dir for cache AND clone roots alike — the split does not touch it', () => {
+  // The new clone/cache distinction exists for setup only; a launch printed from either copy
+  // must stay flagless, because either way the plugin is genuinely installed.
+  const plugins = join(homedir(), '.claude', 'plugins');
+  for (const root of [
+    join(plugins, 'cache', 'legion', 'legion', '3abc27f94533'),
+    join(plugins, 'marketplaces', 'legion'),
+  ]) {
+    const line = launchCommand('interactive', F('/tmp/wt'), root);
+    assert.ok(!line.includes('--plugin-dir'), `no flag for ${root}:\n  ${line}`);
+  }
 });
 
 test('the default root is derived from the CLI file location — not cwd', () => {
