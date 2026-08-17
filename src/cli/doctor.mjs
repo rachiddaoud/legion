@@ -111,7 +111,7 @@ import { parseArgs } from '../kernel/args.mjs';
 import { branchPatternMatches } from '../kernel/branches.mjs';
 import { inspectPrePushHook } from '../kernel/githooks.mjs';
 import { realRunner } from '../kernel/runner.mjs';
-import { resolveProject } from './feature.mjs';
+import { isMarketplaceClone, isMarketplaceInstall, resolveProject } from './feature.mjs';
 // No import cycle: setup.mjs reaches doctor only through a runtime dynamic import, so this static
 // edge is one-way. Sharing legionPathState is the point — setup's PATH step and the check below
 // read the SAME evidence and can never disagree about what PATH holds.
@@ -323,11 +323,18 @@ function checkLegionOnPath(pathEnv, pluginRoot) {
     };
   }
   if (s.state === 'foreign') {
+    // THE REMEDY IS ANCHOR-AWARE: `npm link` is only ever prescribed for a root that may durably
+    // own PATH. A doctor running from the SWEPT SNAPSHOT CACHE (an operator debugging with
+    // `node <cache>/<sha>/bin/legion.mjs doctor`) must not hand out a command that anchors the
+    // global `legion` in a directory Claude Code orphan-marks and deletes on the next update.
+    const snapshotResident = isMarketplaceInstall(pluginRoot) && !isMarketplaceClone(pluginRoot);
     return {
       level: 'warn',
       detail: `\`legion\` on PATH resolves to ${s.resolved}, which is NOT this install `
-        + `(${resolve(pluginRoot)}) — sessions run that kernel while this doctor speaks for this one; `
-        + `if this install should win: cd ${resolve(pluginRoot)} && npm link`,
+        + `(${resolve(pluginRoot)}) — sessions run that kernel while this doctor speaks for this one`
+        + (snapshotResident
+          ? '; this doctor runs from the swept plugin snapshot — never npm link here; run doctor from the checkout or the marketplace clone instead'
+          : `; if this install should win: cd ${resolve(pluginRoot)} && npm link`),
     };
   }
   return { level: 'pass', detail: `\`legion\` on PATH → ${s.found} (this install)` };

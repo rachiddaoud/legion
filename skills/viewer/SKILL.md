@@ -24,10 +24,16 @@ The user wants the observation UI.
    refusal — on a marketplace install, Claude Code auto-pulls new viewer sources under a
    previously built bundle, and this command is what notices (it skips in a second when the
    bundle already matches the sources, builds on first use, rebuilds when they drifted).
-2. **Launch it in the background**, passing through any flags they gave (`--port`, `--host`,
+2. **A failed build does not take the viewer away.** If step 1 fails or refuses but a bundle
+   exists from an earlier build, launch anyway — `legion viewer` serves it and prints its own
+   stale warning when it applies — and relay the build failure to the user alongside the URL, so
+   they know the UI may be one pull old (offline `npm ci` is the ordinary case, not a defect).
+   Only when NO bundle has ever been built is the failure the end of the road: relay it, and
+   offer `legion viewer --api-only`.
+3. **Launch it in the background**, passing through any flags they gave (`--port`, `--host`,
    `--org`, `--api-only`): `legion viewer`. It prints the URL on stdout as soon as it is
    listening.
-3. **Hand the user the URL.** That is the deliverable.
+4. **Hand the user the URL.** That is the deliverable.
 
 Worth saying once when you report, in your own words: the viewer is read-only and disposable —
 closing the tab or killing the process changes nothing about any feature, and approvals it shows

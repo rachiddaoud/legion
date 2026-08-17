@@ -411,6 +411,35 @@ test('a FOREIGN `legion` on PATH ⇒ warn naming both paths, exit stays 0 — th
   assert.match(r.checks[3].detail, /npm link/, 'the repoint remedy is named, never applied');
 });
 
+test('a SNAPSHOT-resident doctor never prescribes npm link — the cache is swept', async () => {
+  // An operator debugging with `node <cache>/<sha>/bin/legion.mjs doctor` must not be handed a
+  // command that anchors the global `legion` in a directory Claude Code orphan-marks and deletes.
+  const s = scenario();
+  const cfg = join(TMP, `snapshot-cfg-${n++}`);
+  const snapRoot = join(cfg, 'plugins', 'cache', 'legion', 'legion', 'abc123');
+  mkdirSync(join(snapRoot, '.claude-plugin'), { recursive: true });
+  for (const d of ['skills', 'agents', 'hooks', 'bin']) mkdirSync(join(snapRoot, d), { recursive: true });
+  writeFileSync(join(snapRoot, 'bin', 'legion.mjs'), '#!/usr/bin/env node\n');
+  writeJson(join(snapRoot, '.claude-plugin', 'plugin.json'), { name: 'legion', description: 'x', author: { name: 'a' } });
+  writeJson(join(snapRoot, 'package.json'), { name: 'legion', bin: { legion: './bin/legion.mjs' } });
+  const foreignBin = join(TMP, `foreign-bin-${n++}`);
+  mkdirSync(foreignBin, { recursive: true });
+  writeFileSync(join(foreignBin, 'legion'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(foreignBin, 'legion'), 0o755);
+
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    const r = await inScenario(s, [], DEPS(green(), { pluginRoot: snapRoot, pathEnv: foreignBin }));
+    assert.equal(levels(r)['legion-on-path'], 'warn');
+    assert.match(r.checks[3].detail, /swept plugin snapshot/);
+    assert.match(r.checks[3].detail, /never npm link here/);
+    assert.doesNotMatch(r.checks[3].detail, /cd .* && npm link/, 'the link remedy must not name the cache');
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+  }
+});
+
 test('legion-on-path spawns NOTHING — it reads PATH, not processes', async () => {
   const s = scenario();
   const run = green();

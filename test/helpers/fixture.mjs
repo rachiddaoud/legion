@@ -160,7 +160,11 @@ export function fixture({
     LEGION_HOME: home,
     HOME: fakeHome,
     XDG_CONFIG_HOME: join(fakeHome, '.config'),
-    PATH: fakeBin + delimiter + (process.env.PATH ?? ''),
+    // The repo's own bin/ sits between the shims and the host PATH so doctor's legion-on-path
+    // check reads a DETERMINISTIC answer ('own': the found legion IS the kernel under test) on
+    // every machine — a fresh clone or CI without `npm link` must see the same doctor verdict as
+    // a linked dev box, and the host PATH must never decide a fixture-driven test.
+    PATH: fakeBin + delimiter + join(ROOT, 'bin') + delimiter + (process.env.PATH ?? ''),
   };
   assert.ok(isAbsolute(env.LEGION_HOME) && env.LEGION_HOME.length > 0,
     'LEGION_HOME must be an absolute sandbox path — a fixture must never risk the real ~/.legion');

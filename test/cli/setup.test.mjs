@@ -8,11 +8,12 @@
 // (fail-closed: under plugins/ but not a marketplace clone ⇒ refuse), the clone mode's
 // update-only marketplace step, and doctor owning the exit code.
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { setupCore, whichLegion } from '../../src/cli/setup.mjs';
+import { STAMP_FILE, computeSourceDigest } from '../../src/cli/viewer-build.mjs';
 
 const boxes = [];
 function mkBox() {
@@ -191,6 +192,54 @@ test('`legion` absent from PATH → npm link runs IN the checkout', async () => 
   assert.equal(npm.cwd, root, 'npm link must run in the checkout, not cwd');
 });
 
+test('npm link success is VERIFIED, not assumed: a link that landed off-PATH warns with the PATH remedy', async () => {
+  // The custom-npm-prefix trap: `npm link` exits 0 having symlinked into a bin dir this PATH
+  // never sees. The old success line sent the operator into a loop (doctor: "not on PATH, run
+  // setup"; setup: "linked"). Now the claim is re-measured after the link.
+  const root = mkCheckout();
+  const { run, calls } = fakeRun(); // npm link "succeeds" but creates nothing on this PATH
+  let out = '';
+  out = await withStdout(async () => {
+    assert.equal(await setupCore([], depsFor(root, run, { pathEnv: join(mkBox(), 'empty-bin') })), 0);
+  });
+  assert.equal(calls.some((c) => c.file === 'npm'), true);
+  assert.match(out, /WARNING/);
+  assert.match(out, /STILL not on PATH/);
+  assert.match(out, /export PATH=/, 'the remedy setup cannot apply itself must be printed HERE, not only on link failure');
+  assert.doesNotMatch(out, /linked `legion` onto PATH/, 'no success claim without evidence');
+});
+
+test('npm link success that VERIFIABLY landed on PATH keeps the success line', async () => {
+  const root = mkCheckout();
+  const linkBin = join(mkBox(), 'link-bin');
+  mkdirSync(linkBin, { recursive: true });
+  // The fake npm link plants the symlink the real one would: linkBin is on PATH, target in root.
+  const { run } = fakeRun((file) => {
+    if (file === 'npm') symlinkSync(join(root, 'bin', 'legion'), join(linkBin, 'legion'));
+    return {};
+  });
+  const out = await withStdout(async () => {
+    assert.equal(await setupCore([], depsFor(root, run, { pathEnv: linkBin })), 0);
+  });
+  assert.match(out, /linked `legion` onto PATH via npm link/);
+  assert.doesNotMatch(out, /WARNING/);
+});
+
+test('a DIRECTORY named `legion` on PATH is not a legion: whichLegion skips it and setup links', async () => {
+  // X_OK on a directory merely means searchable; treating it as found would mask a broken
+  // install as "foreign" and skip the npm link that repairs it.
+  const root = mkCheckout();
+  const dirBin = join(mkBox(), 'dir-bin');
+  mkdirSync(join(dirBin, 'legion'), { recursive: true }); // a FOLDER named legion
+  assert.equal(whichLegion(dirBin), null, 'a directory must never satisfy the PATH scan');
+  const { run, calls } = fakeRun();
+  await withStdout(async () => {
+    assert.equal(await setupCore([], depsFor(root, run, { pathEnv: dirBin })), 0);
+  });
+  assert.equal(calls.some((c) => c.file === 'npm' && c.args[0] === 'link'), true,
+    'setup must treat the folder as absent and link');
+});
+
 test('npm link failure is a loud throw naming the manual remedy; doctor never runs', async () => {
   const root = mkCheckout();
   const { run } = fakeRun((file) => (file === 'npm' ? { ok: false, code: 1, stderr: 'EACCES' } : {}));
@@ -283,6 +332,47 @@ test('clone marketplace update fails → loud throw with verbatim output and the
       && !e.message.includes(`marketplace add ${root}`),
   );
   assert.equal(calls.some((c) => c.args[1] === 'install'), false, 'a dead marketplace step must stop setup before install');
+});
+
+test('clone marketplace update dying on a SPAWN error names the claude CLI, not the marketplace', async () => {
+  // ENOENT means `claude` itself never ran — the re-add remedy would need the same missing CLI.
+  const { base, root } = mkClone();
+  const { run } = fakeRun((file, args) =>
+    (args[1] === 'marketplace' ? { ok: false, code: null, spawnError: 'ENOENT' } : {}));
+  await assert.rejects(
+    () => setupCore([], cloneDepsFor(base, root, run)),
+    (e) => /Is the `claude` CLI installed and current\?/.test(e.message)
+      && !/marketplace add <owner>/.test(e.message),
+  );
+});
+
+test('clone mode RE-READS the identity after the refresh — the pull may have renamed the plugin', async () => {
+  // The marketplace update git-pulls the very tree the manifest lives in. The fake update
+  // rewrites the manifest the way a pulled rename would; the install spec must use the fresh one.
+  const { base, root } = mkClone();
+  const { run, calls } = fakeRun((file, args) => {
+    if (file === 'claude' && args[1] === 'marketplace' && args[2] === 'update') {
+      writeFileSync(join(root, '.claude-plugin', 'marketplace.json'),
+        JSON.stringify({ name: 'legion', plugins: [{ name: 'legion-next', source: './' }] }));
+    }
+    return {};
+  });
+  await withStdout(async () => {
+    assert.equal(await setupCore([], cloneDepsFor(base, root, run)), 0);
+  });
+  const install = calls.find((c) => c.args[1] === 'install');
+  assert.deepEqual(install.args, ['plugin', 'install', 'legion-next@legion'],
+    'the install spec must come from the POST-pull manifest');
+});
+
+test('clone-mode output never speaks checkout: the snapshot line names auto-update instead', async () => {
+  const { base, root } = mkClone();
+  const { run } = fakeRun();
+  const out = await withStdout(async () => {
+    assert.equal(await setupCore([], cloneDepsFor(base, root, run)), 0);
+  });
+  assert.doesNotMatch(out, /upgrading the checkout/);
+  assert.match(out, /marketplace auto-update refreshes it/);
 });
 
 test('clone plugin install fails → plugin update fallback succeeds — symmetric with dev mode', async () => {
@@ -383,19 +473,45 @@ test('a checkout with viewer/ gets its bundle built — in viewer/, and BEFORE d
   assert.equal(npmCallsAtDoctor, 2, 'both build steps must have run by the time doctor is asked for a verdict');
 });
 
-test('setup FORCES the rebuild: an already-built bundle is rebuilt, never skipped', async () => {
-  // setup IS the refresh path ("re-run setup after upgrading the checkout"), and an upgraded
-  // checkout carries new viewer sources behind an old dist. Mutation-tested: dropping `--force` in
-  // src/cli/setup.mjs turns this test red — which the previous fixture, having no dist at all,
-  // could not do.
+test('a built-but-UNSTAMPED bundle (the drift/pre-stamp case) is rebuilt by setup', async () => {
+  // setup IS the refresh path, and an upgraded checkout carries new viewer sources behind an old
+  // dist. The stamp is what detects that now: no stamp ⇒ stale ⇒ rebuild, no --force needed.
   const root = mkCheckout({ viewer: true, viewerBuilt: true });
   const { run, calls } = fakeRun();
   const out = await withStdout(async () => {
     assert.equal(await setupCore([], depsFor(root, run)), 0);
   });
   assert.deepEqual(calls.filter((c) => c.file === 'npm').map((c) => c.args.join(' ')), ['ci', 'run build'],
-    'a stale bundle from before the upgrade must not make setup skip the rebuild');
+    'a bundle the stamp cannot vouch for must not make setup skip the rebuild');
   assert.doesNotMatch(out, /already built/);
+});
+
+test('a STAMP-FRESH bundle makes setup skip the rebuild — no more unconditional --force', async () => {
+  // The stamp proves the dist byte-current, so the documented setup re-run ritual stops paying a
+  // multi-minute npm ci + vite for nothing. Mutation-tested: restoring the old unconditional
+  // ['--force'] in src/cli/setup.mjs turns this red.
+  const root = mkCheckout({ viewer: true, viewerBuilt: true });
+  writeFileSync(join(root, 'viewer', 'dist', STAMP_FILE), `${computeSourceDigest(join(root, 'viewer'))}\n`);
+  const { run, calls } = fakeRun();
+  const out = await withStdout(async () => {
+    assert.equal(await setupCore([], depsFor(root, run)), 0);
+  });
+  assert.equal(calls.some((c) => c.file === 'npm'), false, 'a verified-fresh bundle must not rebuild');
+  assert.match(out, /already built/);
+  assert.match(out, /up to date with viewer\/ sources/);
+});
+
+test('an UNCOMPUTABLE digest falls back to the forced rebuild — setup cannot vouch, so it rebuilds', async () => {
+  // A symlink in viewer/ makes the digest throw (fail-closed, _viewer-bundle.mjs): the stamp can
+  // prove nothing, and setup — the refresh path — must not report success over a bundle it
+  // cannot vouch for. The old always-force behavior survives for exactly this case.
+  const root = mkCheckout({ viewer: true, viewerBuilt: true });
+  symlinkSync(join(root, 'viewer', 'package.json'), join(root, 'viewer', 'aliased.json'));
+  const { run, calls } = fakeRun();
+  await withStdout(async () => {
+    assert.equal(await setupCore([], depsFor(root, run)), 0);
+  });
+  assert.deepEqual(calls.filter((c) => c.file === 'npm').map((c) => c.args.join(' ')), ['ci', 'run build']);
 });
 
 test('a checkout with NO viewer/ says so and spawns nothing — the pre-existing shape', async () => {

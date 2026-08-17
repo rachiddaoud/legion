@@ -17,11 +17,21 @@
 // on exactly this file before either command existed; this module is that predicate given a name
 // rather than a third copy of it.
 //
-// NO IMPORTS BEYOND node:path, DELIBERATELY. viewer.mjs is sealed by test/cli/viewer.test.mjs's
-// PROHIBITION scan and `legion setup` reaches this file through viewer-build.mjs, so a leaf with
-// nothing behind it is the only shape that both can share: viewer.mjs cannot import viewer-build.mjs
-// (that would pull kernel/runner.mjs behind the seal) and viewer-build.mjs must not import
-// viewer.mjs (that would pull the whole viewer server into every `legion setup`).
+// READ-ONLY IMPORTS ONLY, DELIBERATELY. viewer.mjs is sealed by test/cli/viewer.test.mjs's
+// PROHIBITION scan (which scans THIS file too) and `legion setup` reaches this file through
+// viewer-build.mjs, so a leaf with nothing mutating behind it is the only shape that both can
+// share: viewer.mjs cannot import viewer-build.mjs (that would pull kernel/runner.mjs behind the
+// seal) and viewer-build.mjs must not import viewer.mjs (that would pull the whole viewer server
+// into every `legion setup`). node:fs appears here for READS alone (readdirSync/readFileSync)
+// and node:crypto for hashing — the scan's write-call tripwire holds.
+//
+// THE STALENESS QUESTION LIVES HERE FOR THE SAME REASON THE BUILT QUESTION DOES: `legion viewer`
+// must be able to ANSWER "was this bundle built from these sources?" (to warn before serving a
+// stale one) with exactly the machinery `legion viewer-build` uses to DECIDE it — two definitions
+// of "stale" would be the same silent trap as two definitions of "built". Writing the stamp stays
+// in viewer-build.mjs, behind the seal.
+import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** vite's entry point, and the build's completion marker (header). */
@@ -35,4 +45,54 @@ export function bundleEntry(distDir) {
 /** The predicate itself. `exists` is injected so both callers stay testable without a real build. */
 export function bundleBuilt(exists, distDir) {
   return exists(bundleEntry(distDir));
+}
+
+/** The build stamp, IN dist (viewer-build.mjs header: STALENESS). One line: the source digest
+ * the bundle was built from. In dist because vite empties dist before refilling it — an
+ * interrupted rebuild destroys the stale stamp along with the stale bundle. */
+export const STAMP_FILE = '.legion-build-stamp';
+
+/** Names excluded from the digest walk at any depth: filesystem litter no build reads. */
+const DIGEST_EXCLUDES_ANY = new Set(['.DS_Store']);
+/** Top-level exclusions: outputs and other package managers' litter, not bundle inputs. dist/ is
+ * what the build writes; node_modules/ is what `npm ci` materializes from the lockfile (which IS
+ * hashed); the pnpm files are the local-convenience artifacts the repo .gitignore anticipates —
+ * hashing any of these would be either a 200MB walk or a spurious multi-minute rebuild. */
+const DIGEST_EXCLUDES_TOP = new Set(['dist', 'node_modules', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']);
+
+/** The bundle's INPUTS: every file under viewer/, sorted, as relative paths — minus the
+ * exclusions above. THROWS on a symlink, deliberately: Dirent cannot see through it, vite can,
+ * so a digest that silently skipped it could report "up to date" over changed content — the one
+ * failure direction the staleness machinery promises never to take. The caller maps the throw to
+ * digest:null, the honest "unanswerable" fallback. EXPORTED for its own determinism test. */
+export function listViewerSources(viewerDir) {
+  const out = [];
+  const walk = (rel) => {
+    for (const entry of readdirSync(rel === '' ? viewerDir : join(viewerDir, rel), { withFileTypes: true })) {
+      if (DIGEST_EXCLUDES_ANY.has(entry.name)) continue;
+      if (rel === '' && DIGEST_EXCLUDES_TOP.has(entry.name)) continue;
+      const childRel = rel === '' ? entry.name : `${rel}/${entry.name}`;
+      if (entry.isSymbolicLink()) {
+        throw new Error(`symlink at ${childRel} — the source digest cannot see through symlinks`);
+      }
+      if (entry.isDirectory()) walk(childRel);
+      else if (entry.isFile()) out.push(childRel);
+    }
+  };
+  walk('');
+  return out.sort();
+}
+
+/** sha256 over `relPath NUL bytes NUL` in sorted order. The path is part of the hash input on
+ * purpose: a rename with identical bytes IS a different bundle input (vite resolves by path).
+ * Throws on any unreadable entry — the CALLER maps that to digest:null and the fallback semantics. */
+export function computeSourceDigest(viewerDir, { listSources = listViewerSources, readFile = readFileSync } = {}) {
+  const hash = createHash('sha256');
+  for (const rel of listSources(viewerDir)) {
+    hash.update(rel);
+    hash.update('\0');
+    hash.update(readFile(join(viewerDir, rel)));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
 }

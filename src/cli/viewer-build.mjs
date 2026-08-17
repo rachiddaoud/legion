@@ -43,13 +43,17 @@
 // staleness machinery may cost a spare rebuild, but it can never CAUSE a stale serve that the
 // pre-stamp behavior would have caught. The stamp lives IN dist because vite empties dist before
 // refilling it: an interrupted rebuild destroys the stale stamp along with the stale bundle.
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../kernel/args.mjs';
 import { runCapture } from '../kernel/runner.mjs';
-import { bundleBuilt } from './_viewer-bundle.mjs';
+import { STAMP_FILE, bundleBuilt, computeSourceDigest, listViewerSources } from './_viewer-bundle.mjs';
+
+// The digest machinery lives in _viewer-bundle.mjs so `legion viewer` can ANSWER the staleness
+// question read-only, behind its seal, with the same definition this command DECIDES it with.
+// Re-exported here because this command is where operators and tests meet it.
+export { STAMP_FILE, computeSourceDigest, listViewerSources };
 
 const USAGE = 'legion viewer-build [--force]';
 
@@ -64,41 +68,13 @@ export const BUILD_TIMEOUT_MS = 600_000;
 /** The build, in order. `npm ci` and not `npm install` (header). */
 export const STEPS = [['npm', ['ci']], ['npm', ['run', 'build']]];
 
-/** The build stamp, IN dist (header: STALENESS). One line: the source digest the bundle was
- * built from. */
-export const STAMP_FILE = '.legion-build-stamp';
-
-/** The bundle's INPUTS: every file under viewer/, sorted, as relative paths — excluding the two
- * top-level trees that are outputs, not inputs (`dist/` is what the build writes, `node_modules/`
- * is what `npm ci` materializes from the lockfile, which IS hashed). The exclusion list is what
- * keeps the digest milliseconds instead of a 200MB walk. EXPORTED for its own determinism test. */
-export function listViewerSources(viewerDir) {
-  const out = [];
-  const walk = (rel) => {
-    for (const entry of readdirSync(rel === '' ? viewerDir : join(viewerDir, rel), { withFileTypes: true })) {
-      if (rel === '' && (entry.name === 'dist' || entry.name === 'node_modules')) continue;
-      const childRel = rel === '' ? entry.name : `${rel}/${entry.name}`;
-      if (entry.isDirectory()) walk(childRel);
-      else if (entry.isFile()) out.push(childRel);
-    }
-  };
-  walk('');
-  return out.sort();
-}
-
-/** sha256 over `relPath NUL bytes NUL` in sorted order. The path is part of the hash input on
- * purpose: a rename with identical bytes IS a different bundle input (vite resolves by path).
- * Throws on any unreadable entry — the CALLER maps that to digest:null and the fallback semantics. */
-export function computeSourceDigest(viewerDir, { listSources = listViewerSources, readFile = readFileSync } = {}) {
-  const hash = createHash('sha256');
-  for (const rel of listSources(viewerDir)) {
-    hash.update(rel);
-    hash.update('\0');
-    hash.update(readFile(join(viewerDir, rel)));
-    hash.update('\0');
-  }
-  return hash.digest('hex');
-}
+/** The concurrency lock, in viewer/ and NOT in dist (vite empties dist mid-build, which would
+ * delete a lock that must outlive exactly that window). On the marketplace-install route the
+ * viewer directory is SHARED across every session on the machine — the auto-pulled clone — and
+ * this command now runs unconditionally from the viewer skill, so two sessions observing "stale"
+ * after the same pull would otherwise interleave `npm ci`'s node_modules deletion and vite's
+ * emptyOutDir in one tree and stamp a half-written dist as verified-fresh. */
+export const LOCK_FILE = '.legion-build-lock';
 
 /** The flag surface, exhaustive — an unlisted flag is a typo, and building anyway while ignoring
  * it is worse than refusing (viewerCore's rule, same reasoning). */
@@ -126,6 +102,31 @@ export function lockfileRefusal(viewerDir) {
     + '  it is committed on purpose — the bundle is reproducible only when the install is pinned\n'
     + `  restore it: git -C ${viewerDir} checkout -- package-lock.json\n`
     + '  (reaching for an unpinned install instead would build a bundle nobody else can reproduce)\n';
+}
+
+/** Another build holds the lock. Age-bounded: a crashed build's leftover lock counts as stale
+ * once older than the build timeout, so this refusal can never outlive the longest legitimate
+ * build — and the remedy names the file so a human who KNOWS the other build is dead can act. */
+export function lockRefusal(lockPath, ageMs) {
+  return `legion viewer-build: another build appears to be running in this viewer/ — lock ${lockPath} is ${Math.round(ageMs / 1000)}s old\n`
+    + `  wait for it to finish (a cold build can take ${Math.round(BUILD_TIMEOUT_MS / 60_000)} minutes), then re-run: legion viewer-build\n`
+    + '  if you are certain that build is dead, delete the lock file and re-run\n';
+}
+
+/** Take the build lock, `wx`-exclusive. A lock older than the build timeout is a dead build's
+ * leftover and is overwritten. Throws only on filesystem surprises — the CALLER degrades those to
+ * building unlocked, because lock machinery failing must never block the build it protects. */
+function defaultTakeLock(lockPath) {
+  try {
+    writeFileSync(lockPath, `${process.pid}\n`, { flag: 'wx' });
+    return { ok: true };
+  } catch (e) {
+    if (e?.code !== 'EEXIST') throw e;
+    const ageMs = Date.now() - statSync(lockPath).mtimeMs;
+    if (ageMs < BUILD_TIMEOUT_MS) return { ok: false, ageMs };
+    writeFileSync(lockPath, `${process.pid}\n`);
+    return { ok: true };
+  }
 }
 
 /** A step that ran and failed, or never started. npm's own output, verbatim (header). */
@@ -225,6 +226,8 @@ export function viewerBuildCore(argv, {
 export function buildViewer(run, plan, {
   write = (s) => process.stdout.write(s),
   writeStamp = (path, digest) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, `${digest}\n`); },
+  takeLock = defaultTakeLock,
+  dropLock = (path) => rmSync(path, { force: true }),
 } = {}) {
   if (plan.refusal !== null) return { ok: false, skipped: false, ran: [], failure: plan.refusal };
   if (plan.skip) {
@@ -234,30 +237,41 @@ export function buildViewer(run, plan, {
       + `${plan.digest !== null ? ' and up to date with viewer/ sources' : ''} — --force to rebuild it\n`);
     return { ok: true, skipped: true, ran: [], failure: null };
   }
-  write(`legion viewer-build: building in ${plan.viewerDir} — a minute or two, and each step`
-    + ' prints only once it has finished\n');
-  const ran = [];
-  for (const [file, args] of plan.steps) {
-    write(`legion viewer-build: ${file} ${args.join(' ')}\n`);
-    const r = run(file, args, { cwd: plan.viewerDir, timeoutMs: BUILD_TIMEOUT_MS });
-    ran.push(`${file} ${args.join(' ')}`);
-    // FAIL CLOSED: `npm run build` after a failed `npm ci` would either fail confusingly or, worse,
-    // succeed against a stale node_modules and ship a bundle nobody asked for.
-    if (!r.ok) return { ok: false, skipped: false, ran, failure: stepFailure(file, args, plan.viewerDir, r) };
-  }
-  // The stamp records what this bundle was built FROM (header: STALENESS) — only after BOTH steps,
-  // and only when the digest was computable. A failed stamp write degrades to a warning: the next
-  // run rebuilds a fresh bundle, which is the cheap direction.
-  if (plan.digest !== null) {
-    try {
-      writeStamp(plan.stampPath, plan.digest);
-    } catch (e) {
-      write(`legion viewer-build: WARNING — could not record the build stamp at ${plan.stampPath}`
-        + ` (${e?.message ?? e}); the next run will rebuild\n`);
+  // The concurrency lock (LOCK_FILE): held-and-fresh ⇒ refuse before the first spawn; the lock
+  // machinery itself failing (odd fs, fake trees in tests) degrades to building UNLOCKED — a
+  // best-effort guard must never block the build it protects.
+  const lockPath = join(plan.viewerDir, LOCK_FILE);
+  let lock;
+  try { lock = takeLock(lockPath); } catch { lock = { ok: true, unlocked: true }; }
+  if (!lock.ok) return { ok: false, skipped: false, ran: [], failure: lockRefusal(lockPath, lock.ageMs ?? 0) };
+  try {
+    write(`legion viewer-build: building in ${plan.viewerDir} — a minute or two, and each step`
+      + ' prints only once it has finished\n');
+    const ran = [];
+    for (const [file, args] of plan.steps) {
+      write(`legion viewer-build: ${file} ${args.join(' ')}\n`);
+      const r = run(file, args, { cwd: plan.viewerDir, timeoutMs: BUILD_TIMEOUT_MS });
+      ran.push(`${file} ${args.join(' ')}`);
+      // FAIL CLOSED: `npm run build` after a failed `npm ci` would either fail confusingly or, worse,
+      // succeed against a stale node_modules and ship a bundle nobody asked for.
+      if (!r.ok) return { ok: false, skipped: false, ran, failure: stepFailure(file, args, plan.viewerDir, r) };
     }
+    // The stamp records what this bundle was built FROM (header: STALENESS) — only after BOTH steps,
+    // and only when the digest was computable. A failed stamp write degrades to a warning: the next
+    // run rebuilds a fresh bundle, which is the cheap direction.
+    if (plan.digest !== null) {
+      try {
+        writeStamp(plan.stampPath, plan.digest);
+      } catch (e) {
+        write(`legion viewer-build: WARNING — could not record the build stamp at ${plan.stampPath}`
+          + ` (${e?.message ?? e}); the next run will rebuild\n`);
+      }
+    }
+    write(`legion viewer-build: bundle ready at ${plan.distDir}\n`);
+    return { ok: true, skipped: false, ran, failure: null };
+  } finally {
+    if (lock.unlocked !== true) { try { dropLock(lockPath); } catch { /* the age bound reclaims it */ } }
   }
-  write(`legion viewer-build: bundle ready at ${plan.distDir}\n`);
-  return { ok: true, skipped: false, ran, failure: null };
 }
 
 export async function run(argv) {

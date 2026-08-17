@@ -8,11 +8,13 @@
 // matters most on a bad day — that a failed step stops the build and reports npm's own output
 // rather than a re-worded summary.
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  BUILD_TIMEOUT_MS, STAMP_FILE, STEPS, buildViewer, computeSourceDigest, lockfileRefusal,
-  sourceRefusal, stepFailure, viewerBuildCore,
+  BUILD_TIMEOUT_MS, LOCK_FILE, STAMP_FILE, STEPS, buildViewer, computeSourceDigest,
+  listViewerSources, lockRefusal, lockfileRefusal, sourceRefusal, stepFailure, viewerBuildCore,
 } from '../../src/cli/viewer-build.mjs';
 
 const ROOT = '/fake/checkout';
@@ -275,6 +277,92 @@ test('a digest-less plan (fallback mode) stamps nothing', () => {
   const r = buildViewer(run, p, { write: sink().write, writeStamp: (...a) => stamps.push(a) });
   assert.equal(r.ok, true);
   assert.deepEqual(stamps, [], 'a stamp claiming an uncomputed digest would be a lie the next run trusts');
+});
+
+// --- the digest walk against a REAL tree (listViewerSources' own contract) ----------------------
+
+test('listViewerSources excludes outputs and litter, and THROWS on a symlink (fail-closed)', () => {
+  const box = mkdtempSync(join(tmpdir(), 'legion-vb-walk-'));
+  try {
+    const v = join(box, 'viewer');
+    mkdirSync(join(v, 'src'), { recursive: true });
+    mkdirSync(join(v, 'dist'), { recursive: true });
+    mkdirSync(join(v, 'node_modules', 'x'), { recursive: true });
+    writeFileSync(join(v, 'package.json'), '{}');
+    writeFileSync(join(v, 'pnpm-lock.yaml'), '');           // top-level litter, excluded
+    writeFileSync(join(v, 'src', 'App.tsx'), 'x');
+    writeFileSync(join(v, 'src', '.DS_Store'), 'finder');   // litter at ANY depth, excluded
+    writeFileSync(join(v, 'dist', 'index.html'), '<html>'); // output, excluded
+    assert.deepEqual(listViewerSources(v), ['package.json', 'src/App.tsx'],
+      'outputs, node_modules and litter must not perturb the digest');
+
+    // vite can see through a symlink; Dirent cannot — silently skipping it could report
+    // "up to date" over changed content, so the walk throws and the caller falls back.
+    symlinkSync(join(v, 'package.json'), join(v, 'src', 'aliased.json'));
+    assert.throws(() => listViewerSources(v), /symlink at src\/aliased\.json/);
+  } finally {
+    rmSync(box, { recursive: true, force: true });
+  }
+});
+
+// --- the concurrency lock (LOCK_FILE) -----------------------------------------------------------
+
+test('a HELD lock refuses before the first spawn, naming the file and its age', () => {
+  const { run, calls } = fakeRun();
+  const p = stampedPlan([], { stamped: false }); // stale ⇒ would build
+  const r = buildViewer(run, p, {
+    write: sink().write,
+    takeLock: () => ({ ok: false, ageMs: 30_000 }),
+    dropLock: () => { throw new Error('must not drop a lock it never took'); },
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(calls, [], 'a held lock means another build owns viewer/ — spawn nothing');
+  assert.equal(r.failure, lockRefusal(join(p.viewerDir, LOCK_FILE), 30_000));
+  assert.match(r.failure, /another build appears to be running/);
+  assert.match(r.failure, /delete the lock file/);
+});
+
+test('the lock is taken before the steps and dropped after them — on success AND on failure', () => {
+  const order = [];
+  const mkRun = (failCi) => (file, args) => {
+    order.push(`${file} ${args.join(' ')}`);
+    return { ok: !(failCi && args[0] === 'ci'), code: 0, signal: null, stdout: '', stderr: 'boom', spawnError: null };
+  };
+  const locks = { take: () => { order.push('take'); return { ok: true }; }, drop: () => order.push('drop') };
+
+  const ok = buildViewer(mkRun(false), stampedPlan([], { stamped: false }),
+    { write: sink().write, writeStamp: () => order.push('stamp'), takeLock: locks.take, dropLock: locks.drop });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(order, ['take', 'npm ci', 'npm run build', 'stamp', 'drop'],
+    'the lock brackets the whole build, stamp included');
+
+  order.length = 0;
+  const failed = buildViewer(mkRun(true), stampedPlan([], { stamped: false }),
+    { write: sink().write, writeStamp: () => order.push('stamp'), takeLock: locks.take, dropLock: locks.drop });
+  assert.equal(failed.ok, false);
+  assert.deepEqual(order, ['take', 'npm ci', 'drop'], 'a failed step must still release the lock');
+});
+
+test('lock machinery THROWING degrades to building unlocked — the guard never blocks the build', () => {
+  const { run, calls } = fakeRun();
+  const dropped = [];
+  const r = buildViewer(run, stampedPlan([], { stamped: false }), {
+    write: sink().write,
+    writeStamp: () => {},
+    takeLock: () => { throw new Error('EROFS'); },
+    dropLock: (...a) => dropped.push(a),
+  });
+  assert.equal(r.ok, true);
+  assert.equal(calls.length, 2, 'the build must proceed');
+  assert.deepEqual(dropped, [], 'no lock was taken, none is dropped');
+});
+
+test('skips and refusals never touch the lock', () => {
+  const takeLock = () => { throw new Error('must not be called'); };
+  const skip = buildViewer(fakeRun().run, stampedPlan([]), { write: sink().write, takeLock });
+  assert.equal(skip.skipped, true);
+  const refused = buildViewer(fakeRun().run, plan([], existsOf()), { write: sink().write, takeLock });
+  assert.equal(refused.ok, false);
 });
 
 // --- the executor -------------------------------------------------------------------------------

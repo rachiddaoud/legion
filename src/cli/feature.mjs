@@ -635,11 +635,25 @@ export const marketplacePluginsRoot = () =>
  * non-existent path is compared verbatim rather than treated as an error. */
 const realish = (p) => { try { return realpathSync(p); } catch { return p; } };
 
+/** darwin/win32 default filesystems are case-INSENSITIVE, and realpathSync does NOT canonicalize
+ * the case an operator typed (`node ~/.Claude/...` keeps the capital C). Comparing such paths
+ * case-sensitively would misread the marketplace clone as a dev checkout — and setup would then
+ * run `marketplace add <clone path>`, the directory-source re-registration that silently ends
+ * auto-update. Folding case on these platforms closes that; the residual (a case-SENSITIVE APFS
+ * volume carrying two paths differing only by case) is pathological enough to accept. */
+const CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform === 'win32';
+
 /** Segment-wise containment, realpath'd where possible: `root` is `base` or lives under it.
- * Never a string prefix — `~/.claude/pluginsfoo` is not inside `~/.claude/plugins`. */
-const underSegmentOf = (root, base) => {
-  const r = realish(resolve(root));
-  const b = realish(resolve(base));
+ * Never a string prefix — `~/.claude/pluginsfoo` is not inside `~/.claude/plugins`. EXPORTED so
+ * setup's legionPathState answers "does PATH's legion live inside this install?" with THIS
+ * definition — a second containment predicate would be a second chance to disagree on casing. */
+export const underSegmentOf = (root, base) => {
+  let r = realish(resolve(root));
+  let b = realish(resolve(base));
+  if (CASE_INSENSITIVE_FS) {
+    r = r.toLowerCase();
+    b = b.toLowerCase();
+  }
   return r === b || r.startsWith(b + sep);
 };
 

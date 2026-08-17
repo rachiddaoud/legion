@@ -72,13 +72,13 @@
 // claim that legion WORKS here — doctor owns that judgment (version pin, hooks, glab, branch
 // protection). Printing "setup complete" over a red doctor would be a claim of success the
 // machine does not deliver, so setup's exit is doctor's exit once the install steps are done.
-import { accessSync, constants, existsSync, realpathSync } from 'node:fs';
-import { delimiter, join, resolve, sep } from 'node:path';
+import { accessSync, constants, existsSync, realpathSync, statSync } from 'node:fs';
+import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../kernel/args.mjs';
 import { readJson } from '../kernel/fsatomic.mjs';
 import { runCapture } from '../kernel/runner.mjs';
-import { isMarketplaceClone, isMarketplaceInstall } from './feature.mjs';
+import { isMarketplaceClone, isMarketplaceInstall, underSegmentOf } from './feature.mjs';
 import { buildViewer, viewerBuildCore } from './viewer-build.mjs';
 
 const USAGE = 'legion setup   (no arguments — run it from the legion checkout or the installed marketplace clone)';
@@ -104,10 +104,11 @@ const realish = (p) => { try { return realpathSync(p); } catch { return p; } };
 export function legionPathState(pathEnv, root) {
   const found = whichLegion(pathEnv);
   if (found === null) return { found: null, resolved: null, state: 'absent' };
-  const resolved = realish(found);
-  const own = resolved === realish(join(root, 'bin', 'legion'))
-    || resolved.startsWith(realish(resolve(root)) + sep);
-  return { found, resolved, state: own ? 'own' : 'foreign' };
+  // Containment via feature.mjs's underSegmentOf — the ONE definition (realpath'd, segment-wise,
+  // case-folded where the filesystem is): an npm-link symlink realpaths into root/bin and lands
+  // inside root, so "own" needs no special bin-file case.
+  const own = underSegmentOf(found, root);
+  return { found, resolved: realish(found), state: own ? 'own' : 'foreign' };
 }
 
 /** First executable named `legion` on PATH, or null. Scanned segment by segment — never a
@@ -118,6 +119,12 @@ export function whichLegion(pathEnv) {
     const candidate = join(dir, 'legion');
     try {
       accessSync(candidate, constants.X_OK);
+      // FILES ONLY: X_OK on a DIRECTORY merely means "searchable", and a folder named `legion`
+      // in a PATH entry is not something any shell would execute — treating it as found would
+      // mask a genuinely broken install as "foreign". statSync follows symlinks, so an npm-link
+      // symlink to the real shim passes and a DANGLING one (its target deleted) throws — which
+      // correctly reads as absent, the state setup knows how to repair.
+      if (!statSync(candidate).isFile()) continue;
       return candidate;
     } catch { /* not here — keep scanning */ }
   }
@@ -129,7 +136,7 @@ export function whichLegion(pathEnv) {
 function readMarketplaceIdentity(pluginRoot) {
   const path = join(pluginRoot, '.claude-plugin', 'marketplace.json');
   if (!existsSync(path)) {
-    throw new Error(`no marketplace manifest at ${path} — \`legion setup\` runs from a legion CHECKOUT, and the manifest is what defines the marketplace being registered`);
+    throw new Error(`no marketplace manifest at ${path} — \`legion setup\` runs from a legion install (a checkout or the marketplace clone), and the manifest is what defines the marketplace being registered. In a clone, a missing manifest usually means a broken pull: remove and re-add the marketplace from its repository`);
   }
   const doc = readJson(path); // corrupt JSON dies loudly naming the path
   const marketName = doc?.name;
@@ -163,7 +170,13 @@ function createOrRefresh(run, what, createArgv, refreshArgv, okCreate, okRefresh
 function refreshOnly(run, what, refreshArgv, okLine, remedy) {
   const r = run('claude', refreshArgv, { timeoutMs: STEP_TIMEOUT_MS });
   if (r.ok) return okLine;
-  const detail = `${r.stdout}${r.stderr}`.trim() || r.spawnError || `exit ${r.code}`;
+  // A SPAWN error means the `claude` CLI itself never ran — the caller's remedy (re-registering
+  // a marketplace) would need the same missing CLI, so the honest diagnosis wins over it.
+  if (r.spawnError !== null && r.spawnError !== undefined) {
+    throw new Error(`${what} failed:\n  claude ${refreshArgv.join(' ')} → ${r.spawnError}\n`
+      + 'Is the `claude` CLI installed and current? Fix that and re-run `legion setup`.');
+  }
+  const detail = `${r.stdout}${r.stderr}`.trim() || `exit ${r.code}`;
   throw new Error(`${what} failed:\n  claude ${refreshArgv.join(' ')} → ${detail}\n${remedy}`);
 }
 
@@ -205,7 +218,7 @@ export async function setupCore(argv, deps = {}) {
       + `or from a checkout (e.g. \`cd <checkout> && ./bin/legion setup\`)`,
     );
   }
-  const { marketName, pluginName } = readMarketplaceIdentity(root);
+  let { marketName, pluginName } = readMarketplaceIdentity(root);
 
   // --- doctor, resolved BEFORE the first spawn (header: the pre-pull import) -----------------
   const runDoctor = deps.runDoctor
@@ -220,6 +233,11 @@ export async function setupCore(argv, deps = {}) {
       `Is the marketplace still registered? Re-add it from its repository — `
       + `\`claude plugin marketplace add <owner>/<repo>\` — then re-run setup. `
       + `(Never \`marketplace add\` this clone's path: a directory-source re-registration would end auto-update.)`) + '\n');
+    // RE-READ after the refresh: the update above git-pulled this very tree, and an upstream
+    // rename of the marketplace or plugin would leave the pre-pull identity naming a spec the
+    // post-pull marketplace no longer carries. The pre-pull read stays correct for the UPDATE
+    // (it named the marketplace as registered); the install below must use the fresh one.
+    ({ marketName, pluginName } = readMarketplaceIdentity(root));
   } else {
     process.stdout.write('setup: ' + createOrRefresh(run, `registering marketplace '${marketName}'`,
       ['plugin', 'marketplace', 'add', root],
@@ -231,7 +249,9 @@ export async function setupCore(argv, deps = {}) {
   process.stdout.write('setup: ' + createOrRefresh(run, `installing '${pluginName}@${marketName}'`,
     ['plugin', 'install', `${pluginName}@${marketName}`],
     ['plugin', 'update', pluginName],
-    `installed plugin '${pluginName}@${marketName}' (the installed copy is a snapshot — re-run setup after upgrading the checkout)`,
+    `installed plugin '${pluginName}@${marketName}' (the installed copy is a snapshot — ${fromClone
+      ? 'marketplace auto-update refreshes it on every pull'
+      : 're-run setup after upgrading the checkout'})`,
     `plugin '${pluginName}' already installed — snapshot updated`) + '\n');
 
   // --- PATH (header: deliberately asymmetric; same policy in both modes) ---------------------
@@ -246,7 +266,21 @@ export async function setupCore(argv, deps = {}) {
         + `export PATH="${join(root, 'bin')}:$PATH"`,
       );
     }
-    process.stdout.write(`setup: linked \`legion\` onto PATH via npm link (from ${root})\n`);
+    // VERIFY, NEVER ASSUME: npm link succeeding means a symlink landed in npm's prefix bin —
+    // which need not be ON this PATH at all (a custom `npm config set prefix` without the export
+    // is common). Claiming success there would send the operator into a loop where doctor says
+    // "not on PATH, run setup" and setup says "linked" — so the claim is re-measured, and the
+    // miss is a warning that carries the one remedy setup cannot apply itself: fixing PATH.
+    const linked = legionPathState(pathEnv, root);
+    if (linked.state === 'absent') {
+      process.stdout.write(
+        `setup: WARNING — npm link completed, but \`legion\` is STILL not on PATH: npm's prefix `
+        + `bin directory is not on this shell's PATH. Add it (see \`npm prefix -g\`), or use this `
+        + `install's bin directly: export PATH="${join(root, 'bin')}:$PATH"\n`,
+      );
+    } else {
+      process.stdout.write(`setup: linked \`legion\` onto PATH via npm link (from ${root})\n`);
+    }
   } else if (path.state === 'own') {
     process.stdout.write(`setup: \`legion\` already on PATH → ${path.found}\n`);
   } else {
@@ -259,12 +293,19 @@ export async function setupCore(argv, deps = {}) {
 
   // --- the viewer bundle: BUILT HERE, BUT NEVER FATAL (header) -------------------------------
   // Building at install time is what stops the first `/legion:viewer` of a fresh checkout from
-  // paying for an npm install. It runs with force:true because setup IS the refresh path ("re-run
-  // setup after upgrading the checkout") and an upgraded checkout may carry new viewer sources.
+  // paying for an npm install. THE STAMP DECIDES whether a present bundle rebuilds: an unforced
+  // plan skips only when the bundle's source digest matches its stamp (viewer-build.mjs,
+  // STALENESS) — the drift case the old unconditional --force existed for is now DETECTED, so a
+  // byte-current bundle no longer pays a multi-minute rebuild on every setup re-run. --force
+  // survives for one case: an UNCOMPUTABLE digest, where the stamp cannot prove currency and
+  // setup, being the refresh path, must not report success over a bundle it cannot vouch for.
   // A failure WARNS and setup carries on: the kernel runs features with no viewer at all, so
   // letting a frontend toolchain fail a kernel install would be the tail wagging the dog. It is
   // not silent either — the warning names `legion viewer-build` as the retry.
-  const viewerPlan = viewerBuildCore(['--force'], { pluginRoot: root });
+  let viewerPlan = viewerBuildCore([], { pluginRoot: root });
+  if (viewerPlan.refusal === null && viewerPlan.digest === null) {
+    viewerPlan = viewerBuildCore(['--force'], { pluginRoot: root });
+  }
   if (!viewerPlan.haveSource) {
     process.stdout.write(`setup: no viewer/ frontend source in ${root} — skipping the bundle build\n`);
   } else {
