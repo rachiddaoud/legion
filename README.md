@@ -54,6 +54,25 @@ This creates the worktree, branch and dossier and runs the feature session. To r
 /legion:feature resume <feature-id>
 ```
 
+## Viewer
+
+A read-only UI over the manifests, dossiers and feature history. From a Claude Code session:
+
+```
+/legion:viewer
+```
+
+Or from a shell:
+
+```sh
+legion viewer-build   # builds the bundle; skips when already current, --force to rebuild
+legion viewer [--port <n>] [--host <addr>] [--api-only] [--org <org>]
+```
+
+Serves `http://127.0.0.1:4600` by default. `legion setup` already builds the bundle, so
+`legion viewer` normally works straight away; run `viewer-build` again after a plugin update. The
+viewer writes nothing — killing it changes nothing about any feature.
+
 ## How it works (overview)
 
 Legion drives features through a small typed kernel across seven stages. High-level flow:
