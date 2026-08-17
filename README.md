@@ -7,7 +7,7 @@ and fail closed when needed.
 
 Requirements: Node >= 22.
 
-## Install (recommended — GitHub)
+## Install
 
 ```sh
 claude plugin marketplace add rachiddaoud/legion
@@ -15,15 +15,8 @@ claude plugin install legion@legion
 node ~/.claude/plugins/marketplaces/legion/bin/legion.mjs setup
 ```
 
-These commands register the marketplace and install the plugin. Claude Code keeps a git clone at
-`~/.claude/plugins/marketplaces/legion` (or `$CLAUDE_CONFIG_DIR/plugins/marketplaces/legion` if
-you set `CLAUDE_CONFIG_DIR`) and will pull updates when auto-update is enabled.
-
-To run from a local checkout:
-
-```sh
-cd <this repo> && ./bin/legion setup
-```
+(or `node  $CLAUDE_CONFIG_DIR/plugins/marketplaces/legion/bin/legion.mjs setup` if
+you set `CLAUDE_CONFIG_DIR`)
 
 ## Update
 
@@ -121,11 +114,3 @@ glab auth login
 Ensure the CLI is on your PATH so `legion` can call it.
 
 - Run `legion doctor` to validate your environment. It checks common failure points (git, Node, PATH links, and forge CLI auth) and prints actionable remedies (for example: “install gh”, “run gh auth login”, or “npm rm -g legion if PATH links to the clone”).
-
-## Quick reference
-
-- Install: use the three commands in Install (recommended).
-- Update: enable auto-update or run the manual update command.
-- Start: run `/legion:start` in a Claude Code session.
-
-For developer details and migration steps, see the repository history and PRs.
