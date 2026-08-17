@@ -112,7 +112,14 @@ test('isMarketplaceClone follows CLAUDE_CONFIG_DIR at call time, like the plugin
   assert.equal(isMarketplaceClone(clone), false, 'and the answer follows the env back');
 });
 
-test('containment survives Unicode normalization — one path, two spellings', () => {
+// GATED TO THE CASE-INSENSITIVE PLATFORMS, exactly like the fold it rides with (feature.mjs):
+// darwin and win32 are where two normalization forms name ONE file. On Linux they are two
+// different directories, and folding them would be a defect rather than a fix.
+const NORMALIZING_FS = process.platform === 'darwin' || process.platform === 'win32';
+
+test('containment survives Unicode normalization — one path, two spellings', {
+  skip: NORMALIZING_FS ? false : 'normalization folding is gated to darwin/win32',
+}, () => {
   // The two sides reach these predicates from different producers: one from argv or a manifest,
   // the other composed from homedir(). A directory carrying any non-ASCII character can be spelled
   // decomposed on one side and composed on the other for the SAME directory, and realpathSync

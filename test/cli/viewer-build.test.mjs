@@ -8,16 +8,23 @@
 // matters most on a bad day — that a failed step stops the build and reports npm's own output
 // rather than a re-worded summary.
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync,
+  utimesSync, writeFileSync,
+} from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import {
   BUILD_TIMEOUT_MS, LOCK_FILE, LOCK_STALE_MS, STAMP_FILE, STEPS, buildViewer, computeSourceDigest,
-  defaultDropLock, defaultTakeLock, listViewerSources, lockRefusal, lockfileRefusal, sourceRefusal,
-  stepFailure, viewerBuildCore,
+  defaultDropLock, defaultTakeLock, holdsLock, listViewerSources, lockContendedRefusal, lockRefusal,
+  lockStolenRefusal, lockfileRefusal, sourceRefusal, stealStaleLock, stepFailure, viewerBuildCore,
 } from '../../src/cli/viewer-build.mjs';
+
+/** The module under test, as the racer children import it. */
+const VIEWER_BUILD_URL = new URL('../../src/cli/viewer-build.mjs', import.meta.url).href;
 
 const ROOT = '/fake/checkout';
 const VIEWER = join(ROOT, 'viewer');
@@ -321,6 +328,11 @@ test('the build LOCK is not a bundle input — a build in progress cannot change
     const clean = computeSourceDigest(v);
 
     writeFileSync(join(v, LOCK_FILE), '4711 8f1c-…\n');
+    // And its TOMBSTONES: the steal renames the lock to a name only its own process can produce,
+    // so a build killed mid-steal leaves one behind. Hashing that would make the digest disagree
+    // with a stamp written a moment earlier — the same defect as hashing the lock itself.
+    writeFileSync(join(v, `${LOCK_FILE}.stale-0f8c1e2a`), '4711 8f1c-…\n');
+    writeFileSync(join(v, `${LOCK_FILE}.drop-77b0c4d1`), '4711 8f1c-…\n');
     assert.deepEqual(listViewerSources(v), ['package.json', 'src/App.tsx'], 'the lock is not a source');
     assert.equal(computeSourceDigest(v), clean, 'the digest must be blind to whether a build is running');
   } finally {
@@ -416,6 +428,7 @@ test('the executor hands the drop the token it took — release is as exclusive 
     writeStamp: () => {},
     takeLock: () => ({ ok: true, owner: 'pid-token-1' }),
     dropLock: (...a) => dropped.push(a),
+    checkLock: () => true, // this plan's viewer/ is synthetic — there is no lock file to re-read
   });
   assert.equal(r.ok, true);
   assert.deepEqual(dropped, [[join(VIEWER, LOCK_FILE), 'pid-token-1']]);
@@ -432,12 +445,12 @@ function lockBox(fn) {
   try { return fn(join(box, LOCK_FILE)); } finally { rmSync(box, { recursive: true, force: true }); }
 }
 
-test('the stale bound covers a WHOLE build, not one step — a live builder is never lawfully robbed', () => {
+test('the stale bound covers a WHOLE build plus slack — a live builder is never lawfully robbed', () => {
   // Each step carries its own BUILD_TIMEOUT_MS, so a legitimate build can hold the lock for the
-  // whole step list's worth of timeouts. A one-timeout bound let a second builder take the lock
-  // out from under a live `npm run build` at minute 10.
-  assert.equal(LOCK_STALE_MS, STEPS.length * BUILD_TIMEOUT_MS);
-  assert.ok(LOCK_STALE_MS > BUILD_TIMEOUT_MS, 'the bound must outlast a single step, not equal it');
+  // whole step list's worth of timeouts — and the take, the inter-step work and the stamp write
+  // all sit OUTSIDE that sum, so the bound needs slack over it rather than equality with it.
+  assert.ok(LOCK_STALE_MS > STEPS.length * BUILD_TIMEOUT_MS, 'the summed budget is a floor, not the bound');
+  assert.ok(LOCK_STALE_MS < 2 * STEPS.length * BUILD_TIMEOUT_MS, 'slack, not a second build budget');
 });
 
 test('a FRESH lock is refused and left byte-untouched; only a lock past the bound is reclaimed', () => lockBox((lockPath) => {
@@ -481,17 +494,160 @@ test('a lock that VANISHES mid-check is re-raced, never thrown out of', () => lo
   symlinkSync(join(lockPath, '..', 'nothing-here'), lockPath);
   let r;
   assert.doesNotThrow(() => { r = defaultTakeLock(lockPath, { attempts: 2 }); });
-  assert.equal(r.ok, false, 'contention this persistent is reported as a held lock — fail closed');
-  assert.equal(r.ageMs, 0);
+  assert.equal(r.ok, false, 'contention this persistent is refused — fail closed');
+  assert.equal(r.contended, true, 'and reported as CONTENDED, not as a lock of some age');
+  // The age-quoting refusal would say "0s old … wait for it to finish" about a lock nothing is
+  // holding, and skills/viewer/SKILL.md would then wait forever. This one names both ways out.
+  const failure = lockContendedRefusal(lockPath);
+  assert.match(failure, /kept changing under us/);
+  assert.match(failure, /remove .* and re-run/);
 }));
 
-test('the drop releases only the lock this build still owns', () => lockBox((lockPath) => {
+test('a CONTENDED lock refuses with its own message, not with an age', () => {
+  const { run, calls } = fakeRun();
+  const p = stampedPlan([], { stamped: false });
+  const r = buildViewer(run, p, {
+    write: sink().write,
+    takeLock: () => ({ ok: false, contended: true }),
+    dropLock: () => { throw new Error('must not drop a lock it never took'); },
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(calls, [], 'no lock, no spawns');
+  assert.equal(r.failure, lockContendedRefusal(join(p.viewerDir, LOCK_FILE)));
+  assert.doesNotMatch(r.failure, /\d+s old/, 'an unsettled lock has no meaningful age to quote');
+});
+
+test('holdsLock reads the file, not the claim — one token, one holder', () => lockBox((lockPath) => {
   const mine = defaultTakeLock(lockPath);
-  writeFileSync(lockPath, 'a successor that reclaimed it\n');
+  assert.equal(holdsLock(lockPath, mine.owner), true);
+  writeFileSync(lockPath, 'someone else took over\n');
+  assert.equal(holdsLock(lockPath, mine.owner), false, 'the file on disk is the authority');
+  rmSync(lockPath);
+  assert.equal(holdsLock(lockPath, mine.owner), false, 'an absent lock is not held — fail closed');
+  assert.equal(holdsLock(lockPath, undefined), true, 'a seam that reports no owner claims nothing');
+}));
+
+test('a lock that changes hands stops the build before it spawns or stamps', () => {
+  // The acquire side can hand two processes a "yes" in one interleaving; this is where that
+  // becomes a lost race rather than two builds in one tree.
+  const { run, calls } = fakeRun();
+  const stamps = [];
+  const lost = buildViewer(run, stampedPlan([], { stamped: false }), {
+    write: sink().write,
+    writeStamp: (...a) => stamps.push(a),
+    takeLock: () => ({ ok: true, owner: 'mine' }),
+    dropLock: () => {},
+    checkLock: () => false,
+  });
+  assert.equal(lost.ok, false);
+  assert.deepEqual(calls, [], 'the loser must not spawn');
+  assert.deepEqual(stamps, [], 'nor stamp a dist another build is writing');
+  assert.equal(lost.failure, lockStolenRefusal(join(VIEWER, LOCK_FILE)));
+
+  // And stolen LATE — after both steps, on the way to the stamp: the bundle is another build's
+  // now, so claiming "verified fresh" for it is exactly the lie the stamp exists to prevent.
+  const late = fakeRun();
+  const stamps2 = [];
+  let checks = 0;
+  const stolen = buildViewer(late.run, stampedPlan([], { stamped: false }), {
+    write: sink().write,
+    writeStamp: (...a) => stamps2.push(a),
+    takeLock: () => ({ ok: true, owner: 'mine' }),
+    dropLock: () => {},
+    checkLock: () => { checks += 1; return checks <= STEPS.length; },
+  });
+  assert.equal(stolen.ok, false);
+  assert.equal(late.calls.length, STEPS.length, 'the steps it had already started still ran');
+  assert.deepEqual(stamps2, [], 'but the stamp never lands');
+});
+
+test('the steal takes the file it JUDGED — and leaves any other lock alone', () => lockBox((lockPath) => {
+  // THE DEFECT THIS REPLACED: reclaiming by `rmSync(lockPath)` deletes whatever is at the path,
+  // including the fresh lock a racer won a microsecond earlier — after which both builders hold
+  // "the" lock and build in one tree. Twelve spin-synchronised processes reproduced it.
+  writeFileSync(lockPath, 'dead build\n');
+  const judged = statSync(lockPath);
+
+  // A racer gets there first: the judged file is gone, and a FRESH lock sits in its place.
+  rmSync(lockPath);
+  writeFileSync(lockPath, 'racer token\n', { flag: 'wx' });
+  const fresh = statSync(lockPath);
+
+  stealStaleLock(lockPath, judged);
+  assert.equal(readFileSync(lockPath, 'utf8'), 'racer token\n', 'the racer’s lock must survive the steal');
+  assert.equal(statSync(lockPath).ino, fresh.ino, 'restored as the SAME file — linked back, never rewritten');
+  assert.deepEqual(readdirSync(dirname(lockPath)), [LOCK_FILE], 'and no tombstone left behind');
+
+  // The ordinary case still works: the file it did judge is taken away.
+  stealStaleLock(lockPath, statSync(lockPath));
+  assert.equal(existsSync(lockPath), false);
+  assert.deepEqual(readdirSync(dirname(lockPath)), []);
+}));
+
+test('TWO builders reclaiming one stale lock: exactly one comes away holding it', async () => {
+  // The regression guard for the defect this protocol replaced. Every other lock test here is
+  // single-threaded or seam-driven — which is exactly how a reclaim that unlinked by path
+  // survived a review round: it is only wrong when two processes reach it at the same moment.
+  //
+  // TWO, because two is what the scenario produces and two is what can be GUARANTEED: two
+  // sessions in one auto-pulled clone, both finding the lock a killed build left behind. At two,
+  // every interleaving leaves exactly one winner — a racer that displaces the other's fresh lock
+  // always finds the path empty and links it straight back. From three up, one racer can take the
+  // gap another is restoring through (stealStaleLock's docblock), and the guarantee moves to
+  // holdsLock and the stamp check in buildViewer, which are tested separately above.
+  const box = mkdtempSync(join(tmpdir(), 'legion-vb-race-'));
+  const script = join(box, 'racer.mjs');
+  writeFileSync(script, [
+    `import { defaultTakeLock } from ${JSON.stringify(VIEWER_BUILD_URL)};`,
+    'const [lockPath, startAt] = process.argv.slice(2);',
+    'while (Date.now() < Number(startAt)) { /* spin to the shared start */ }',
+    'let out;',
+    'try { const r = defaultTakeLock(lockPath); out = { ok: r.ok === true, owner: r.owner ?? null }; }',
+    'catch (e) { out = { ok: false, error: e?.code ?? String(e) }; }',
+    'process.stdout.write(JSON.stringify(out));',
+  ].join('\n'));
+  const race = (lockPath, startAt) => new Promise((res, rej) => {
+    const child = spawn(process.execPath, [script, lockPath, String(startAt)], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('error', rej);
+    child.on('close', () => res(JSON.parse(out || '{"ok":false,"error":"no output"}')));
+  });
+
+  try {
+    for (let round = 0; round < 6; round += 1) {
+      const dir = join(box, `round-${round}`);
+      mkdirSync(dir);
+      const lockPath = join(dir, LOCK_FILE);
+      writeFileSync(lockPath, 'a build that was killed\n');
+      const dead = (Date.now() - LOCK_STALE_MS - 60_000) / 1000;
+      utimesSync(lockPath, dead, dead); // stale: every racer will judge it reclaimable
+
+      const results = await Promise.all(Array.from({ length: 2 }, () => race(lockPath, Date.now() + 300)));
+      const winners = results.filter((r) => r.ok);
+      const detail = `round ${round}: ${JSON.stringify(results)}`;
+      assert.equal(winners.length, 1, `${detail} — two builders in one viewer/ is the whole defect`);
+      assert.equal(readFileSync(lockPath, 'utf8'), winners[0].owner,
+        `${detail} — the lock on disk must belong to the process that believes it holds it`);
+      assert.deepEqual(readdirSync(dir), [LOCK_FILE], 'the steal leaves no tombstones behind');
+    }
+  } finally {
+    rmSync(box, { recursive: true, force: true });
+  }
+});
+
+test('the drop releases only the lock this build still owns, and restores one it does not', () => lockBox((lockPath) => {
+  const mine = defaultTakeLock(lockPath);
+  rmSync(lockPath);
+  writeFileSync(lockPath, 'a successor that reclaimed it\n', { flag: 'wx' });
+  const successor = statSync(lockPath);
   defaultDropLock(lockPath, mine.owner);
   assert.equal(existsSync(lockPath), true, 'a reclaimed lock belongs to its new owner, not to us');
+  assert.equal(statSync(lockPath).ino, successor.ino, 'and is put back as the same file, untouched');
+  assert.deepEqual(readdirSync(dirname(lockPath)), [LOCK_FILE], 'no tombstone left behind');
 
-  writeFileSync(lockPath, mine.owner);
+  rmSync(lockPath);
+  writeFileSync(lockPath, mine.owner, { flag: 'wx' });
   defaultDropLock(lockPath, mine.owner);
   assert.equal(existsSync(lockPath), false, 'our own lock is released');
   assert.doesNotThrow(() => defaultDropLock(lockPath, mine.owner), 'dropping an absent lock is quiet');

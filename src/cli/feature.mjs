@@ -648,23 +648,25 @@ const CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform ==
  * setup's legionPathState answers "does PATH's legion live inside this install?" with THIS
  * definition — a second containment predicate would be a second chance to disagree on casing. */
 export const underSegmentOf = (root, base) => {
-  // NFC ON BOTH SIDES, EVERYWHERE, and before the case fold. The two paths compared here reach
-  // this function from different producers — one from an operator's argv or a manifest, the other
-  // composed from homedir() — and a name carrying any non-ASCII character (`~/Développement`, a
-  // clone under a user directory with an accent) can be spelled decomposed on one side and
-  // composed on the other for the SAME file. realpathSync resolves symlinks and the case the
-  // filesystem stores; it does not canonicalize Unicode form, so the two spellings compare
-  // unequal and BOTH isMarketplaceClone and isMarketplaceInstall go false together — the failure
-  // the case fold below is already there to prevent, arrived at by another route: setup reads a
-  // clone as a dev checkout and runs `marketplace add <clone path>`, the directory-source
-  // re-registration that silently ends auto-update. The residual (a filesystem holding two
-  // genuinely distinct names differing only in normalization form) is the same pathological
-  // class as the case-sensitive-volume residual, and accepted on the same terms.
-  let r = realish(resolve(root)).normalize('NFC');
-  let b = realish(resolve(base)).normalize('NFC');
+  // NFC AND case-folding TOGETHER, GATED ON THE SAME PLATFORMS, and for the same reason. The two
+  // paths reach this function from different producers — one from an operator's argv or a
+  // manifest, the other composed from homedir() — and on darwin a name carrying any non-ASCII
+  // character (`~/Développement`, a clone under a user directory with an accent) can be spelled
+  // decomposed on one side and composed on the other for ONE file: HFS+ stored NFD, APFS stores
+  // what it is given, and realpathSync canonicalizes symlinks and stored case but never Unicode
+  // form. Unequal spellings make isMarketplaceClone and isMarketplaceInstall go false TOGETHER,
+  // and setup then reads a clone as a dev checkout and runs `marketplace add <clone path>` — the
+  // directory-source re-registration that silently ends auto-update.
+  // NOT ON LINUX, DELIBERATELY: there a path is bytes, both sides come out identical for the same
+  // file, and two directories differing only in normalization form are genuinely DIFFERENT
+  // directories. Folding them there would buy nothing and would flip the other consumer the wrong
+  // way — launchCommand's failure direction is the opposite of setup's (see isMarketplaceInstall
+  // below: a dev root misread as marketplace prints a plugin-less session).
+  let r = realish(resolve(root));
+  let b = realish(resolve(base));
   if (CASE_INSENSITIVE_FS) {
-    r = r.toLowerCase();
-    b = b.toLowerCase();
+    r = r.normalize('NFC').toLowerCase();
+    b = b.normalize('NFC').toLowerCase();
   }
   return r === b || r.startsWith(b + sep);
 };

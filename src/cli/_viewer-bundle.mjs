@@ -75,6 +75,14 @@ const DIGEST_EXCLUDES_TOP = new Set([
   'dist', 'node_modules', LOCK_FILE, 'pnpm-lock.yaml', 'pnpm-workspace.yaml',
 ]);
 
+/** Top-level names excluded by PREFIX rather than by exact match: the lock's own tombstones
+ * (`<LOCK_FILE>.stale-<uuid>`, `<LOCK_FILE>.drop-<uuid>`). The lock protocol claims a file by
+ * renaming it to a name only its own process can produce, so those names cannot be enumerated
+ * here — and one left behind by a build killed mid-steal is exactly the litter that would
+ * otherwise make the digest disagree with a stamp written a moment earlier. Same rule as the
+ * lock itself: bookkeeping about a running build is never a bundle input. */
+const isDigestExcludedTop = (name) => DIGEST_EXCLUDES_TOP.has(name) || name.startsWith(`${LOCK_FILE}.`);
+
 /** The bundle's INPUTS: every file under viewer/, sorted, as relative paths — minus the
  * exclusions above. THROWS on a symlink, deliberately: Dirent cannot see through it, vite can,
  * so a digest that silently skipped it could report "up to date" over changed content — the one
@@ -85,7 +93,7 @@ export function listViewerSources(viewerDir) {
   const walk = (rel) => {
     for (const entry of readdirSync(rel === '' ? viewerDir : join(viewerDir, rel), { withFileTypes: true })) {
       if (DIGEST_EXCLUDES_ANY.has(entry.name)) continue;
-      if (rel === '' && DIGEST_EXCLUDES_TOP.has(entry.name)) continue;
+      if (rel === '' && isDigestExcludedTop(entry.name)) continue;
       const childRel = rel === '' ? entry.name : `${rel}/${entry.name}`;
       if (entry.isSymbolicLink()) {
         throw new Error(`symlink at ${childRel} — the source digest cannot see through symlinks`);

@@ -347,10 +347,14 @@ function checkLegionOnPath(pathEnv, pluginRoot) {
   if (snapshotResident) {
     return {
       level: 'warn',
+      // THE REMEDY MUST BE ONE SETUP WILL ACTUALLY PERFORM. "Run setup from the clone" does
+      // nothing here: setup links only when `legion` is ABSENT from PATH (its asymmetric PATH
+      // step), and from the clone this PATH reads 'foreign' — it would warn and touch nothing,
+      // leaving the operator to follow a remedy, see no change, and distrust the check.
       detail: `\`legion\` on PATH → ${s.found} resolves into this install, but this install is the `
         + `swept plugin snapshot (${resolve(pluginRoot)}) — Claude Code deletes it on the next `
-        + 'update and the link will dangle. Re-link from a durable install: run setup from the '
-        + 'marketplace clone or your checkout',
+        + 'update and the link will dangle. Unlink it first, then re-link from a durable install: '
+        + '`npm rm -g legion`, then run setup from the marketplace clone or your checkout',
     };
   }
   return { level: 'pass', detail: `\`legion\` on PATH → ${s.found} (this install)` };

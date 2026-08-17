@@ -13,7 +13,7 @@ viewer/node_modules/
 # The build's concurrency lock (LOCK_FILE, src/cli/_viewer-bundle.mjs): machine-local, transient,
 # and left behind by any hard-killed build until the next one reclaims it. Ignored for the same
 # reason the digest walk excludes it — it is a fact about a running process, never a bundle input.
-viewer/.legion-build-lock
+viewer/.legion-build-lock*
 
 # ONE LOCKFILE, and it is viewer/package-lock.json. The bundle builds on the OPERATOR's machine,
 # so it may only depend on what a legion install already requires: npm ships with Node (package.json

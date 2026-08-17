@@ -164,20 +164,27 @@ function createOrRefresh(run, what, createArgv, refreshArgv, okCreate, okRefresh
   );
 }
 
+/** The spawn errnos that mean the `claude` CLI never ran at all, as opposed to ran and failed.
+ * Kept as a set so the two are decided in one place rather than by an `if` that grows a case at
+ * a time (this list gained EACCES/EPERM the moment ENOENT alone proved too narrow). */
+const CLI_NEVER_RAN = new Set(['ENOENT', 'EACCES', 'EPERM']);
+
 /** One refresh-only step — clone mode's marketplace refresh, which deliberately has NO create
  * fallback (header: WHY CLONE MODE NEVER RUNS THE CREATE FORM). Returns the line to print;
  * throws with the verbatim output plus the caller's remedy when the one form fails. */
 function refreshOnly(run, what, refreshArgv, okLine, remedy) {
   const r = run('claude', refreshArgv, { timeoutMs: STEP_TIMEOUT_MS });
   if (r.ok) return okLine;
-  // ENOENT — and ONLY ENOENT — means the `claude` CLI itself never ran, so the caller's remedy
-  // (re-registering a marketplace, which needs that same CLI) is replaced by the honest
-  // diagnosis. Every OTHER spawn error is a CLI that DID run: ETIMEDOUT above all, where claude
-  // spent the full step budget on a git pull over a slow link and was killed. Treating that as
-  // "not installed" would send an operator to reinstall a working CLI while throwing away both
-  // the captured output and the remedy that actually applies.
-  if (r.spawnError === 'ENOENT') {
-    throw new Error(`${what} failed:\n  claude ${refreshArgv.join(' ')} → ENOENT: no \`claude\` on PATH\n`
+  // THE CLI NEVER RAN — the errnos that mean exactly that, and no others. ENOENT (nothing named
+  // `claude` on PATH), EACCES/EPERM (something is there and cannot be executed: a non-executable
+  // file, a blocked binary). For all three the caller's remedy — re-registering a marketplace,
+  // which needs that same CLI — is unreachable, so the honest diagnosis replaces it.
+  // EVERY OTHER SPAWN ERROR IS A CLI THAT DID RUN, ETIMEDOUT above all: claude spent the full
+  // step budget on a git pull over a slow link and was killed. Calling that "not installed" would
+  // send an operator to reinstall a working CLI while discarding both the captured output and the
+  // remedy that actually applies.
+  if (CLI_NEVER_RAN.has(r.spawnError)) {
+    throw new Error(`${what} failed:\n  claude ${refreshArgv.join(' ')} → ${r.spawnError}: \`claude\` could not be executed\n`
       + 'Is the `claude` CLI installed and current? Fix that and re-run `legion setup`.');
   }
   const why = r.spawnError === 'ETIMEDOUT'
