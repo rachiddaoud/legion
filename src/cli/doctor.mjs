@@ -64,6 +64,13 @@
 // `--json` contract, taken deliberately: an id naming glab while the check runs `gh auth status`
 // would be a standing lie in the surface built for honesty. See CHECK_IDS.
 //
+// THE CHECK ID `legion-on-path` WAS ADDED 2026-08-17, when the github-marketplace install route
+// landed. Two legions can now legitimately coexist on one machine — a dev checkout and the
+// auto-pulled marketplace clone — so WHICH kernel a bare `legion` reaches became a question with
+// a wrong answer, and every skill, agent and workflow dispatch rides that answer. Extending
+// CHECK_IDS extends the `--json` contract (consumers keying on array positions after
+// `plugin-manifest` see a new row) — taken deliberately, same reasoning as the rename above.
+//
 // BRANCH PROTECTION FORKS BY FORGE, WITH ONE SET OF EPISTEMICS. GitLab reads protected_branches
 // and the identity's access level; GitHub reads what a NON-ADMIN token can actually see (the
 // repo's own `permissions`, the branch's `protected` bool, the active ruleset rules) and touches
@@ -104,7 +111,11 @@ import { parseArgs } from '../kernel/args.mjs';
 import { branchPatternMatches } from '../kernel/branches.mjs';
 import { inspectPrePushHook } from '../kernel/githooks.mjs';
 import { realRunner } from '../kernel/runner.mjs';
-import { resolveProject } from './feature.mjs';
+import { isMarketplaceClone, isMarketplaceInstall, resolveProject } from './feature.mjs';
+// No import cycle: setup.mjs reaches doctor only through a runtime dynamic import, so this static
+// edge is one-way. Sharing legionPathState is the point — setup's PATH step and the check below
+// read the SAME evidence and can never disagree about what PATH holds.
+import { legionPathState } from './setup.mjs';
 import { closingKeyword, resolveForge, resolveTicketConfig } from '../kernel/ticket.mjs';
 // remoteHost was this file's own `glabHost` until 2026-08-15; it moved to kernel/forge.mjs
 // unchanged when the second forge arrived, because deriving a host from a remote URL was never
@@ -141,8 +152,12 @@ const DEFAULT_PLUGIN_ROOT = fileURLToPath(new URL('../../', import.meta.url));
  * started probing gh as well as glab. The id IS the `--json` contract, so renaming it is a
  * breaking change to that contract — taken because the alternative is worse: an id that says
  * `glab` while the check verifies `gh auth status` is a standing lie in the one surface built
- * for honesty. The other five ids were already forge-neutral and are untouched. */
-export const CHECK_IDS = ['node', 'claude-version', 'plugin-manifest', 'forge-auth', 'branch-protection', 'remote-guards'];
+ * for honesty. The other five ids were already forge-neutral and are untouched.
+ * `legion-on-path` (added 2026-08-17, see header) sits between `plugin-manifest` and
+ * `forge-auth` rather than last, because the order is the story — environment, then plugin
+ * conformance, then HOW THIS PLUGIN REACHES SESSIONS, then remote safety — and appending it
+ * would break the documented "remote-guards sits LAST beside branch-protection" placement. */
+export const CHECK_IDS = ['node', 'claude-version', 'plugin-manifest', 'legion-on-path', 'forge-auth', 'branch-protection', 'remote-guards'];
 
 /** GitLab access levels, for details a human can act on. */
 const ACCESS_NAMES = {
@@ -285,6 +300,64 @@ function checkPluginManifest(pluginRoot) {
   return problems.length
     ? { level: 'fail', detail: `plugin at ${pluginRoot} is malformed: ${problems.join('; ')}` }
     : { level: 'pass', detail: `plugin manifest and components valid at ${pluginRoot}` };
+}
+
+/** Does bare `legion` reach the kernel ANSWERING THIS DOCTOR? Every skill, agent and workflow
+ * dispatch — and most remedies this file prints — invoke `legion` from PATH, so `legion` absent
+ * is a VERIFIED broken install (fail: nothing shipped can run), and one resolving into a
+ * DIFFERENT install is verified skew (warn: sessions run that kernel while this doctor speaks
+ * for this one — the ordinary dev-checkout-plus-marketplace-clone hybrid, reported rather than
+ * clobbered). The evidence is setup's own legionPathState, so setup's PATH step and this check
+ * can never disagree. DELIBERATELY MINIMAL, zero spawns: it does NOT read
+ * installed_plugins.json / known_marketplaces.json to compare snapshot commits — those files are
+ * Claude Code's private schema, and a doctor keyed to them breaks silently on their next
+ * migration; the on-disk layout this file couples to is the one the layout tests validate. */
+function checkLegionOnPath(pathEnv, pluginRoot) {
+  const s = legionPathState(pathEnv, pluginRoot);
+  if (s.state === 'absent') {
+    return {
+      level: 'fail',
+      detail: '`legion` is not on PATH — every skill, agent and workflow dispatches it from there. '
+        + 'Run setup from your install: `cd <checkout> && ./bin/legion setup`, or '
+        + '`node <config dir>/plugins/marketplaces/<name>/bin/legion.mjs setup` for a marketplace install',
+    };
+  }
+  // THE ANCHOR QUESTION, ASKED FOR EVERY OUTCOME AND NOT JUST THE FOREIGN ONE: is the install
+  // this doctor speaks for the SWEPT SNAPSHOT CACHE (`plugins/cache/<market>/<plugin>/<sha>`,
+  // which Claude Code orphan-marks and deletes on the next update) rather than a durable home?
+  // It shapes the FOREIGN branch's remedy — never prescribe `npm link` into a directory that is
+  // about to be deleted — and it is the whole verdict in the OWN branch below.
+  const snapshotResident = isMarketplaceInstall(pluginRoot) && !isMarketplaceClone(pluginRoot);
+  if (s.state === 'foreign') {
+    return {
+      level: 'warn',
+      detail: `\`legion\` on PATH resolves to ${s.resolved}, which is NOT this install `
+        + `(${resolve(pluginRoot)}) — sessions run that kernel while this doctor speaks for this one`
+        + (snapshotResident
+          ? '; this doctor runs from the swept plugin snapshot — never npm link here; run doctor from the checkout or the marketplace clone instead'
+          : `; if this install should win: cd ${resolve(pluginRoot)} && npm link`),
+    };
+  }
+  // 'own' AND SNAPSHOT-RESIDENT IS THE STATE THE GUARD ABOVE WAS WRITTEN TO PREVENT, ARRIVED AT.
+  // PATH's `legion` resolves INTO the swept cache — someone did npm link here, or npm's prefix
+  // bin happens to point at it — so the link dangles the moment Claude Code sweeps this
+  // directory, and every skill and agent dispatch dies with it. Reporting that as a green "(this
+  // install)" because the two paths agree would make the check pass loudest exactly where it
+  // matters most. A warn, not a fail: nothing is broken YET, and doctor does not repoint PATH.
+  if (snapshotResident) {
+    return {
+      level: 'warn',
+      // THE REMEDY MUST BE ONE SETUP WILL ACTUALLY PERFORM. "Run setup from the clone" does
+      // nothing here: setup links only when `legion` is ABSENT from PATH (its asymmetric PATH
+      // step), and from the clone this PATH reads 'foreign' — it would warn and touch nothing,
+      // leaving the operator to follow a remedy, see no change, and distrust the check.
+      detail: `\`legion\` on PATH → ${s.found} resolves into this install, but this install is the `
+        + `swept plugin snapshot (${resolve(pluginRoot)}) — Claude Code deletes it on the next `
+        + 'update and the link will dangle. Unlink it first, then re-link from a durable install: '
+        + '`npm rm -g legion`, then run setup from the marketplace clone or your checkout',
+    };
+  }
+  return { level: 'pass', detail: `\`legion\` on PATH → ${s.found} (this install)` };
 }
 
 /** THE HOST a project's remote lives on, for `<cli> auth status --hostname`. Moved to
@@ -1004,7 +1077,7 @@ function renderTable(checks, ticketInfo, forgeInfo) {
 /**
  * The testable core. Writes NOTHING and returns everything.
  * @param {string[]} argv unsplit argv (kernel/args.mjs invariant)
- * @param {{run: Function, minClaudeVersion?: string|null, nodeVersion?: string, pluginRoot?: string}} deps
+ * @param {{run: Function, minClaudeVersion?: string|null, nodeVersion?: string, pluginRoot?: string, pathEnv?: string}} deps
  * @returns {Promise<{code: number, checks: Array<{check: string, level: string, detail: string}>, output: string}>}
  */
 export async function doctorCore(argv, deps = {}) {
@@ -1013,6 +1086,7 @@ export async function doctorCore(argv, deps = {}) {
     minClaudeVersion = MIN_CLAUDE_VERSION,
     nodeVersion = process.version,
     pluginRoot = DEFAULT_PLUGIN_ROOT,
+    pathEnv = process.env.PATH,
   } = deps;
   if (typeof run !== 'function') throw new Error('doctorCore requires deps.run — the kernel/runner.mjs seam');
 
@@ -1038,6 +1112,7 @@ export async function doctorCore(argv, deps = {}) {
   add('node', () => checkNode(nodeVersion));
   add('claude-version', () => checkClaudeVersion(run, minClaudeVersion));
   add('plugin-manifest', () => checkPluginManifest(pluginRoot));
+  add('legion-on-path', () => checkLegionOnPath(pathEnv, pluginRoot));
   // The forge the auth check resolved is REUSED by branch protection: two checks that resolved
   // it independently could disagree about which server they are describing.
   let forge = null;

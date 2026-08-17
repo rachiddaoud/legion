@@ -146,7 +146,11 @@ function green(over = {}) {
   });
 }
 
-const DEPS = (run, over = {}) => ({ run, nodeVersion: 'v22.14.0', minClaudeVersion: '2.0.0', ...over });
+// pathEnv pinned to the real checkout's bin/: legion-on-path then reads 'own' (pass) against the
+// default plugin root, DETERMINISTICALLY — never the operator's real PATH. A test that overrides
+// pluginRoot to a temp fixture gets an honest 'foreign' WARN on that row (PATH's legion is not
+// that fixture), which moves no exit code.
+const DEPS = (run, over = {}) => ({ run, nodeVersion: 'v22.14.0', minClaudeVersion: '2.0.0', pathEnv: join(ROOT, 'bin'), ...over });
 const levels = (r) => Object.fromEntries(r.checks.map((c) => [c.check, c.level]));
 
 // --- pure helpers -------------------------------------------------------------------------------
@@ -177,14 +181,14 @@ test('branchPatternMatches honours GitLab wildcards and stays anchored', () => {
 
 // --- the green baseline --------------------------------------------------------------------------
 
-test('a fully-green environment: six passes, exit 0', async () => {
+test('a fully-green environment: seven passes, exit 0', async () => {
   const s = scenario();
   const run = green();
   const r = await inScenario(s, [], DEPS(run));
   assert.equal(r.code, 0, r.output);
   assert.deepEqual(r.checks.map((c) => c.check), CHECK_IDS);
   for (const c of r.checks) assert.equal(c.level, 'pass', `${c.check}: ${c.detail}`);
-  assert.match(r.output, /doctor: 6 pass, 0 warn, 0 fail/);
+  assert.match(r.output, /doctor: 7 pass, 0 warn, 0 fail/);
   assert.ok(!r.output.includes('FAIL —'), 'a green run must not print the verdict line');
 });
 
@@ -195,8 +199,8 @@ test('an old node flips ONLY the node check, and the exit code with it', async (
   const r = await inScenario(s, [], DEPS(green(), { nodeVersion: 'v18.20.0' }));
   assert.equal(r.code, 1);
   assert.deepEqual(levels(r), {
-    node: 'fail', 'claude-version': 'pass', 'plugin-manifest': 'pass', 'forge-auth': 'pass',
-    'branch-protection': 'pass', 'remote-guards': 'pass',
+    node: 'fail', 'claude-version': 'pass', 'plugin-manifest': 'pass', 'legion-on-path': 'pass',
+    'forge-auth': 'pass', 'branch-protection': 'pass', 'remote-guards': 'pass',
   });
   assert.match(r.checks[0].detail, /below the required >= 22/);
   assert.match(r.output, /FAIL — fix the failing checks/);
@@ -324,8 +328,10 @@ test('a plugin root missing hooks/ fails ONLY the manifest check', async () => {
   const r = await inScenario(s, [], DEPS(green(), { pluginRoot: broken }));
   assert.equal(r.code, 1);
   assert.deepEqual(levels(r), {
-    node: 'pass', 'claude-version': 'pass', 'plugin-manifest': 'fail', 'forge-auth': 'pass',
-    'branch-protection': 'pass', 'remote-guards': 'pass',
+    // legion-on-path warns honestly here: PATH's legion (the DEPS-pinned checkout bin) is not
+    // this temp fixture root. A warn, so the "fails ONLY the manifest check" claim still holds.
+    node: 'pass', 'claude-version': 'pass', 'plugin-manifest': 'fail', 'legion-on-path': 'warn',
+    'forge-auth': 'pass', 'branch-protection': 'pass', 'remote-guards': 'pass',
   });
   assert.match(r.checks[2].detail, /component directory hooks\/ is missing/);
 });
@@ -373,6 +379,107 @@ test('a declared component path that DOES exist is accepted', async () => {
   assert.equal(levels(r)['plugin-manifest'], 'pass', r.checks[2].detail);
 });
 
+// --- legion on PATH (added 2026-08-17 with the github-marketplace install route) -----------------
+
+test('`legion` absent from PATH ⇒ legion-on-path FAILS with the setup remedy, and ONLY that check flips', async () => {
+  const s = scenario();
+  const r = await inScenario(s, [], DEPS(green(), { pathEnv: '' }));
+  assert.equal(r.code, 1);
+  assert.deepEqual(levels(r), {
+    node: 'pass', 'claude-version': 'pass', 'plugin-manifest': 'pass', 'legion-on-path': 'fail',
+    'forge-auth': 'pass', 'branch-protection': 'pass', 'remote-guards': 'pass',
+  });
+  assert.match(r.checks[3].detail, /not on PATH/);
+  assert.match(r.checks[3].detail, /setup/, 'the remedy is setup, from either install home');
+  assert.match(r.checks[3].detail, /marketplaces/, 'the marketplace-clone bootstrap must be nameable without `legion` working');
+});
+
+test('a FOREIGN `legion` on PATH ⇒ warn naming both paths, exit stays 0 — the hybrid machine, reported', async () => {
+  // The dev-checkout-plus-marketplace-clone coexistence: PATH serves one kernel while this doctor
+  // answers for another. Verified skew is a warn (nothing is broken), never silence.
+  const s = scenario();
+  const foreignBin = join(TMP, `foreign-bin-${n++}`);
+  mkdirSync(foreignBin, { recursive: true });
+  writeFileSync(join(foreignBin, 'legion'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(foreignBin, 'legion'), 0o755);
+  const r = await inScenario(s, [], DEPS(green(), { pathEnv: foreignBin }));
+  assert.equal(r.code, 0, 'skew is a warn — it must not turn doctor red');
+  assert.equal(levels(r)['legion-on-path'], 'warn');
+  assert.ok(r.checks[3].detail.includes(realpathSync(join(foreignBin, 'legion'))),
+    `the warn must name where PATH points: ${r.checks[3].detail}`);
+  assert.match(r.checks[3].detail, /NOT this install/);
+  assert.match(r.checks[3].detail, /npm link/, 'the repoint remedy is named, never applied');
+});
+
+test('a SNAPSHOT-resident doctor never prescribes npm link — the cache is swept', async () => {
+  // An operator debugging with `node <cache>/<sha>/bin/legion.mjs doctor` must not be handed a
+  // command that anchors the global `legion` in a directory Claude Code orphan-marks and deletes.
+  const s = scenario();
+  const cfg = join(TMP, `snapshot-cfg-${n++}`);
+  const snapRoot = join(cfg, 'plugins', 'cache', 'legion', 'legion', 'abc123');
+  mkdirSync(join(snapRoot, '.claude-plugin'), { recursive: true });
+  for (const d of ['skills', 'agents', 'hooks', 'bin']) mkdirSync(join(snapRoot, d), { recursive: true });
+  writeFileSync(join(snapRoot, 'bin', 'legion.mjs'), '#!/usr/bin/env node\n');
+  writeJson(join(snapRoot, '.claude-plugin', 'plugin.json'), { name: 'legion', description: 'x', author: { name: 'a' } });
+  writeJson(join(snapRoot, 'package.json'), { name: 'legion', bin: { legion: './bin/legion.mjs' } });
+  const foreignBin = join(TMP, `foreign-bin-${n++}`);
+  mkdirSync(foreignBin, { recursive: true });
+  writeFileSync(join(foreignBin, 'legion'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(foreignBin, 'legion'), 0o755);
+
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    const r = await inScenario(s, [], DEPS(green(), { pluginRoot: snapRoot, pathEnv: foreignBin }));
+    assert.equal(levels(r)['legion-on-path'], 'warn');
+    assert.match(r.checks[3].detail, /swept plugin snapshot/);
+    assert.match(r.checks[3].detail, /never npm link here/);
+    assert.doesNotMatch(r.checks[3].detail, /cd .* && npm link/, 'the link remedy must not name the cache');
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+  }
+});
+
+test('a snapshot-resident doctor whose PATH `legion` resolves INTO the cache warns — never green', async () => {
+  // The state the guard above exists for, actually ARRIVED AT: someone npm linked from the cache
+  // (or npm's prefix bin points into it), so PATH and this install agree — and both are about to
+  // be deleted by the next update, taking every skill and agent dispatch with them. Reporting
+  // that agreement as a green "(this install)" would silence the check exactly where it matters.
+  const s = scenario();
+  const cfg = join(TMP, `snapshot-own-cfg-${n++}`);
+  const snapRoot = join(cfg, 'plugins', 'cache', 'legion', 'legion', 'def456');
+  mkdirSync(join(snapRoot, '.claude-plugin'), { recursive: true });
+  for (const d of ['skills', 'agents', 'hooks', 'bin']) mkdirSync(join(snapRoot, d), { recursive: true });
+  writeFileSync(join(snapRoot, 'bin', 'legion.mjs'), '#!/usr/bin/env node\n');
+  writeJson(join(snapRoot, '.claude-plugin', 'plugin.json'), { name: 'legion', description: 'x', author: { name: 'a' } });
+  writeJson(join(snapRoot, 'package.json'), { name: 'legion', bin: { legion: './bin/legion.mjs' } });
+  // PATH's `legion` IS this install's own bin — the 'own' state, from inside the swept cache.
+  writeFileSync(join(snapRoot, 'bin', 'legion'), '#!/bin/sh\nexit 0\n');
+  chmodSync(join(snapRoot, 'bin', 'legion'), 0o755);
+
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = cfg;
+  try {
+    const r = await inScenario(s, [], DEPS(green(), { pluginRoot: snapRoot, pathEnv: join(snapRoot, 'bin') }));
+    assert.equal(r.code, 0, 'nothing is broken yet — this is a warn, not a fail');
+    assert.equal(levels(r)['legion-on-path'], 'warn');
+    assert.match(r.checks[3].detail, /swept plugin snapshot/);
+    assert.match(r.checks[3].detail, /will dangle/);
+    assert.doesNotMatch(r.checks[3].detail, /\(this install\)/, 'agreement here is not a pass');
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev;
+  }
+});
+
+test('legion-on-path spawns NOTHING — it reads PATH, not processes', async () => {
+  const s = scenario();
+  const run = green();
+  const before = run.calls.length;
+  await inScenario(s, [], DEPS(run, { pathEnv: '' }));
+  assert.ok(!run.calls.some((c) => c.key.startsWith('legion')), 'the check must never execute the binary it judges');
+  assert.equal(run.calls.length - before, 5, 'exactly the five probes the OTHER checks make');
+});
+
 // --- the forge CLI ----------------------------------------------------------------------------------
 
 test('glab missing ⇒ forge-auth FAILS and branch-protection WARNS (not fails), exit 1', async () => {
@@ -383,9 +490,9 @@ test('glab missing ⇒ forge-auth FAILS and branch-protection WARNS (not fails),
   assert.equal(levels(r)['forge-auth'], 'fail');
   assert.equal(levels(r)['branch-protection'], 'warn',
     'unreachable server means UNVERIFIED, never "unprotected"');
-  assert.match(r.checks[3].detail, /glab not found on PATH/);
-  assert.match(r.checks[4].detail, /UNVERIFIED/);
-  assert.match(r.checks[4].detail, /best-effort/);
+  assert.match(r.checks[4].detail, /glab not found on PATH/);
+  assert.match(r.checks[5].detail, /UNVERIFIED/);
+  assert.match(r.checks[5].detail, /best-effort/);
   assert.equal(run.calls.filter((c) => c.args[0] === 'api').length, 0,
     'with glab down there is nothing to query — the check must not pretend to');
 });
@@ -395,7 +502,7 @@ test('glab installed but unauthenticated ⇒ same shape, with the login remediat
   const r = await inScenario(s, [], DEPS(green({ 'glab auth status': { code: 1, stderr: 'not logged in' } })));
   assert.equal(r.code, 1);
   assert.equal(levels(r)['forge-auth'], 'fail');
-  assert.match(r.checks[3].detail, /not authenticated .*glab auth login/);
+  assert.match(r.checks[4].detail, /not authenticated .*glab auth login/);
   assert.equal(levels(r)['branch-protection'], 'warn');
 });
 
@@ -470,10 +577,10 @@ test('THE M0 REGRESSION: a token-less gitlab.com must not fail a green target ho
     'glab auth status --hostname gitlab.acme.dev': { stderr: '✓ Logged in to gitlab.acme.dev as legion-bot\n' },
   });
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[3].detail);
+  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[4].detail);
   assert.equal(r.code, 0, r.output);
-  assert.match(r.checks[3].detail, /authenticated for gitlab\.acme\.dev/);
-  assert.match(r.checks[3].detail, /default\/fix-proj/, 'the pass must name the project whose host it judged');
+  assert.match(r.checks[4].detail, /authenticated for gitlab\.acme\.dev/);
+  assert.match(r.checks[4].detail, /default\/fix-proj/, 'the pass must name the project whose host it judged');
   const probes = run.calls.filter((c) => c.args[0] === 'auth');
   assert.deepEqual(probes.map((c) => c.args), [['auth', 'status', '--hostname', 'gitlab.acme.dev']],
     'exactly one, host-scoped probe — the global status is never consulted when a project resolves');
@@ -491,8 +598,8 @@ test('the scoped check still FAILS when the token missing is the PROJECT’s hos
   const r = await inScenario(s, [], DEPS(run));
   assert.equal(levels(r)['forge-auth'], 'fail');
   assert.equal(r.code, 1);
-  assert.match(r.checks[3].detail, /not authenticated for gitlab\.com/);
-  assert.match(r.checks[3].detail, /glab auth login --hostname gitlab\.com/);
+  assert.match(r.checks[4].detail, /not authenticated for gitlab\.com/);
+  assert.match(r.checks[4].detail, /glab auth login --hostname gitlab\.com/);
   assert.equal(levels(r)['branch-protection'], 'warn', 'an unauthenticated target host leaves protection UNVERIFIED');
 });
 
@@ -504,7 +611,7 @@ test('the scoped probe runs from inside a feature worktree too — the cwd every
     'glab auth status --hostname gitlab.acme.dev': { stderr: '✓ Logged in\n' },
   });
   const r = await inDir(wt, s.home, [], DEPS(run));
-  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[3].detail);
+  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[4].detail);
   assert.ok(run.calls.some((c) => c.args.join(' ') === 'auth status --hostname gitlab.acme.dev'),
     'resolution is fromAnyWorktree, so the check must not silently unscope itself in a worktree');
 });
@@ -519,9 +626,9 @@ test('NO project resolves ⇒ per-host truth as a WARN, never a FAIL, exit 0', a
   const r = await inDir(outside, s.home, [], DEPS(run));
   assert.equal(levels(r)['forge-auth'], 'warn');
   assert.equal(r.code, 0, `an unscoped unknown must not fail the command: ${r.output}`);
-  assert.match(r.checks[3].detail, /authenticated for gitlab\.acme\.dev and NOT for gitlab\.com/);
-  assert.match(r.checks[3].detail, /no registered project resolves from this cwd/);
-  assert.match(r.checks[3].detail, /cannot tell which host or forge matters/);
+  assert.match(r.checks[4].detail, /authenticated for gitlab\.acme\.dev and NOT for gitlab\.com/);
+  assert.match(r.checks[4].detail, /no registered project resolves from this cwd/);
+  assert.match(r.checks[4].detail, /cannot tell which host or forge matters/);
   assert.deepEqual(run.calls.filter((c) => c.file === 'glab' && c.args[0] === 'auth').map((c) => c.args), [['auth', 'status']],
     'with no host to scope to there is nothing to pass --hostname');
 });
@@ -536,9 +643,9 @@ test('NO project, every configured host authenticated ⇒ pass that says nothing
     'glab auth status': { stderr: 'gitlab.invalid\n  ✓ Logged in to gitlab.invalid as legion-bot\n' },
     'gh auth status': { stderr: 'github.com\n  ✓ Logged in to github.com account legion-bot\n' },
   })));
-  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[3].detail);
-  assert.match(r.checks[3].detail, /gitlab\.invalid/);
-  assert.match(r.checks[3].detail, /no single host was verified as the target/);
+  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[4].detail);
+  assert.match(r.checks[4].detail, /gitlab\.invalid/);
+  assert.match(r.checks[4].detail, /no single host was verified as the target/);
 });
 
 test('NO project, non-zero exit but an all-good parse ⇒ WARN, never a pass on a host it could not read', async () => {
@@ -556,11 +663,11 @@ test('NO project, non-zero exit but an all-good parse ⇒ WARN, never a pass on 
     },
   })));
   assert.deepEqual(parseForgeAuthHosts('gitlab\n  x gitlab: 401\n'), [], 'the premise: a single-label host is dropped');
-  assert.equal(levels(r)['forge-auth'], 'warn', r.checks[3].detail);
+  assert.equal(levels(r)['forge-auth'], 'warn', r.checks[4].detail);
   assert.equal(r.code, 0, `the exit code may withhold a pass, never inherit a fail: ${r.output}`);
-  assert.match(r.checks[3].detail, /exited 1/);
-  assert.match(r.checks[3].detail, /gitlab\.com/, 'the hosts it COULD read are still named');
-  assert.doesNotMatch(r.checks[3].detail, /authenticated for every configured host/);
+  assert.match(r.checks[4].detail, /exited 1/);
+  assert.match(r.checks[4].detail, /gitlab\.com/, 'the hosts it COULD read are still named');
+  assert.doesNotMatch(r.checks[4].detail, /authenticated for every configured host/);
 });
 
 test('NO project and output no parser can read ⇒ warn stating exactly that, not a pass', async () => {
@@ -572,8 +679,8 @@ test('NO project and output no parser can read ⇒ warn stating exactly that, no
   })));
   assert.equal(levels(r)['forge-auth'], 'warn');
   assert.equal(r.code, 0);
-  assert.match(r.checks[3].detail, /no per-host state could be read/);
-  assert.match(r.checks[3].detail, /not logged into any GitLab hosts/, 'the raw output is quoted for the human');
+  assert.match(r.checks[4].detail, /no per-host state could be read/);
+  assert.match(r.checks[4].detail, /not logged into any GitLab hosts/, 'the raw output is quoted for the human');
 });
 
 test('a project whose recorded remote names no host falls back to the unscoped probe, and says so', async () => {
@@ -581,7 +688,7 @@ test('a project whose recorded remote names no host falls back to the unscoped p
   const run = green({ 'glab auth status': M0_STATUS });
   const r = await inScenario(s, [], DEPS(run));
   assert.equal(levels(r)['forge-auth'], 'warn');
-  assert.match(r.checks[3].detail, /records no host-bearing remote \("file:\/\/\/somewhere\/odd"\)/);
+  assert.match(r.checks[4].detail, /records no host-bearing remote \("file:\/\/\/somewhere\/odd"\)/);
   assert.deepEqual(run.calls.filter((c) => c.file === 'glab' && c.args[0] === 'auth').map((c) => c.args), [['auth', 'status']],
     'a host we could not derive is never guessed at');
 });
@@ -591,7 +698,7 @@ test('the SCOPED path fails when the project\'s own CLI is missing — that one 
   const r = await inScenario(s, [], DEPS(green({ 'glab auth status': { spawnError: 'ENOENT' } })));
   assert.equal(levels(r)['forge-auth'], 'fail');
   assert.equal(r.code, 1);
-  assert.match(r.checks[3].detail, /glab not found on PATH/);
+  assert.match(r.checks[4].detail, /glab not found on PATH/);
 });
 
 test('UNSCOPED, one CLI missing and the other healthy ⇒ warn, never a fail (2026-08-15)', async () => {
@@ -608,10 +715,10 @@ test('UNSCOPED, one CLI missing and the other healthy ⇒ warn, never a fail (20
   // WARN, not pass (the title always said so; the assertion did not until 2026-08-15): an absent
   // CLI withholds the pass, because the project this cwd cannot resolve may be the one that
   // needs it. Only "neither installed" is a fail.
-  assert.equal(levels(r)['forge-auth'], 'warn', r.checks[3].detail);
+  assert.equal(levels(r)['forge-auth'], 'warn', r.checks[4].detail);
   assert.equal(r.code, 0);
-  assert.match(r.checks[3].detail, /gh authenticated for every configured host \(github\.com\)/);
-  assert.match(r.checks[3].detail, /glab is not installed/, 'the missing CLI is named, not hidden');
+  assert.match(r.checks[4].detail, /gh authenticated for every configured host \(github\.com\)/);
+  assert.match(r.checks[4].detail, /glab is not installed/, 'the missing CLI is named, not hidden');
 });
 
 test('UNSCOPED with NEITHER glab nor gh installed ⇒ the one remaining FAIL', async () => {
@@ -624,7 +731,7 @@ test('UNSCOPED with NEITHER glab nor gh installed ⇒ the one remaining FAIL', a
   })));
   assert.equal(levels(r)['forge-auth'], 'fail');
   assert.equal(r.code, 1);
-  assert.match(r.checks[3].detail, /neither glab nor gh was found on PATH/);
+  assert.match(r.checks[4].detail, /neither glab nor gh was found on PATH/);
 });
 
 // --- branch protection ------------------------------------------------------------------------------
@@ -634,8 +741,8 @@ test('VERIFIED-unprotected ⇒ fail, exit 1', async () => {
   const r = await inScenario(s, [], DEPS(green({ [`${PROJ}/protected_branches`]: { stdout: '[]' } })));
   assert.equal(r.code, 1);
   assert.equal(levels(r)['branch-protection'], 'fail');
-  assert.match(r.checks[4].detail, /'main' is NOT protected on acme\/fix-proj/);
-  assert.match(r.checks[4].detail, /Settings → Repository → Protected branches/);
+  assert.match(r.checks[5].detail, /'main' is NOT protected on acme\/fix-proj/);
+  assert.match(r.checks[5].detail, /Settings → Repository → Protected branches/);
 });
 
 test('the agent identity CAN push ⇒ fail', async () => {
@@ -651,8 +758,8 @@ test('the agent identity CAN push ⇒ fail', async () => {
   })));
   assert.equal(r.code, 1);
   assert.equal(levels(r)['branch-protection'], 'fail');
-  assert.match(r.checks[4].detail, /CAN push 'main'/);
-  assert.match(r.checks[4].detail, /developer \(30\)/);
+  assert.match(r.checks[5].detail, /CAN push 'main'/);
+  assert.match(r.checks[5].detail, /developer \(30\)/);
 });
 
 test('an explicit user exception for OUR id ⇒ fail; another user\'s exception ⇒ pass', async () => {
@@ -667,11 +774,11 @@ test('an explicit user exception for OUR id ⇒ fail; another user\'s exception 
   const mine = await inScenario(s, [], DEPS(green({ [`${PROJ}/protected_branches`]: rule(7) })));
   assert.equal(mine.code, 1);
   assert.equal(levels(mine)['branch-protection'], 'fail');
-  assert.match(mine.checks[4].detail, /user 7\) is an explicit push exception/);
+  assert.match(mine.checks[5].detail, /user 7\) is an explicit push exception/);
 
   const theirs = await inScenario(s, [], DEPS(green({ [`${PROJ}/protected_branches`]: rule(99) })));
   assert.equal(theirs.code, 0);
-  assert.equal(levels(theirs)['branch-protection'], 'pass', theirs.checks[4].detail);
+  assert.equal(levels(theirs)['branch-protection'], 'pass', theirs.checks[5].detail);
 });
 
 test('a group exception is UNVERIFIABLE ⇒ warn, never a pass', async () => {
@@ -687,7 +794,7 @@ test('a group exception is UNVERIFIABLE ⇒ warn, never a pass', async () => {
   })));
   assert.equal(r.code, 0);
   assert.equal(levels(r)['branch-protection'], 'warn');
-  assert.match(r.checks[4].detail, /group 12, whose membership cannot be evaluated/);
+  assert.match(r.checks[5].detail, /group 12, whose membership cannot be evaluated/);
 });
 
 test('access_level 0 ("No one") does not grant us anything ⇒ pass', async () => {
@@ -701,7 +808,7 @@ test('access_level 0 ("No one") does not grant us anything ⇒ pass', async () =
       }]),
     },
   })));
-  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[4].detail);
+  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[5].detail);
 });
 
 test('a glab API error ⇒ warn (exit 0), stating best-effort honestly', async () => {
@@ -711,8 +818,8 @@ test('a glab API error ⇒ warn (exit 0), stating best-effort honestly', async (
   })));
   assert.equal(r.code, 0);
   assert.equal(levels(r)['branch-protection'], 'warn');
-  assert.match(r.checks[4].detail, /404 Not Found/);
-  assert.match(r.checks[4].detail, /only the server is authoritative/);
+  assert.match(r.checks[5].detail, /404 Not Found/);
+  assert.match(r.checks[5].detail, /only the server is authoritative/);
 });
 
 test('non-JSON glab output ⇒ warn, never a crash and never a pass', async () => {
@@ -720,7 +827,7 @@ test('non-JSON glab output ⇒ warn, never a crash and never a pass', async () =
   const r = await inScenario(s, [], DEPS(green({ [PROJ]: { stdout: '<html>login</html>' } })));
   assert.equal(r.code, 0);
   assert.equal(levels(r)['branch-protection'], 'warn');
-  assert.match(r.checks[4].detail, /did not return JSON/);
+  assert.match(r.checks[5].detail, /did not return JSON/);
 });
 
 test('unknown access level (permissions all null) ⇒ warn, not a pass by arithmetic', async () => {
@@ -730,7 +837,7 @@ test('unknown access level (permissions all null) ⇒ warn, not a pass by arithm
   })));
   assert.equal(r.code, 0);
   assert.equal(levels(r)['branch-protection'], 'warn');
-  assert.match(r.checks[4].detail, /access level is unknown/);
+  assert.match(r.checks[5].detail, /access level is unknown/);
 });
 
 test('an access-level list the server never sent ⇒ warn, NOT a verified pass', async () => {
@@ -745,8 +852,8 @@ test('an access-level list the server never sent ⇒ warn, NOT a verified pass',
     const r = await inScenario(s, [], DEPS(green({ [`${PROJ}/protected_branches`]: { stdout: JSON.stringify([rule]) } })));
     assert.equal(r.code, 0, what);
     assert.equal(levels(r)['branch-protection'], 'warn', `${what}: an unread permission list must never read as proven safe`);
-    assert.match(r.checks[4].detail, /could not be read/);
-    assert.match(r.checks[4].detail, /UNVERIFIED/);
+    assert.match(r.checks[5].detail, /could not be read/);
+    assert.match(r.checks[5].detail, /UNVERIFIED/);
   }
 });
 
@@ -755,7 +862,7 @@ test('an EMPTY access-level list is an answer (nobody may push) ⇒ still a pass
   const r = await inScenario(s, [], DEPS(green({
     [`${PROJ}/protected_branches`]: { stdout: JSON.stringify([{ name: 'main', push_access_levels: [], merge_access_levels: [] }]) },
   })));
-  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[4].detail);
+  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[5].detail);
 });
 
 // --- the cwd legion actually runs in ------------------------------------------------------------
@@ -777,8 +884,8 @@ test('from INSIDE a linked feature worktree — the cwd every session runs in �
   const run = green();
   const r = await inDir(wt, s.home, [], DEPS(run));
   assert.equal(r.code, 0, r.output);
-  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[4].detail);
-  assert.match(r.checks[4].detail, /VERIFIED on acme\/fix-proj/);
+  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[5].detail);
+  assert.match(r.checks[5].detail, /VERIFIED on acme\/fix-proj/);
   // …and the API was queried from the MAIN repository, not from the worktree.
   for (const c of run.calls.filter((c) => c.args[0] === 'api')) assert.equal(c.opts.cwd, s.repo);
 });
@@ -789,7 +896,7 @@ test('a REAL fail is still reported from inside a worktree — the check is live
   const r = await inDir(wt, s.home, [], DEPS(green({ [`${PROJ}/protected_branches`]: { stdout: '[]' } })));
   assert.equal(r.code, 1);
   assert.equal(levels(r)['branch-protection'], 'fail');
-  assert.match(r.checks[4].detail, /'main' is NOT protected on acme\/fix-proj/);
+  assert.match(r.checks[5].detail, /'main' is NOT protected on acme\/fix-proj/);
 });
 
 test('cwd outside any registered project ⇒ warn, not a crash', async () => {
@@ -799,7 +906,7 @@ test('cwd outside any registered project ⇒ warn, not a crash', async () => {
   const r = await inDir(outside, s.home, [], DEPS(green()));
   assert.equal(r.code, 0);
   assert.equal(levels(r)['branch-protection'], 'warn');
-  assert.match(r.checks[4].detail, /cannot resolve a registered project from cwd/);
+  assert.match(r.checks[5].detail, /cannot resolve a registered project from cwd/);
 });
 
 test('an UNREGISTERED repo names --root <main repo root> — never advice that would re-point the registration', async () => {
@@ -820,10 +927,10 @@ test('an UNREGISTERED repo names --root <main repo root> — never advice that w
   const r = await inDir(wt, s.home, [], DEPS(green()));
   assert.equal(r.code, 0);
   assert.equal(levels(r)['branch-protection'], 'warn');
-  assert.match(r.checks[4].detail, new RegExp(`repo ${root} is not a registered project`));
-  assert.ok(r.checks[4].detail.includes(`legion project init --root ${root}`),
-    `the remediation must name the repository root, got: ${r.checks[4].detail}`);
-  assert.ok(!r.checks[4].detail.includes(realpathSync(wt)), 'it must not point the operator at the worktree');
+  assert.match(r.checks[5].detail, new RegExp(`repo ${root} is not a registered project`));
+  assert.ok(r.checks[5].detail.includes(`legion project init --root ${root}`),
+    `the remediation must name the repository root, got: ${r.checks[5].detail}`);
+  assert.ok(!r.checks[5].detail.includes(realpathSync(wt)), 'it must not point the operator at the worktree');
 });
 
 test('an empty recorded protected set (--no-protected) ⇒ warn, never a silent pass', async () => {
@@ -833,7 +940,7 @@ test('an empty recorded protected set (--no-protected) ⇒ warn, never a silent 
   const r = await inScenario(s, [], DEPS(run));
   assert.equal(r.code, 0);
   assert.equal(levels(r)['branch-protection'], 'warn');
-  assert.match(r.checks[4].detail, /records no protected branches/);
+  assert.match(r.checks[5].detail, /records no protected branches/);
   assert.equal(run.calls.filter((c) => c.args[0] === 'api').length, 0);
 });
 
@@ -843,7 +950,7 @@ test('an unparseable recorded remote ⇒ warn, never a guessed project path', as
   writeJson(s.configPath, { ...cfg, remoteUrl: 'file:///somewhere/odd' });
   const r = await inScenario(s, [], DEPS(green()));
   assert.equal(levels(r)['branch-protection'], 'warn');
-  assert.match(r.checks[4].detail, /cannot derive a GitLab project path/);
+  assert.match(r.checks[5].detail, /cannot derive a GitLab project path/);
 });
 
 test('a wildcard rule covers the recorded branch ⇒ pass', async () => {
@@ -859,8 +966,8 @@ test('a wildcard rule covers the recorded branch ⇒ pass', async () => {
     },
   })));
   assert.equal(r.code, 0);
-  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[4].detail);
-  assert.match(r.checks[4].detail, /release\/1\.0/);
+  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[5].detail);
+  assert.match(r.checks[5].detail, /release\/1\.0/);
 });
 
 test('every recorded branch is checked: one protected, one not ⇒ fail naming the unprotected one', async () => {
@@ -868,8 +975,8 @@ test('every recorded branch is checked: one protected, one not ⇒ fail naming t
   const r = await inScenario(s, [], DEPS(green()));
   assert.equal(r.code, 1);
   assert.equal(levels(r)['branch-protection'], 'fail');
-  assert.match(r.checks[4].detail, /'release\/1\.0' is NOT protected/);
-  assert.ok(!r.checks[4].detail.includes("'main' is NOT protected"), 'main IS protected in the fixture');
+  assert.match(r.checks[5].detail, /'release\/1\.0' is NOT protected/);
+  assert.ok(!r.checks[5].detail.includes("'main' is NOT protected"), 'main IS protected in the fixture');
 });
 
 // --- remote-guards: the retired layer's leftovers, reported honestly ----------------------------
@@ -909,9 +1016,9 @@ test('a fresh registration carries no stub ⇒ remote-guards PASSES with the ser
   assert.ok(!existsSync(hookOf(s)), '`project init` must not install anything — the layer is retired');
   const r = await inScenario(s, [], DEPS(green()));
   assert.equal(r.code, 0, r.output);
-  assert.equal(levels(r)['remote-guards'], 'pass', r.checks[5].detail);
-  assert.match(r.checks[5].detail, /no leftover/);
-  assertServerOnlyFraming(r.checks[5].detail);
+  assert.equal(levels(r)['remote-guards'], 'pass', r.checks[6].detail);
+  assert.match(r.checks[6].detail, /no leftover/);
+  assertServerOnlyFraming(r.checks[6].detail);
 });
 
 test('a LEFTOVER legion stub ⇒ WARN naming the file, the consequence and the remedy — never a fail', async () => {
@@ -919,13 +1026,13 @@ test('a LEFTOVER legion stub ⇒ WARN naming the file, the consequence and the r
   plantStub(hookOf(s));
   const r = await inScenario(s, [], DEPS(green()));
   assert.equal(r.code, 0, 'a local file problem with a one-command remedy is not a red light');
-  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[5].detail);
-  assert.ok(r.checks[5].detail.includes(hookOf(s)), `the exact file must be named: ${r.checks[5].detail}`);
-  assert.match(r.checks[5].detail, /EVERY ordinary push/i, 'the consequence — bricked pushes — must be stated');
-  assert.match(r.checks[5].detail, /legion finalize/, "finalize's own push dies in the stub too");
-  assert.match(r.checks[5].detail, /legion project init/, 'the remedy must be nameable');
+  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[6].detail);
+  assert.ok(r.checks[6].detail.includes(hookOf(s)), `the exact file must be named: ${r.checks[6].detail}`);
+  assert.match(r.checks[6].detail, /EVERY ordinary push/i, 'the consequence — bricked pushes — must be stated');
+  assert.match(r.checks[6].detail, /legion finalize/, "finalize's own push dies in the stub too");
+  assert.match(r.checks[6].detail, /legion project init/, 'the remedy must be nameable');
   assert.ok(existsSync(hookOf(s)), 'doctor REPORTS the leftover, it never removes it — read-only absolutely');
-  assertServerOnlyFraming(r.checks[5].detail);
+  assertServerOnlyFraming(r.checks[6].detail);
 });
 
 test("a FOREIGN pre-push hook is the operator's business ⇒ PASS, and doctor does not touch it", async () => {
@@ -933,11 +1040,11 @@ test("a FOREIGN pre-push hook is the operator's business ⇒ PASS, and doctor do
   writeFileSync(hookOf(s), '#!/bin/sh\nexit 0\n');
   const r = await inScenario(s, [], DEPS(green()));
   assert.equal(r.code, 0);
-  assert.equal(levels(r)['remote-guards'], 'pass', r.checks[5].detail);
-  assert.match(r.checks[5].detail, /operator's own pre-push hook/);
-  assert.match(r.checks[5].detail, /untouched/);
+  assert.equal(levels(r)['remote-guards'], 'pass', r.checks[6].detail);
+  assert.match(r.checks[6].detail, /operator's own pre-push hook/);
+  assert.match(r.checks[6].detail, /untouched/);
   assert.equal(readFileSync(hookOf(s), 'utf8'), '#!/bin/sh\nexit 0\n', 'and doctor must not touch it');
-  assertServerOnlyFraming(r.checks[5].detail);
+  assertServerOnlyFraming(r.checks[6].detail);
 });
 
 test('a leftover stub WITHOUT the exec bit is litter, not a blocker ⇒ WARN saying which', async () => {
@@ -948,10 +1055,10 @@ test('a leftover stub WITHOUT the exec bit is litter, not a blocker ⇒ WARN say
   chmodSync(hookOf(s), 0o644);
   const r = await inScenario(s, [], DEPS(green()));
   assert.equal(r.code, 0);
-  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[5].detail);
-  assert.match(r.checks[5].detail, /blocks nothing/);
-  assert.match(r.checks[5].detail, /legion project init/);
-  assertServerOnlyFraming(r.checks[5].detail);
+  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[6].detail);
+  assert.match(r.checks[6].detail, /blocks nothing/);
+  assert.match(r.checks[6].detail, /legion project init/);
+  assertServerOnlyFraming(r.checks[6].detail);
 });
 
 test('the check reads the EFFECTIVE hooks dir — a stub in a core.hooksPath dir is one git runs', async () => {
@@ -962,20 +1069,20 @@ test('the check reads the EFFECTIVE hooks dir — a stub in a core.hooksPath dir
   // A stub at the DEFAULT path is invisible to git under the redirect: clean, git runs nothing.
   plantStub(hookOf(s));
   const clean = await inScenario(s, [], DEPS(green()));
-  assert.equal(levels(clean)['remote-guards'], 'pass', clean.checks[5].detail);
+  assert.equal(levels(clean)['remote-guards'], 'pass', clean.checks[6].detail);
   // A stub in the REDIRECTED dir (hand-copied, per the old composition advice) IS one git runs:
   // named for the operator to delete — removal never reaches into a redirected dir.
   plantStub(join(elsewhere, 'pre-push'));
   const r = await inScenario(s, [], DEPS(green()));
-  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[5].detail);
-  assert.ok(r.checks[5].detail.includes(join(elsewhere, 'pre-push')), r.checks[5].detail);
+  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[6].detail);
+  assert.ok(r.checks[6].detail.includes(join(elsewhere, 'pre-push')), r.checks[6].detail);
   assert.ok(existsSync(join(elsewhere, 'pre-push')), 'reported, never removed');
   assert.equal(sh(s.repo, 'config', '--get', 'core.hooksPath'), elsewhere, 'doctor never rewrites the setting');
   // THE REMEDY MUST BE TRUE: `legion project init` only ever removes from the DEFAULT hooks dir,
   // so prescribing it for a redirected-dir leftover would send the operator down the one path
   // guaranteed to change nothing. The detail must say "by hand" and must NOT name project init.
-  assert.match(r.checks[5].detail, /delete the file by hand/, r.checks[5].detail);
-  assert.doesNotMatch(r.checks[5].detail, /legion project init/,
+  assert.match(r.checks[6].detail, /delete the file by hand/, r.checks[6].detail);
+  assert.doesNotMatch(r.checks[6].detail, /legion project init/,
     'the remedy for a redirected-dir leftover is never a legion command');
 });
 
@@ -985,9 +1092,9 @@ test('from INSIDE a linked feature worktree a leftover is still found — worktr
   const wt = worktreeOf(s.repo);
   const r = await inDir(wt, s.home, [], DEPS(green()));
   assert.equal(r.code, 0, r.output);
-  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[5].detail);
-  assert.ok(r.checks[5].detail.includes(hookOf(s)),
-    `the stub lives in the COMMON dir, not under the worktree: ${r.checks[5].detail}`);
+  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[6].detail);
+  assert.ok(r.checks[6].detail.includes(hookOf(s)),
+    `the stub lives in the COMMON dir, not under the worktree: ${r.checks[6].detail}`);
 });
 
 test('no project resolves from cwd ⇒ WARN saying the stub state is UNKNOWN, like its neighbour', async () => {
@@ -996,11 +1103,11 @@ test('no project resolves from cwd ⇒ WARN saying the stub state is UNKNOWN, li
   mkdirSync(outside, { recursive: true });
   const r = await inDir(outside, s.home, [], DEPS(green()));
   assert.equal(r.code, 0);
-  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[5].detail);
+  assert.equal(levels(r)['remote-guards'], 'warn', r.checks[6].detail);
   assert.equal(levels(r)['branch-protection'], 'warn', 'the neighbouring check answers the same way');
-  assert.match(r.checks[5].detail, /cannot resolve a registered project from cwd/);
-  assert.match(r.checks[5].detail, /UNKNOWN/);
-  assertServerOnlyFraming(r.checks[5].detail);
+  assert.match(r.checks[6].detail, /cannot resolve a registered project from cwd/);
+  assert.match(r.checks[6].detail, /UNKNOWN/);
+  assertServerOnlyFraming(r.checks[6].detail);
 });
 
 test('EVERY leftover state is pass-or-warn — the check has no fail branch at all', async () => {
@@ -1017,7 +1124,7 @@ test('EVERY leftover state is pass-or-warn — the check has no fail branch at a
     const s = scenario();
     mutate(s);
     const r = await inScenario(s, [], DEPS(green()));
-    const c = r.checks[5];
+    const c = r.checks[6];
     assert.equal(c.check, 'remote-guards');
     assert.ok(c.level !== 'fail', `${name} must never fail doctor: ${c.detail}`);
     assert.equal(r.code, 0, `${name}: exit 0, nothing else is red in this fixture`);
@@ -1043,10 +1150,10 @@ test('branch-protection keeps its own three-valued voice while remote-guards war
   const s = scenario();
   plantStub(hookOf(s));
   const r = await inScenario(s, [], DEPS(green()));
-  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[4].detail);
-  assert.match(r.checks[4].detail, /server-side protection VERIFIED/);
+  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[5].detail);
+  assert.match(r.checks[5].detail, /server-side protection VERIFIED/);
   assert.equal(levels(r)['remote-guards'], 'warn');
-  assert.match(r.output, /doctor: 5 pass, 1 warn, 0 fail/);
+  assert.match(r.output, /doctor: 6 pass, 1 warn, 0 fail/);
 });
 
 // --- output shapes -----------------------------------------------------------------------------------
@@ -1056,7 +1163,7 @@ test('--json emits a complete machine-readable array and nothing else', async ()
   const r = await inScenario(s, ['--json'], DEPS(green()));
   const parsed = JSON.parse(r.output);
   assert.ok(Array.isArray(parsed));
-  assert.equal(parsed.length, 6);
+  assert.equal(parsed.length, 7);
   assert.deepEqual(parsed.map((c) => c.check), CHECK_IDS);
   for (const c of parsed) {
     assert.deepEqual(Object.keys(c).sort(), ['check', 'detail', 'level']);
@@ -1064,7 +1171,7 @@ test('--json emits a complete machine-readable array and nothing else', async ()
     assert.equal(typeof c.detail, 'string');
     assert.ok(c.detail.length > 0, `${c.check} must carry a human detail`);
   }
-  assert.ok(!r.output.includes('doctor: 6 pass'), 'the human summary must not pollute the JSON');
+  assert.ok(!r.output.includes('doctor: 7 pass'), 'the human summary must not pollute the JSON');
   assert.ok(!/^PASS /m.test(r.output), 'the human table must not pollute the JSON');
 });
 
@@ -1147,8 +1254,8 @@ test('protected_branches is paged: a rule on page 2 is found, not reported as un
     [PROT_PAGE(2)]: { stdout: JSON.stringify(MAINTAINER_ONLY) },
   });
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[4].detail);
-  assert.match(r.checks[4].detail, /VERIFIED on acme\/fix-proj/);
+  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[5].detail);
+  assert.match(r.checks[5].detail, /VERIFIED on acme\/fix-proj/);
   const pages = run.calls.filter((c) => String(c.args[1] ?? '').includes('protected_branches'));
   assert.equal(pages.length, 2, `expected exactly 2 page requests, got ${pages.map((c) => c.args[1]).join(' | ')}`);
 });
@@ -1159,8 +1266,8 @@ test('a list too long to finish reading is UNVERIFIED, never a verdict in either
   // tell" — not pass (nothing was checked) and not fail (nothing was disproved).
   const run = green({ [`${PROJ}/protected_branches`]: { stdout: JSON.stringify(filler(100)) } });
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(levels(r)['branch-protection'], 'warn', r.checks[4].detail);
-  assert.match(r.checks[4].detail, /could not be read completely/);
+  assert.equal(levels(r)['branch-protection'], 'warn', r.checks[5].detail);
+  assert.match(r.checks[5].detail, /could not be read completely/);
   assert.equal(r.code, 0, 'unverifiable is warn, so doctor still exits 0');
 });
 
@@ -1194,8 +1301,8 @@ const ghScenarioDoctor = (over = {}) => [withGithubRemote(scenario()), ghGreen(o
 test('github: the auth check probes gh — never glab — for a github.com project', async () => {
   const [s, run] = ghScenarioDoctor();
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[3].detail);
-  assert.match(r.checks[3].detail, /gh authenticated for github\.com/);
+  assert.equal(levels(r)['forge-auth'], 'pass', r.checks[4].detail);
+  assert.match(r.checks[4].detail, /gh authenticated for github\.com/);
   assert.deepEqual(
     run.calls.filter((c) => c.args[0] === 'auth').map((c) => [c.file, ...c.args]),
     [['gh', 'auth', 'status', '--hostname', 'github.com']],
@@ -1210,27 +1317,27 @@ test('github: an unauthenticated gh FAILS scoped, naming the gh remedy', async (
   const r = await inScenario(s, [], DEPS(run));
   assert.equal(levels(r)['forge-auth'], 'fail');
   assert.equal(r.code, 1);
-  assert.match(r.checks[3].detail, /gh is installed but not authenticated for github\.com/);
-  assert.match(r.checks[3].detail, /gh auth login --hostname github\.com/);
+  assert.match(r.checks[4].detail, /gh is installed but not authenticated for github\.com/);
+  assert.match(r.checks[4].detail, /gh auth login --hostname github\.com/);
   // …and protection is then UNVERIFIABLE, never "unprotected".
   assert.equal(levels(r)['branch-protection'], 'warn');
-  assert.match(r.checks[4].detail, /gh is not verified authenticated \(see the forge-auth check\)/);
+  assert.match(r.checks[5].detail, /gh is not verified authenticated \(see the forge-auth check\)/);
 });
 
 test('github: a missing gh FAILS with the GitHub install remedy, not the GitLab one', async () => {
   const [s, run] = ghScenarioDoctor({ 'gh auth status --hostname github.com': { spawnError: 'ENOENT' } });
   const r = await inScenario(s, [], DEPS(run));
   assert.equal(levels(r)['forge-auth'], 'fail');
-  assert.match(r.checks[3].detail, /gh not found on PATH/);
-  assert.match(r.checks[3].detail, /https:\/\/cli\.github\.com/);
+  assert.match(r.checks[4].detail, /gh not found on PATH/);
+  assert.match(r.checks[4].detail, /https:\/\/cli\.github\.com/);
 });
 
 test('github: protected + the identity cannot push ⇒ VERIFIED pass', async () => {
   const [s, run] = ghScenarioDoctor();
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[4].detail);
+  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[5].detail);
   assert.equal(r.code, 0, r.output);
-  assert.match(r.checks[4].detail, /server-side protection VERIFIED on acme\/fix-proj/);
+  assert.match(r.checks[5].detail, /server-side protection VERIFIED on acme\/fix-proj/);
   // The admin-only protection detail is NOT consulted for a non-admin identity: it would 403,
   // and an error doctor provoked itself is not evidence about the repository.
   assert.ok(!run.calls.some((c) => c.key.includes('/protection')), 'the admin-only endpoint stays unprobed');
@@ -1244,8 +1351,8 @@ test('github: neither classic protection nor a ruleset rule ⇒ VERIFIED unprote
   const r = await inScenario(s, [], DEPS(run));
   assert.equal(levels(r)['branch-protection'], 'fail');
   assert.equal(r.code, 1);
-  assert.match(r.checks[4].detail, /'main' is NOT protected on acme\/fix-proj/);
-  assert.match(r.checks[4].detail, /Settings → Branches \(or Rules → Rulesets\)/);
+  assert.match(r.checks[5].detail, /'main' is NOT protected on acme\/fix-proj/);
+  assert.match(r.checks[5].detail, /Settings → Branches \(or Rules → Rulesets\)/);
 });
 
 test('github: a ruleset rule protects a branch classic protection does not report', async () => {
@@ -1254,7 +1361,7 @@ test('github: a ruleset rule protects a branch classic protection does not repor
     [`${GH_REPO}/rules/branches/main`]: { stdout: JSON.stringify([{ type: 'non_fast_forward' }, { type: 'deletion' }]) },
   });
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[4].detail);
+  assert.equal(levels(r)['branch-protection'], 'pass', r.checks[5].detail);
 });
 
 test('github: write access with unreadable rules ⇒ WARN naming the common case, never a green', async () => {
@@ -1262,11 +1369,11 @@ test('github: write access with unreadable rules ⇒ WARN naming the common case
     [GH_REPO]: { stdout: JSON.stringify({ permissions: { admin: false, push: true, pull: true } }) },
   });
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(levels(r)['branch-protection'], 'warn', r.checks[4].detail);
+  assert.equal(levels(r)['branch-protection'], 'warn', r.checks[5].detail);
   assert.equal(r.code, 0, 'an unknown must not fail the command');
-  assert.match(r.checks[4].detail, /the agent identity has write access/);
-  assert.match(r.checks[4].detail, /need admin to read — the common GitHub case/);
-  assert.match(r.checks[4].detail, /best-effort/);
+  assert.match(r.checks[5].detail, /the agent identity has write access/);
+  assert.match(r.checks[5].detail, /need admin to read — the common GitHub case/);
+  assert.match(r.checks[5].detail, /best-effort/);
 });
 
 test('github: an ADMIN identity is checked against the detail endpoint and fails when unbound', async () => {
@@ -1281,9 +1388,9 @@ test('github: an ADMIN identity is checked against the detail endpoint and fails
     },
   });
   const r1 = await inScenario(s1, [], DEPS(run1));
-  assert.equal(levels(r1)['branch-protection'], 'fail', r1.checks[4].detail);
-  assert.match(r1.checks[4].detail, /the agent identity is an ADMIN of acme\/fix-proj and 'main' does not bind it/);
-  assert.match(r1.checks[4].detail, /enforce_admins is off/);
+  assert.equal(levels(r1)['branch-protection'], 'fail', r1.checks[5].detail);
+  assert.match(r1.checks[5].detail, /the agent identity is an ADMIN of acme\/fix-proj and 'main' does not bind it/);
+  assert.match(r1.checks[5].detail, /enforce_admins is off/);
 
   // enforce_admins ON with a PR requirement: VERIFIED good even for an admin.
   const [s2, run2] = ghScenarioDoctor({
@@ -1293,7 +1400,7 @@ test('github: an ADMIN identity is checked against the detail endpoint and fails
     },
   });
   const r2 = await inScenario(s2, [], DEPS(run2));
-  assert.equal(levels(r2)['branch-protection'], 'pass', r2.checks[4].detail);
+  assert.equal(levels(r2)['branch-protection'], 'pass', r2.checks[5].detail);
 });
 
 test('github: a WILDCARD recorded branch is UNVERIFIABLE, never a verdict either way', async () => {
@@ -1304,8 +1411,8 @@ test('github: a WILDCARD recorded branch is UNVERIFIABLE, never a verdict either
   const r = await inScenario(s, [], DEPS(ghGreen()));
   assert.equal(levels(r)['branch-protection'], 'warn');
   assert.equal(r.code, 0);
-  assert.match(r.checks[4].detail, /'release\/\*' is a wildcard pattern/);
-  assert.match(r.checks[4].detail, /cannot be queried per pattern/);
+  assert.match(r.checks[5].detail, /'release\/\*' is a wildcard pattern/);
+  assert.match(r.checks[5].detail, /cannot be queried per pattern/);
 });
 
 test('github: a nested remote path is refused rather than audited as owner/repo', async () => {
@@ -1315,7 +1422,7 @@ test('github: a nested remote path is refused rather than audited as owner/repo'
     'gh auth status --hostname github.com': { stderr: '✓ Logged in to github.com account legion-bot\n' },
   })));
   assert.equal(levels(r)['branch-protection'], 'warn');
-  assert.match(r.checks[4].detail, /cannot derive an owner\/repo path/);
+  assert.match(r.checks[5].detail, /cannot derive an owner\/repo path/);
 });
 
 test('the forge INFO line names the value and the level that decided it — and is absent from --json', async () => {
@@ -1344,10 +1451,10 @@ test('a corrupt org.json makes the forge UNRESOLVED — doctor refuses to guess 
   const [s, run] = ghScenarioDoctor();
   writeFileSync(join(s.home, 'orgs', 'default', 'org.json'), '{ not json\n');
   const r = await inScenario(s, [], DEPS(run));
-  assert.equal(levels(r)['forge-auth'], 'warn', r.checks[3].detail);
+  assert.equal(levels(r)['forge-auth'], 'warn', r.checks[4].detail);
   assert.equal(r.code, 0, 'an unknown must not fail the command');
-  assert.match(r.checks[3].detail, /the forge for project default\/fix-proj could not be resolved/);
-  assert.match(r.checks[3].detail, /doctor will not guess which CLI to verify/);
+  assert.match(r.checks[4].detail, /the forge for project default\/fix-proj could not be resolved/);
+  assert.match(r.checks[4].detail, /doctor will not guess which CLI to verify/);
   assert.ok(!run.calls.some((c) => c.args[0] === 'auth'), 'no CLI is probed when none is known to be right');
   // Protection is then UNVERIFIABLE, never "unprotected".
   assert.equal(levels(r)['branch-protection'], 'warn');
@@ -1379,7 +1486,7 @@ test('github: an underivable host makes protection UNVERIFIED rather than probin
   writeJson(s.configPath, { ...readJson(s.configPath), forge: 'github', remoteUrl: 'file:///somewhere/odd' });
   const r = await inScenario(s, [], DEPS(ghGreen({ 'gh auth status': { spawnError: 'ENOENT' } })));
   assert.equal(levels(r)['branch-protection'], 'warn');
-  assert.match(r.checks[4].detail, /gh is not verified authenticated|cannot derive a host from the recorded remote/);
+  assert.match(r.checks[5].detail, /gh is not verified authenticated|cannot derive a host from the recorded remote/);
 });
 
 test('github: a permissions object without boolean push/admin is UNKNOWN, never a verified green', async () => {
@@ -1389,6 +1496,6 @@ test('github: a permissions object without boolean push/admin is UNKNOWN, never 
     const [s, run] = ghScenarioDoctor({ [GH_REPO]: { stdout: JSON.stringify({ permissions: perms }) } });
     const r = await inScenario(s, [], DEPS(run));
     assert.equal(levels(r)['branch-protection'], 'warn', `${JSON.stringify(perms)} must not pass`);
-    assert.match(r.checks[4].detail, /without boolean push\/admin fields/);
+    assert.match(r.checks[5].detail, /without boolean push\/admin fields/);
   }
 });

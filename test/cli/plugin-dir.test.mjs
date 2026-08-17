@@ -18,7 +18,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isMarketplaceInstall, launchCommand, marketplacePluginsRoot, shellQuote } from '../../src/cli/feature.mjs';
+import { isMarketplaceClone, isMarketplaceInstall, launchCommand, marketplaceClonesRoot, marketplacePluginsRoot, shellQuote } from '../../src/cli/feature.mjs';
 
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
@@ -83,6 +83,75 @@ test('CLAUDE_CONFIG_DIR relocates the marketplace root, and is read at call time
     delete process.env.CLAUDE_CONFIG_DIR;
   }
   assert.equal(isMarketplaceInstall(root), false, 'and the answer follows the env back');
+});
+
+test('isMarketplaceClone tells the durable clone from everything else under plugins/', () => {
+  // The finer predicate setup composes with isMarketplaceInstall: true only under
+  // <config dir>/plugins/marketplaces — the git clone Claude Code pulls — never for the
+  // swept snapshot cache or a dev checkout.
+  const plugins = join(homedir(), '.claude', 'plugins');
+  assert.equal(isMarketplaceClone(join(plugins, 'marketplaces', 'legion')), true);
+  assert.equal(isMarketplaceClone(join(plugins, 'marketplaces', 'legion', 'src', 'cli')), true, 'children of a clone are inside it');
+  assert.equal(isMarketplaceClone(join(plugins, 'cache', 'legion', 'legion', 'abc123')), false, 'the snapshot cache is NOT a clone');
+  assert.equal(isMarketplaceClone(join(TMP, 'checkouts', 'legion3')), false, 'a dev checkout is not a clone');
+  assert.equal(isMarketplaceClone(join(plugins, 'marketplacesfoo', 'legion')), false, 'containment is by segment, not string prefix');
+  assert.equal(marketplaceClonesRoot(), join(plugins, 'marketplaces'));
+});
+
+test('isMarketplaceClone follows CLAUDE_CONFIG_DIR at call time, like the plugins root', () => {
+  const relocated = join(TMP, 'claude-config-clone');
+  const clone = join(relocated, 'plugins', 'marketplaces', 'legion');
+  assert.equal(isMarketplaceClone(clone), false, 'without the env var, that path is ordinary');
+  process.env.CLAUDE_CONFIG_DIR = relocated;
+  try {
+    assert.equal(marketplaceClonesRoot(), join(relocated, 'plugins', 'marketplaces'));
+    assert.equal(isMarketplaceClone(clone), true);
+  } finally {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  }
+  assert.equal(isMarketplaceClone(clone), false, 'and the answer follows the env back');
+});
+
+// GATED TO THE CASE-INSENSITIVE PLATFORMS, exactly like the fold it rides with (feature.mjs):
+// darwin and win32 are where two normalization forms name ONE file. On Linux they are two
+// different directories, and folding them would be a defect rather than a fix.
+const NORMALIZING_FS = process.platform === 'darwin' || process.platform === 'win32';
+
+test('containment survives Unicode normalization — one path, two spellings', {
+  skip: NORMALIZING_FS ? false : 'normalization folding is gated to darwin/win32',
+}, () => {
+  // The two sides reach these predicates from different producers: one from argv or a manifest,
+  // the other composed from homedir(). A directory carrying any non-ASCII character can be spelled
+  // decomposed on one side and composed on the other for the SAME directory, and realpathSync
+  // canonicalizes symlinks and case — not Unicode form. Both predicates then go false TOGETHER,
+  // which is the dangerous direction: setup reads the clone as a dev checkout and runs
+  // `marketplace add <clone path>`, the directory-source re-registration that ends auto-update.
+  const home = join(TMP, 'Développement');
+  const nfc = join(home, 'plugins', 'marketplaces', 'legion').normalize('NFC');
+  const nfd = nfc.normalize('NFD');
+  assert.notEqual(nfc, nfd, 'the two spellings must genuinely differ, or this test proves nothing');
+  process.env.CLAUDE_CONFIG_DIR = home.normalize('NFD');
+  try {
+    assert.equal(isMarketplaceInstall(nfc), true, 'NFC root against an NFD-spelled base');
+    assert.equal(isMarketplaceClone(nfc), true);
+    process.env.CLAUDE_CONFIG_DIR = home.normalize('NFC');
+    assert.equal(isMarketplaceClone(nfd), true, 'and NFD root against an NFC-spelled base');
+  } finally {
+    delete process.env.CLAUDE_CONFIG_DIR;
+  }
+});
+
+test('launchCommand omits --plugin-dir for cache AND clone roots alike — the split does not touch it', () => {
+  // The new clone/cache distinction exists for setup only; a launch printed from either copy
+  // must stay flagless, because either way the plugin is genuinely installed.
+  const plugins = join(homedir(), '.claude', 'plugins');
+  for (const root of [
+    join(plugins, 'cache', 'legion', 'legion', '3abc27f94533'),
+    join(plugins, 'marketplaces', 'legion'),
+  ]) {
+    const line = launchCommand('interactive', F('/tmp/wt'), root);
+    assert.ok(!line.includes('--plugin-dir'), `no flag for ${root}:\n  ${line}`);
+  }
 });
 
 test('the default root is derived from the CLI file location — not cwd', () => {

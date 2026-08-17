@@ -20,13 +20,27 @@ allowed-tools: [Bash, Read]
 
 The user wants the observation UI.
 
-1. **Launch it in the background**, passing through any flags they gave (`--port`, `--host`,
+1. **Bring the bundle up to date first**: `legion viewer-build`. Always run it, not only on a
+   refusal — on a marketplace install, Claude Code auto-pulls new viewer sources under a
+   previously built bundle, and this command is what notices (it skips in a second when the
+   bundle already matches the sources, builds on first use, rebuilds when they drifted).
+2. **A failed build usually does not take the viewer away — with one exception you must read the
+   message for.** If step 1 fails, relay the failure and then:
+   - **It refused because another build holds the lock** (the message names the lock file): do
+     NOT launch. That other build is rewriting `viewer/dist` right now, and serving mid-rewrite is
+     how a blank page gets blamed on the viewer. Wait for it and re-run step 1.
+   - **Any other failure** (`npm ci` offline is the ordinary one, not a defect): launch anyway if
+     a bundle is still there — `legion viewer` serves it and prints its own stale warning when it
+     applies — and hand over the URL alongside the failure, so they know the UI may be one pull
+     old. If `legion viewer` refuses instead, the bundle is gone: a build killed while vite was
+     writing empties `dist` and takes the working bundle with it. Relay that refusal, which names
+     `legion viewer-build` as its own remedy.
+   When no bundle can be served at all, that is the end of the road: relay it, and offer
+   `legion viewer --api-only`.
+3. **Launch it in the background**, passing through any flags they gave (`--port`, `--host`,
    `--org`, `--api-only`): `legion viewer`. It prints the URL on stdout as soon as it is
    listening.
-2. **If it refuses because the bundle is missing** — the ordinary first-run state, not a defect —
-   run `legion viewer-build`, then launch again. That command is safe to run at any time: it skips
-   in a second when the bundle is already there.
-3. **Hand the user the URL.** That is the deliverable.
+4. **Hand the user the URL.** That is the deliverable.
 
 Worth saying once when you report, in your own words: the viewer is read-only and disposable —
 closing the tab or killing the process changes nothing about any feature, and approvals it shows

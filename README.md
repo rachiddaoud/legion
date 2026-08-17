@@ -16,8 +16,8 @@ node ~/.claude/plugins/marketplaces/legion/bin/legion.mjs setup
 ```
 
 These commands register the marketplace and install the plugin. Claude Code keeps a git clone at
-`~/.claude/plugins/marketplaces/legion` (or `$CLAUDE_CONFIG_DIR/plugins/marketplaces/legion`), and
-will pull updates when auto-update is enabled.
+`~/.claude/plugins/marketplaces/legion` (or `$CLAUDE_CONFIG_DIR/plugins/marketplaces/legion` if
+you set `CLAUDE_CONFIG_DIR`) and will pull updates when auto-update is enabled.
 
 To run from a local checkout:
 
@@ -88,9 +88,39 @@ Agents propose; the kernel records evidence and enforces safety gates. The inten
 
 ## Day to day
 
-- Add common read-only kernel commands to `~/.claude/settings.json` to reduce prompts.
-- Use `gh` or `glab` configured for your forge; some doctor checks and finalize operations require them.
-- Run `legion doctor` to validate environment and get actionable remedies for common issues.
+- Reduce interactive prompts by allow-listing Claude commands you trust. Add common read-only `legion` commands to `~/.claude/settings.json` so Claude Code can run them without asking each time. Example:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(legion state *)",
+      "Bash(legion gate *)",
+      "Bash(legion plan *)",
+      "Bash(legion feature status*)",
+      "Bash(legion doctor*)"
+    ]
+  }
+}
+```
+
+Keep any write or destructive commands off the allow-list for safety.
+
+- Install and authenticate your forge CLI. Legion uses the platform CLI for some operations (creating PRs, checking branch protection). For GitHub:
+
+```sh
+gh auth login
+```
+
+For GitLab:
+
+```sh
+glab auth login
+```
+
+Ensure the CLI is on your PATH so `legion` can call it.
+
+- Run `legion doctor` to validate your environment. It checks common failure points (git, Node, PATH links, and forge CLI auth) and prints actionable remedies (for example: “install gh”, “run gh auth login”, or “npm rm -g legion if PATH links to the clone”).
 
 ## Quick reference
 

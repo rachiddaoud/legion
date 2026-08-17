@@ -28,12 +28,12 @@
 // (single-operator threat model), but the thing being exposed is the read-only state of every
 // feature registered on it, so it costs one loud stderr line. The bind address also switches OFF
 // the server's loopback Host check (server.mjs header), which is the other half of the same choice.
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../kernel/args.mjs';
 import { safeSegment } from '../kernel/paths.mjs';
-import { bundleBuilt } from './_viewer-bundle.mjs';
+import { bundleBuilt, readBundleEvidence } from './_viewer-bundle.mjs';
 import { createViewerServer } from './_viewer/server.mjs';
 
 const USAGE = 'legion viewer [--port <n>] [--host <addr>] [--api-only] [--org <org>]';
@@ -65,6 +65,32 @@ export function distRefusal(distDir) {
     + `  or by hand:     cd ${join(REPO_ROOT, 'viewer')} && npm ci && npm run build\n`
     + '  or serve the read-only JSON API alone:  legion viewer --api-only\n'
     + '(the bundle is gitignored and built on demand — nothing is broken, it has just never been built here)\n';
+}
+
+/** The stale-bundle warning: a WARNING and not a refusal, deliberately. A bundle built from
+ * older sources still WORKS — refusing it would take the viewer away exactly when the operator
+ * wants to look at something — but serving it silently is the degradation the marketplace
+ * auto-pull makes routine (Claude Code pulls new viewer/ sources under a built dist and nothing
+ * else would say so). Read-only: the CHECK is answered by _viewer-bundle.mjs's digest machinery,
+ * behind this file's seal; the FIX stays `legion viewer-build`. */
+export function staleWarning(distDir) {
+  return `legion viewer: the bundle at ${distDir} was built from OLDER viewer/ sources — serving it anyway; `
+    + 'run `legion viewer-build` to refresh it\n';
+}
+
+/** Is the built bundle at `distDir` stale against its own viewer/ sources? Answered with
+ * viewer-build's definition (the _viewer-bundle.mjs digest vs the stamp in dist); viewer/ is
+ * dist's parent by construction. Every UNANSWERABLE branch — unreadable tree, missing or
+ * unreadable stamp (the pre-stamp install) — returns false, deliberately: an unknown is an
+ * unknown, and a warning that fired on every pre-stamp install would teach operators to ignore
+ * it. Called from run(), not viewerCore, so the pure core stays independent of the real
+ * filesystem the digest must read. EXPORTED for its own test. */
+export function bundleStale(distDir, { listSources = undefined, readFile = readFileSync } = {}) {
+  // ONE measurement, shared with viewerBuildCore (readBundleEvidence) — this file only supplies
+  // the POLICY: both nulls are unknowns, and an unknown is not a warning.
+  const opts = listSources === undefined ? { readFile } : { listSources, readFile };
+  const { digest, stampDigest } = readBundleEvidence(dirname(distDir), distDir, opts);
+  return digest !== null && stampDigest !== null && digest !== stampDigest;
 }
 
 /** The exposure warning for a non-loopback bind, one definition (header). */
@@ -140,6 +166,11 @@ export async function run(argv) {
   if (cfg.refusal !== null) {
     process.stderr.write(cfg.refusal);
     return 1;
+  }
+  // The stale check runs HERE, against the real tree (bundleStale's docblock): a bundle built
+  // from older sources still serves, but never silently.
+  if (cfg.distDir !== null && cfg.haveDist && bundleStale(cfg.distDir)) {
+    process.stderr.write(staleWarning(cfg.distDir));
   }
 
   const server = createViewerServer({ distDir: cfg.distDir, org: cfg.org, host: cfg.host });

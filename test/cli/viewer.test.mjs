@@ -39,7 +39,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixture, planTask, NOW } from '../helpers/fixture.mjs';
-import { DEFAULT_HOST, DEFAULT_PORT, distRefusal, viewerCore } from '../../src/cli/viewer.mjs';
+import { DEFAULT_HOST, DEFAULT_PORT, bundleStale, distRefusal, staleWarning, viewerCore } from '../../src/cli/viewer.mjs';
+import { STAMP_FILE, computeSourceDigest } from '../../src/cli/_viewer-bundle.mjs';
 import { ALLOWED_METHODS, ROUTES, createViewerServer, readFeatureCommits } from '../../src/cli/_viewer/server.mjs';
 import { featureSummaries, featureView } from '../../src/cli/_viewer/projection.mjs';
 
@@ -210,6 +211,34 @@ test('the real CLI starts on a free port, prints the URL to stdout, and stops on
     });
     assert.equal(code, 0, 'SIGINT must close the viewer cleanly');
   } finally { h.cleanup(); }
+});
+
+// --- A2. the stale-bundle warning (bundleStale — run()'s check, kept out of the pure core) --------
+
+test('bundleStale: stale when digest and stamp disagree, quiet on every unanswerable branch', () => {
+  const dist = '/fake/viewer/dist';
+  const sources = () => ['src/App.tsx'];
+  const readFor = (content, stamp) => (p) => {
+    if (p === join(dist, STAMP_FILE)) {
+      if (stamp === null) throw new Error('ENOENT');
+      return `${stamp}\n`;
+    }
+    return content;
+  };
+  const digestOf = (content) => computeSourceDigest('/fake/viewer', { listSources: sources, readFile: () => content });
+
+  // Disagreement ⇒ stale: the auto-pull left a bundle built from older sources.
+  assert.equal(bundleStale(dist, { listSources: sources, readFile: readFor('v2', digestOf('v1')) }), true);
+  // Agreement ⇒ fresh.
+  assert.equal(bundleStale(dist, { listSources: sources, readFile: readFor('v1', digestOf('v1')) }), false);
+  // No stamp (the pre-stamp install) ⇒ QUIET — a warning firing on every legacy install would
+  // teach operators to ignore it; `legion viewer-build` is where that state self-heals.
+  assert.equal(bundleStale(dist, { listSources: sources, readFile: readFor('v1', null) }), false);
+  // Unreadable tree ⇒ quiet: an unknown is an unknown.
+  assert.equal(bundleStale(dist, { listSources: () => { throw new Error('EACCES'); }, readFile: () => '' }), false);
+  // The warning names the dist and the one remedy.
+  assert.match(staleWarning(dist), /OLDER viewer\/ sources/);
+  assert.match(staleWarning(dist), /legion viewer-build/);
 });
 
 // --- B. THE PROHIBITIONS --------------------------------------------------------------------------
