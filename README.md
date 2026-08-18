@@ -37,7 +37,7 @@ Enable automatic updates once via `/plugin` → Marketplaces → *legion* or add
 Manual update:
 
 ```sh
-claude plugin marketplace update legion && claude plugin update legion
+claude plugin marketplace update legion && claude plugin update legion@legion
 ```
 
 ## Start a feature
