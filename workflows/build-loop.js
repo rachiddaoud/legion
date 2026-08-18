@@ -890,7 +890,7 @@ for (const group of groups) {
     const planTier = riskTier(task)
     if (FULL && planTier !== null) {
       tiersIgnored.push({ taskId: task.id, tier: planTier })
-      log(`${task.id}: plan risk tier '${planTier}' IGNORED — the full profile reviews every task at full depth`)
+      log(`${task.id}: plan risk tier '${planTier}' IGNORED — the full profile does not take the plan's discount`)
     }
     const tier = FULL ? null : planTier
     const buildModel = (ARGS.model != null) ? MODEL : (tier ? 'sonnet' : MODEL)

@@ -535,7 +535,7 @@ facts survive to reach it.
   plan tiered it that way**. This is a different fact from `degraded` and must stay a different
   line in the artifact: one is cheapness the human approved, the other is a hole in the review.
 - **`tiersIgnored`** — `{taskId, tier}` for every task whose plan risk tier the **full** profile
-  overrode, reviewing it at full depth instead. The mirror image of `singleLens`, and empty on
+  overrode, declining the discount. The mirror image of `singleLens`, and empty on
   every other profile: without it the plan says "this task was tiered `low`" and nothing says the
   loop declined to take the discount.
 - **`squashDeviations`** — a milestone whose task commits were kept because `squash: false` was
@@ -600,7 +600,7 @@ flags the milestone's tasks `notes.visual` — the visual reviewer, with every v
      because the approved plan tiered it `low` or `trivial`. Keep it a separate line from
      `degraded`: the pre-merge human is entitled to tell approved cheapness from a missing lens.
    - **Every task returned in `tiersIgnored`, with its tier** — the opposite entry, and only on the
-     **full** profile: the plan tiered it cheap and the profile reviewed it at full depth anyway.
+     **full** profile: the plan tiered it cheap and the profile declined the discount.
    - **Every `squashDeviations` entry, with the reason** you are supplying for it.
    - **Every accepted residual** (RR3): the findings not fixed, each with the reason.
    - **Every adjudicated consult fail** (RR4): the rejected finding, why, and the residual.
@@ -659,8 +659,8 @@ just earned.
    findings on the full profile, anything the reviewers marked `unverified`, **every task
    the review artifact records as `degraded`** — a task reviewed by one lens because codex was
    unavailable — **every task it records under `singleLens`, with its plan-assigned tier** — one
-   lens by design, which is a different thing — **every task under `tiersIgnored`** — reviewed
-   deeper than the plan asked, because the profile is `full` — and **the accepted residuals and adjudicated
+   lens by design, which is a different thing — **every task under `tiersIgnored`** — the profile
+   declined the plan's cheapness, because the profile is `full` — and **the accepted residuals and adjudicated
    consult fails** the artifact records (RR3, RR4). Read all of that off the artifact, not off your
    memory of the build stage.
    The human is deciding on this evidence; a thinner review than the profile promised, and a
