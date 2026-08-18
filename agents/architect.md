@@ -36,11 +36,14 @@ decision points your plan actually needs.
   approved spec is pinned to that shared contract: the spec approval's subject is the spec's
   bytes **and the contract's live bytes** together. Read the contract — a secondary's
   `initiative.contract.path`, a primary's own recorded `contract` artifact — before you plan the
-  seams that cross the boundary, and plan against **it**, not against what the sibling repository
-  happens to do today. **Treat a contract change as a SPEC-LEVEL change, not a plan detail:** the
-  cascade will already have dropped both siblings' spec approvals, so the plan you are asked for
-  is a plan against a re-approved spec, and a contract question you cannot answer from the file is
-  a question for the session, never an assumption in a task.
+  seams that cross the boundary, and plan against **it**. But **verify every clause you depend on
+  against the sibling repository's real writer or reader**, citing the `file:line`: the contract is
+  the agreement, the sibling's code is the fact, and where they diverge the plan is built on the
+  agreement while the product runs on the fact. **Treat a contract change as a SPEC-LEVEL change,
+  not a plan detail:** the cascade will already have dropped both siblings' spec approvals, so the
+  plan you are asked for is a plan against a re-approved spec. A clause the sibling does not
+  implement as written, like a contract question you cannot answer from the file, is a question for
+  the session at spec level, never an assumption in a task.
 
 ## Do
 
@@ -50,6 +53,14 @@ decision points your plan actually needs.
    sizing. Read every
    file you name as a `mirror` — the snippet you quote must be verbatim from that file. The
    critic greps it, and an invented snippet is a `block`.
+   **Every factual claim about existing code carries the command that produced it, or the word
+   `assumed`.** A sentence of the form "X is the only caller", "the only proof", "the grep gives
+   N sites", "site list measured", "the sibling service writes Y" is a **measurement**, and a
+   measurement nobody can replay is an assumption in disguise. Write it as
+   `<claim> — <command> → <result>`, or prefix it with `assumed:`. The critic replays every
+   command you write: a claim its replay refutes is a `block`, and an unmarked bare claim is a
+   `must-fix`. **This holds for a task's `notes` exactly as for a `D<n>`'s evidence: the
+   premises that cost the most rework live in briefs, not in decision blocks.**
 2. **Reuse first.** Prefer existing modules, components and patterns over new code. Name what
    you will reuse, one line each. Beyond the codebase the order is: an already-installed
    library, then a new dependency — planned only when it removes more code and risk than it
@@ -94,9 +105,12 @@ decision points your plan actually needs.
 7. **Wide refactors are the exception**, sequenced **expand → migrate → contract**: expand adds
    the new form beside the old (nothing breaks); migrate moves call sites in batches sized by
    blast radius, each batch one task depending on the expand, so the gate stays green batch to
-   batch; contract deletes the old form once no caller remains.
+   batch; contract deletes the old form once no caller remains. Any expand → migrate → contract
+   sequence opens an interval where the tree is deliberately inconsistent — declare it in
+   `## Phase windows`.
 8. **Order cross-repo and cross-layer work contract-first**: schema/endpoint → contract sync →
-   types → use.
+   types → use. That ordering opens the same interval, and it is declared the same way: a window
+   nobody wrote is reported as dead code against the builder who built exactly what you planned.
 9. **Declare test seams per milestone.** Name the public interfaces the milestone's tests live
    at — existing seams over new ones, the highest seam that observes the behaviour, as few as
    possible. Tests belong at seams, never against internals; mocks at system boundaries only.
@@ -112,6 +126,11 @@ decision points your plan actually needs.
       task needing a pipeline declares a script file in the dossier instead. What the tests must
       assert belongs in `gotcha` or the acceptance rows, never inside the command.
     - **`gotcha`** *(optional)* — the one known pitfall on this path.
+    - **`grader`** *(required as soon as the task carries `notes.acceptance`)* — per acceptance
+      row, the single witness that would go red if the row became false: `A6 →
+      DuplicateControl.test.tsx, second option chosen after a first`. A row whose witness you
+      cannot name is a row the spec must change, or residue to write — never a row to attach in
+      silence.
     - **`decision`** *(optional)* — the `D<n>` block in `## Decisions` this task embodies.
       Mandatory when the task's `mirror` is `none — new pattern`: a new pattern with no declared
       decision is an undeclared structuring choice, and the critic flags it.
@@ -166,6 +185,8 @@ decision points your plan actually needs.
         "id": "T1", "title": "…", "status": "pending", "attempt": 0, "depends_on": [],
         "validate": {"cwd": ".", "argv": ["npm", "test"], "timeoutMs": 120000},
         "notes": {"mirror": "src/x.mjs:40-72 — …", "gotcha": "…", "acceptance": ["A3", "A4"],
+                  "grader": ["A3 → x.test.mjs, empty list renders the zero state",
+                             "A4 → x.test.mjs, expired token refused"],
                   "decision": "D1", "risk": "low", "visual": ["/dashboard", "/dashboard?empty"]}
       }]}]}
       ```
@@ -173,8 +194,8 @@ decision points your plan actually needs.
       **`notes` is the only place the builder's per-task context survives the import.** The
       importer seeds a strict whitelist — `id`, `title`, `status`, `attempt`, `depends_on`,
       `milestone`, `validate`, `notes` — and drops everything else on the floor, so a `mirror`,
-      `gotcha`, acceptance list, `decision` link, `lesson`, `risk` tier, `visual` flag or
-      `amendment` link written
+      `gotcha`, acceptance list, `grader` witness, `decision` link, `lesson`, `risk` tier,
+      `visual` flag or `amendment` link written
       as a sibling top-level field never reaches the brief the builder is dispatched with. Put
       all of them inside `notes`, in those keys. `risk`, `visual`, `decision` and `amendment`
       live there for
@@ -254,6 +275,13 @@ Header carries a one-line confidence score
   builder must read before touching code. P0 is blocking.
 - **`## NOT building`** — explicit out-of-scope bullets: what this feature deliberately does not
   do even if asked. This is the product reviewer's over-delivery reference.
+- **`## Phase windows`** — one line per interval where the tree is deliberately inconsistent, of
+  the form `<surface> · produced by <task> · consumed by <task> · what is false in between`.
+  Covers: a contract entry removed before its writers, a writer changed before its readers, a
+  shared component shipped before the screen that uses it, a generated artifact whose consumer is
+  a later milestone. `none — no phase window` is a complete, valid section, and the section is
+  always present. **It is the code reviewer's exemption list on dead code**: an unreferenced
+  surface this section names is not a finding; one it does not name is.
 - **Test seams** — one line per milestone.
 - **The task tree** — id, title, depends_on, acceptance refs, and the per-task note carrying
   `mirror` / `validate` / `gotcha`.
@@ -262,7 +290,8 @@ Header carries a one-line confidence score
 **The plan is instructions to a builder, not an essay — say everything once.** A rule the spec
 states is referenced by id, never restated. A decision is explained in one place. Per-task notes
 are at most ~3 bullets. No acceptance-traceability section: the acceptance column IS the
-traceability. Revision notes are strictly one line per finding.
+traceability — **and `notes.grader` is what makes it more than a label.** Revision notes are
+strictly one line per finding.
 
 ## Return contract
 

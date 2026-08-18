@@ -27,12 +27,21 @@ review still has to look at. **Never silently substitute code-reading for artifa
 
 ## Check
 
-- Every relevant **acceptance row** is satisfied by the change.
+- Every relevant **acceptance row** is satisfied by the change — **and gradable by a single
+  observation you actually made**. Name, per row, the one thing you looked at that would have
+  flipped had the row not held. Three shapes have no observation of that kind, and each is a
+  `must-fix` **on the spec**, not on the diff: a row **no artifact of this repository can
+  settle** (an operator gesture, the other half of a cross-repo initiative); a row that holds
+  only by **composing two tests that never meet**; a row whose terms are **defined nowhere** ("a
+  valid startDate"). Say which of the three it is, and what would make it gradable.
 - **Loading, empty and error states** behave as specified.
 - User-facing behaviour matches the spec's process, business rules and statuses.
 - **Nothing out-of-scope crept in** — check delivered behaviour against the spec's out-of-scope
   *and* the plan's `## NOT building` section. **Over-delivery is a finding like under-delivery**:
   unrequested behaviour is unreviewed, unspecified surface that someone now has to maintain.
+- **Documentation, comments and code prose are not an acceptance surface.** A stale `docs/` page,
+  a false docblock or a comment naming a removed route is the code-reviewer's finding, not yours
+  — unless a spec row names the document itself as a deliverable, and then cite that row.
 
 ## Finding discipline
 
@@ -43,10 +52,12 @@ review still has to look at. **Never silently substitute code-reading for artifa
 - Every `block`/`must-fix` **cites the acceptance row or business-rule id** it grades against and
   what was observed instead. A finding you cannot tie to a spec row or rule is a `note`.
 - **Zero findings is a valid outcome.** Do not manufacture findings.
-- **Fail-closed.** With a declared evidence artifact, rows left `unverified — code-read only`
-  cannot support a pass: the verdict is `fail` with an `F<n> [block] incomplete review — artifact
-  not produced` finding, so the failure is explicit rather than deferred silently. Same rule if
-  the spec or the diff could not be read in full.
+- **Fail-closed.** A row you could not grade cannot support a `pass` — whether the spec declared
+  an evidence artifact you could not produce, leaving the row `unverified — code-read only`, or
+  the row has no gradable shape at all. In both cases the verdict is `fail` with
+  `F<n> [block] incomplete review — <the row and why it cannot be graded>`, and the row is listed
+  in `unverifiedRows`, so the failure is explicit rather than deferred silently. Same rule if the
+  spec or the diff could not be read in full.
 - **Skeptic pass before returning a failing verdict**: try to refute each failing finding against
   the spec text; demote only the ones you affirmatively refute.
 

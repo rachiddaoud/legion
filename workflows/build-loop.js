@@ -108,13 +108,13 @@ export const meta = {
 // --- DESIGN CONCERNS BOUNCE UP AS DATA (the decision grammar's build-side half) --------------
 // Two data channels, ZERO new dispatches: a builder may return blocked with kind:"design"
 // (premise/evidence/alternative — a plan premise is contested, not a question to answer), and a
-// reviewer finding may carry a `category` slug; categories recurring in BLOCKING findings on
-// >= 2 DISTINCT TASKS aggregate into `designSignals` at return. Both are routed by the SESSION
-// through the plan stage — backward stage-enter, architect revision, re-import, critic, human
-// re-approval (skills/feature/SKILL.md build stage) — never settled here, and never through
-// `task-answer`, which records answers WITHIN the plan the concern contests. NO PER-TASK LLM
-// RE-PLANNING is untouched: nothing below dispatches a planner, gates control flow on the
-// signal, or repairs the plan.
+// reviewer finding may carry a `category` slug; categories recurring in findings of ANY TIER on
+// >= 2 DISTINCT SUBJECTS — a task, or a milestone close — aggregate into `designSignals` at
+// return. Both are routed by the SESSION through the plan stage — backward stage-enter,
+// architect revision, re-import, critic, human re-approval (skills/feature/SKILL.md build
+// stage) — never settled here, and never through `task-answer`, which records answers WITHIN
+// the plan the concern contests. NO PER-TASK LLM RE-PLANNING is untouched: nothing below
+// dispatches a planner, gates control flow on the signal, or repairs the plan.
 //
 // --- WHY THE RECEIPT IS VERIFIED HERE, NOT TRUSTED ------------------------------------------
 // The builder runs `legion gate run --task <id>` itself (agents/builder.md: edit → self-test →
@@ -542,7 +542,7 @@ const REVIEW_SCHEMA = {
           issue: { type: 'string' },
           proof: { type: 'string', description: 'input/state -> wrong outcome; why nothing upstream catches it' },
           fix: { type: 'string' },
-          category: { type: 'string', description: 'Optional kebab-case defect CLASS (e.g. "hand-transcription"); reuse the same slug for the same root cause — recurrence across tasks aggregates into designSignals' },
+          category: { type: 'string', description: 'Optional kebab-case defect CLASS (e.g. "hand-transcription"); reuse the same slug for the same root cause — recurrence across distinct subjects (a task or a milestone close) aggregates into designSignals' },
         },
       },
     },
@@ -720,29 +720,34 @@ function blockedEntry(task, group, res, fallback) {
   return e
 }
 
-/** category → the DISTINCT task ids whose BLOCKING findings carried it. Counted at round 1 AND
- * after the fix round on purpose: a class that recurs and is "fixed" locally each time is
- * exactly the entrenchment signal this exists to surface. Task scope only — a milestone-close
- * finding has no second task to recur on. Map insertion order is task-processing order, so the
- * designSignals aggregation is deterministic by construction. */
+/** category → the DISTINCT subject ids whose findings carried it, at EVERY TIER: a class coming
+ * back three times as `note` is the same wrong-premise signal as one coming back twice as
+ * must-fix, and advisory is where duplication and stale prose almost always land. A subject is a
+ * task or a milestone close — the close's own id enters the same list, because a class the tasks
+ * drew and the close draws again has recurred. Counted at round 1 AND after the fix round on
+ * purpose: a class that recurs and is "fixed" locally each time is exactly the entrenchment
+ * signal this exists to surface. Map insertion order is processing order, so the designSignals
+ * aggregation is deterministic by construction. */
 const categoryHits = new Map()
-function noteCategories(taskId, fs) {
+function noteCategories(subjectId, fs) {
   for (const f of fs) {
     if (!f || typeof f.category !== 'string' || f.category.length === 0) continue
     if (!categoryHits.has(f.category)) categoryHits.set(f.category, [])
     const ids = categoryHits.get(f.category)
-    if (ids.indexOf(taskId) < 0) ids.push(taskId)
+    if (ids.indexOf(subjectId) < 0) ids.push(subjectId)
   }
 }
 
 /** The mutation sweep every brief carries (header: WHY THE MUTATION SWEEP IS THE BUILDER'S).
- * Conditional on the DIFF, not on the task text, because only the builder knows what it ended up
- * touching — a task titled "add tests" that also fixes the code under them is ordinary work with
- * ordinary product evidence, and a task titled anything at all that ships only tests has none.
- * The commit-message listing is not ceremony: a sweep whose result nobody can see is
- * indistinguishable from one that never ran, which is the exact failure this replaces. */
+ * TWO conditions, because the diff alone left the sweep out of every task where the defects were
+ * measured. The DIFF, since only the builder knows what it ended up touching — a task titled "add
+ * tests" that also fixes the code under them is ordinary work with ordinary product evidence, and
+ * a task titled anything at all that ships only tests has none. And every case pinning an
+ * ACCEPTANCE ROW whatever else the diff carries, since a row graded by a test that cannot fail is
+ * a row nothing grades. The commit-message listing is not ceremony: a sweep whose result nobody
+ * can see is indistinguishable from one that never ran, which is the exact failure this replaces. */
 const MUTATION_SWEEP = [
-  'MUTATION SWEEP — REQUIRED WHEN YOUR DIFF IS TEST-ONLY (you changed no production source).',
+  'MUTATION SWEEP — REQUIRED WHEN YOUR DIFF IS TEST-ONLY OR FOR EVERY TEST CASE PINNING AN ACCEPTANCE ROW.',
   'A test that passes against broken code is not evidence, and nothing downstream can tell the',
   'difference: your gate is green either way and the reviewers read the same green.',
   'So BEFORE you commit, systematically, for EACH function your new tests cover: introduce at',
@@ -1018,9 +1023,10 @@ for (const group of groups) {
     if (codexLens && codexLens.available !== false) {
       lensRuns.push({ role: 'codex-consult', label: 'codex-consult', agentType: 'legion:codex-consult', dim: null, result: codexLens })
     }
-    const lensBlocking = lens => ((lens.result && lens.result.findings) || []).filter(blocking)
+    const lensFindings = lens => (lens.result && lens.result.findings) || []
+    const lensBlocking = lens => lensFindings(lens).filter(blocking)
     let findings = lensRuns.flatMap(lensBlocking)
-    noteCategories(task.id, findings)
+    noteCategories(task.id, lensRuns.flatMap(lensFindings))
     // THE CLAUDE VERDICT IS AN AND-FOLD ACROSS THE DIMENSIONS, never the last one seen. `reviews`
     // is append-only and its readers take the LATEST row for a role+subject (src/kernel/state.mjs
     // stageSatisfied), so a passing dimension recorded after a failing one would MASK it — the
@@ -1101,6 +1107,7 @@ for (const group of groups) {
       // 'correctness' one.
       const claudeVerdicts = new Map(claudeRuns.map(l => [l, l.result.verdict === 'pass' ? 'pass' : 'fail']))
       let claudeReReviewed = false
+      // Every tier: the counter reads this list, and `findings` below takes the blocking subset.
       const confirmed = []
       for (const lens of failingLenses) {
         const own = renderFindings(lensBlocking(lens))
@@ -1125,7 +1132,7 @@ for (const group of groups) {
         // nothing (a verdict for a review that did not happen is forged evidence), carry its
         // findings forward unconfirmed, and let the task fail closed to the session.
         if (!reReview || reReview.available === false) {
-          confirmed.push(...lensBlocking(lens))
+          confirmed.push(...lensFindings(lens))
           if (lens.role === 'code-reviewer') claudeVerdicts.set(lens, 'fail')
           unconfirmedBy.push(lens.label)
           // Also a DEGRADATION, for the same reason the round-1 unavailability is one: the review
@@ -1137,7 +1144,7 @@ for (const group of groups) {
           log(`${task.id}: ${lens.label} could not re-review its own findings — unconfirmed, failing closed`)
           continue
         }
-        confirmed.push(...((reReview.findings || []).filter(blocking)))
+        confirmed.push(...(reReview.findings || []))
         const reVerdict = reReview.verdict === 'pass' ? 'pass' : 'fail'
         if (lens.role === 'code-reviewer') {
           claudeVerdicts.set(lens, reVerdict)
@@ -1154,8 +1161,8 @@ for (const group of groups) {
       if (claudeReReviewed) {
         recorded = recorded && await recordVerdict(task.id, 'code-reviewer', primaryVerdict, mPhase)
       }
-      findings = confirmed
-      noteCategories(task.id, findings)
+      noteCategories(task.id, confirmed)
+      findings = confirmed.filter(blocking)
       // `unconfirmedBy.length === 0` is a THIRD, independent condition — see the docblock above it.
       verdict = primaryVerdict === 'pass' && findings.length === 0 && unconfirmedBy.length === 0 ? 'pass' : 'fail'
     }
@@ -1421,9 +1428,11 @@ async function closeMilestone(group) {
     runs.push({ role: r.role, agentType: r.agentType, result })
   })
   if (closeDegraded.length > 0) report.degraded = closeDegraded
-  const runBlocking = run => ((run.result && run.result.findings) || []).filter(blocking)
+  const runFindings = run => (run.result && run.result.findings) || []
+  const runBlocking = run => runFindings(run).filter(blocking)
   let recorded = true
   for (const run of runs) {
+    noteCategories(m, runFindings(run))
     const v = run.result.verdict === 'pass' && runBlocking(run).length === 0 ? 'pass' : 'fail'
     report.reviews.push({ role: run.role, verdict: v, round: 1 })
     const ok = await recordMilestoneVerdict(m, run.role, v)
@@ -1498,6 +1507,7 @@ async function closeMilestone(group) {
         log(`milestone ${m}: ${run.role} could not re-review its own findings — unconfirmed, failing closed`)
         continue
       }
+      noteCategories(m, reReview.findings || [])
       const v = reReview.verdict === 'pass' && (reReview.findings || []).filter(blocking).length === 0 ? 'pass' : 'fail'
       report.reviews.push({ role: run.role, verdict: v, round: 2 })
       const ok = await recordMilestoneVerdict(m, run.role, v)
@@ -1611,7 +1621,7 @@ const designSignals = [...categoryHits.entries()]
 // categories — and a fail-closed message that says only "re-run after the fix" sends the
 // session into a local retry under the very premise the signal contests.
 const signalsClause = designSignals.length
-  ? ' EXCEPT: designSignals is non-empty — a defect class recurred across tasks and was fixed locally each time, which is how a wrong plan premise entrenches. Take the design route through the plan stage before any local retry or stage-complete build.'
+  ? ' EXCEPT: designSignals is non-empty — a defect class recurred across distinct subjects (tasks, milestone closes) and was fixed locally each time, which is how a wrong plan premise entrenches. Take the design route through the plan stage before any local retry or stage-complete build.'
   : ''
 return {
   built,
