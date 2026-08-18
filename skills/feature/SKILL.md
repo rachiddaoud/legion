@@ -337,8 +337,10 @@ unreadable fails **closed**, refusing the spec ops in both siblings until it is 
    **`plan.md` bytes and the canonical task list together**. Approve first and you bind an
    *empty* task set — the real tasks then arrive outside the thing the human said yes to, and
    the builders work from a list no approval ever covered. Import first, approve second, always.
-3. Dispatch **`legion:plan-critic`** — **except on the express profile, where the critic
-   dispatch is skipped**: `stage-complete plan`
+3. Dispatch **`legion:plan-critic`**, with the project's `lessons.md` path when the file exists,
+   exactly as step 1 gives it to the architect — the critic is the last reader before the code,
+   and a lesson handed to the architect but not to the critic is a lesson with no executor —
+   **except on the express profile, where the critic dispatch is skipped**: `stage-complete plan`
    excuses a *missing* critic verdict on express, and a stale pass reads as absence. **A
    recorded fail still blocks on every profile** — if a critic *was* dispatched on an express
    feature and failed the plan, that fail is as binding as anywhere: revise and re-review, never
@@ -418,8 +420,9 @@ in order, and milestone N+1 does not start until milestone N has closed:
    `--subject milestone:<id>`. A failing close review gets the same one fix round, and the
    boundary gate re-runs before anyone re-judges.
 
-Its briefs carry the **mutation sweep**: a builder whose diff is test-only must kill a plausible
-regression mutant per function under test before committing, and list the sweep in the commit body.
+Its briefs carry the **mutation sweep**: a builder whose diff is test-only, and any builder
+writing a case that pins an acceptance row, must kill a plausible regression mutant per function
+under test before committing, and list the sweep in the commit body.
 It verifies the receipt with the kernel rather than trusting the builder's self-report, and it
 records every reviewer verdict, pass and fail, so a resumed session and the pre-merge evidence
 chain can see that the reviews happened.
@@ -466,12 +469,12 @@ and checks the receipt itself.
 
 **When a blocked entry carries `kind: "design"`, or `designSignals` is non-empty — the DESIGN
 ROUTE.** The builder found the repo contradicting a plan premise (`premise` / `evidence` /
-`alternative` carry the structured halves), or a defect class recurred in blocking findings
-across tasks and was fixed locally each time. Either way the problem is the **plan's**, and it
-takes the full plan-stage amendment path — the same one pre-merge rejection uses for missing
-work — never the light task-rewrite above, which fixes one task's text while the contested
-premise stays shared by all of them; settling a design concern outside the plan machinery is
-exactly how a wrong premise entrenches.
+`alternative` carry the structured halves), or a defect class recurred across distinct subjects
+(tasks, milestone closes) and was fixed locally each time. Either way the problem is the
+**plan's**, and it takes the full plan-stage amendment path — the same one pre-merge rejection
+uses for missing work — never the light task-rewrite above, which fixes one task's text while
+the contested premise stays shared by all of them; settling a design concern outside the plan
+machinery is exactly how a wrong premise entrenches.
 
 1. `legion state stage-enter plan` — backward entry is always allowed and clears nothing.
 2. Dispatch **`legion:architect`** with the concern or the signals **verbatim** (premise,
@@ -525,11 +528,16 @@ facts survive to reach it.
 - **`milestones`** — per milestone: `closed`, `close-already-recorded`, `not-closed`,
   `close-failed` or `deferred`, with the boundary exit code and the tree pair the squash reported.
   This is what tells you whether the build stage is actually finished.
-- **`designSignals`** — `{category, tasks}` for every defect class that recurred in blocking
-  findings on two or more tasks **this run**. The recurrence counter exists nowhere else — the
-  kernel records verdicts, never findings — and a non-empty list takes the design route above
-  before the stage completes, even when every task landed green: locally-fixed recurrence is
-  how a wrong premise entrenches.
+- **`designSignals`** — `{category, tasks}` for every defect class that recurred on two or more
+  distinct subjects, at **any tier, `note` included**. The recurrence counter exists nowhere else
+  — the kernel records verdicts, never findings — and a non-empty list takes the design route
+  above before the stage completes, even when every task landed green: locally-fixed recurrence
+  is how a wrong premise entrenches. A subject is a task **or a milestone close**, whose id rides
+  in the same `tasks` list; a class coming back three times as `note` is the same wrong-premise
+  signal as one coming back twice as `must-fix`, and advisory is where duplication and stale
+  prose almost always land. The signal is **session-level** — a class recurring across the
+  session's features is the same signal — while the loop's counter is per run, so carrying it
+  across features is yours.
 
 When every task is done, **every milestone reports `closed` or `close-already-recorded`**, and
 `designSignals` came back empty or every signal was routed through the design route:

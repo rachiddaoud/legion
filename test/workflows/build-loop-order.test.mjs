@@ -326,7 +326,7 @@ test('every builder brief carries the mutation sweep, fix rounds included', asyn
     // The three load-bearing halves: when it applies, what counts as killing a mutant, and the
     // record. A sweep with no reported result is indistinguishable from one that never ran, which
     // is the failure this replaces — so the commit-body clause is not decoration.
-    assert.match(b.prompt, /MUTATION SWEEP — REQUIRED WHEN YOUR DIFF IS TEST-ONLY/, `${b.label} states when it applies`);
+    assert.match(b.prompt, /MUTATION SWEEP — REQUIRED WHEN YOUR DIFF IS TEST-ONLY OR FOR EVERY TEST CASE PINNING AN ACCEPTANCE ROW/, `${b.label} states both conditions`);
     assert.match(b.prompt, /confirm AT LEAST ONE NEW TEST FAILS/, `${b.label} states what kills a mutant`);
     assert.match(b.prompt, /surviving plausible mutant is a DEFECT IN THE TESTS/, `${b.label} states the survivor rule`);
     assert.match(b.prompt, /commit message body/, `${b.label} requires the sweep on the record`);
@@ -1320,7 +1320,8 @@ test('the re-run retries EXACTLY the task the receipt check failed — done task
 // carry them without gaining a dispatch or a control-flow branch. What is pinned here is the
 // passthrough shape (the session consumes it verbatim), the historical shape of an ordinary
 // question (exact deepEquals elsewhere in this file double as the no-leak guard), and the
-// aggregation rules: blocking findings only, >= 2 DISTINCT tasks, deterministic order.
+// aggregation rules: findings of EVERY tier, >= 2 DISTINCT SUBJECTS — a task or a milestone
+// close — deterministic order.
 
 test('a design-blocked builder rides its structured concern through blocked[] untouched', async () => {
   const { result, builds, dispatches } = await runLoop([row('T1')], {
@@ -1357,24 +1358,79 @@ test('a design concern raised on the FIX round rides through the same shape', as
   }], 'the fix-round path uses the same entry builder — a concern discovered mid-fix is not second-class');
 });
 
-test('designSignals: a category in BLOCKING findings on two DISTINCT tasks — and only then', async () => {
-  // T1 and T2 each draw the same category on a must-fix; T3 draws it on a note only. The re-review
-  // clears each finding so both tasks complete — a locally-fixed recurrence is EXACTLY the signal
-  // (the cv-mf shape: every round fixed the symptom and the wrong premise survived).
+test('designSignals: a category on two DISTINCT subjects, at ANY tier — and only then', async () => {
+  // T1 draws the category on a must-fix, T2 on a NOTE alone — a class returning three times as
+  // advisory is the same wrong-premise signal as one returning twice as must-fix, and duplication
+  // and stale prose almost always arrive advisory. T3 draws a category nothing else does. The
+  // re-review clears T1's finding so every task completes — a locally-fixed recurrence is EXACTLY
+  // the signal (the cv-mf shape: every round fixed the symptom and the wrong premise survived).
   const cat = (title, category, tier = 'must-fix') => ({ tier, title, where: 'src/x.mjs:1', issue: 'i', fix: 'f', category });
   const { result } = await runLoop([row('T1'), row('T2'), row('T3')], {
     lensResult: (type, label) => {
       if (label === 'T1 review:code-reviewer') return { verdict: 'fail', findings: [cat('f1', 'hand-transcription')] };
-      if (label === 'T2 review:code-reviewer') return { verdict: 'fail', findings: [cat('f2', 'hand-transcription')] };
-      if (label === 'T3 review:code-reviewer') return { verdict: 'pass', findings: [cat('f3', 'hand-transcription', 'note')] };
+      if (label === 'T2 review:code-reviewer') return { verdict: 'pass', findings: [cat('f2', 'hand-transcription', 'note')] };
+      if (label === 'T3 review:code-reviewer') return { verdict: 'pass', findings: [cat('f3', 'lone-class', 'note')] };
       return undefined; // re-reviews pass; codex passes; the close passes
     },
   });
   assert.deepEqual(result.built, ['T1', 'T2', 'T3'], 'every finding was cleared — the tasks all land');
   assert.deepEqual(result.designSignals, [{ category: 'hand-transcription', tasks: ['T1', 'T2'] }],
-    'two distinct tasks with the category in a BLOCKING finding — the note on T3 never counts');
+    'two distinct subjects carry the class, one of them advisory only — and the class T3 alone drew is not recurrence');
   assert.match(result.nextStep, /designSignals is non-empty[\s\S]*design route/,
     'an all-green run with a recurring class still routes through the plan stage first');
+});
+
+test('designSignals: a milestone-close finding is a DISTINCT subject, and rides as its milestone id', async () => {
+  // The close reviews the assembled diff — the one place a class the tasks each "fixed" locally
+  // shows up as one shape. Counting it as a subject is what lets a single task plus the close
+  // reach the threshold; the id list is the emitted shape, so the milestone id rides in `tasks`.
+  const cat = (title, tier) => ({ tier, title, where: 'src/x.mjs:1', issue: 'i', fix: 'f', category: 'duplicated-code' });
+  const { result } = await runLoop([row('T1')], {
+    lensResult: (type, label) => {
+      if (label === 'T1 review:code-reviewer') return { verdict: 'pass', findings: [cat('f1', 'note')] };
+      if (label === 'M1 milestone review') return { verdict: 'pass', findings: [cat('same class, assembled', 'note')] };
+      return undefined; // the product close passes; nothing fails, so there is no fix round
+    },
+  });
+  assert.deepEqual(result.milestones.map((m) => m.outcome), ['closed'], 'notes cost no fix round — the close still lands');
+  assert.deepEqual(result.designSignals, [{ category: 'duplicated-code', tasks: ['T1', 'M1'] }],
+    'one task and the close are two subjects — and the close is named by its milestone id');
+});
+
+test('the close fix round counts its re-review too — the milestone stays one subject', async () => {
+  // The close's own fix round is where the assembled-diff class is re-raised advisory, exactly as
+  // in a task's. The milestone is ONE subject however many rounds it takes, so a class raised at
+  // round 1 and again at the re-review is still one id in the list.
+  const cat = (title, category, tier) => ({ tier, title, where: 'src/x.mjs:1', issue: 'i', fix: 'f', category });
+  const { result } = await runLoop([row('T1')], {
+    lensResult: (type, label) => {
+      if (label === 'T1 review:code-reviewer') return { verdict: 'pass', findings: [cat('f1', 'duplicated-code', 'note')] };
+      if (label === 'M1 milestone review') return { verdict: 'fail', findings: [cat('seam defect', 'plan-premise-mismatch', 'must-fix')] };
+      if (label === 'M1 re-review:code-reviewer') return { verdict: 'pass', findings: [cat('same class, assembled', 'duplicated-code', 'note')] };
+      return undefined; // the product close passes and re-certifies
+    },
+  });
+  assert.deepEqual(result.milestones.map((m) => m.outcome), ['closed'], 'one fix round cleared the close');
+  assert.deepEqual(result.designSignals, [{ category: 'duplicated-code', tasks: ['T1', 'M1'] }],
+    'the re-review note reaches the counter, and the class only the close raised is not recurrence');
+});
+
+test('a fix round feeds the re-review\'s findings to the counter at EVERY tier, and notes still cost no round', async () => {
+  // The fix round is where a class is most often "fixed" locally and re-raised advisory, so the
+  // post-fix feed is the same all-tier feed as round 1 — while the verdict keeps reading the
+  // blocking subset alone, or a note-only re-review would fail a task the reviewer passed.
+  const cat = (title, category, tier) => ({ tier, title, where: 'src/x.mjs:1', issue: 'i', fix: 'f', category });
+  const { result } = await runLoop([row('T1'), row('T2')], {
+    lensResult: (type, label) => {
+      if (label === 'T1 review:code-reviewer') return { verdict: 'fail', findings: [cat('f1', 'plan-premise-mismatch', 'must-fix')] };
+      if (label === 'T1 re-review:code-reviewer') return { verdict: 'pass', findings: [cat('leftover', 'duplicated-code', 'note')] };
+      if (label === 'T2 review:code-reviewer') return { verdict: 'pass', findings: [cat('f2', 'duplicated-code', 'note')] };
+      return undefined;
+    },
+  });
+  assert.deepEqual(result.built, ['T1', 'T2'], 'the re-review passed with a note only — the task lands');
+  assert.deepEqual(result.designSignals, [{ category: 'duplicated-code', tasks: ['T1', 'T2'] }],
+    'the note the re-review raised counts for T1, and the class T1 alone was blocked on is not recurrence');
 });
 
 test('a FAILED run still surfaces designSignals in nextStep — the likelier carrier, not the green path', async () => {
@@ -1397,7 +1453,7 @@ test('a FAILED run still surfaces designSignals in nextStep — the likelier car
     'and the design-route instruction must not be swallowed by the failure branch');
 });
 
-test('designSignals stays empty on single-task recurrence, and is [] not absent on every path', async () => {
+test('designSignals stays empty on single-SUBJECT recurrence, and is [] not absent on every path', async () => {
   const cat = { tier: 'must-fix', title: 'f', where: 'src/x.mjs:1', issue: 'i', fix: 'f', category: 'lone-class' };
   const twice = await runLoop([row('T1'), row('T2')], {
     lensResult: (type, label) =>

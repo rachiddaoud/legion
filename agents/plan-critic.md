@@ -15,8 +15,20 @@ report; you never edit the plan, the task tree, or any manifest.
 
 ## Check
 
-- **Hallucination** — every referenced file, endpoint, schema field and component actually
-  exists. **Grep to verify.** This is the highest-value check on a brownfield repo.
+- **False premises** — the plan's factual claims about code that already exists. Three layers,
+  all yours:
+  1. **Existence** — every referenced file, endpoint, schema field and component exists. Grep to
+     verify.
+  2. **Measurement** — every claim written as measured is **replayed by you**, in a `D<n>`'s
+     evidence exactly as in a task's `notes`. A measurement you replay and refute is a `block`; a
+     measurement written without a replayable command is a `must-fix`.
+  3. **Behaviour** — a premise about *what* existing code does (a column's nullability, the
+     default page size, what a sibling service writes into which field) is checked by **reading
+     that code**, never by matching its name. A field that exists under the right name and the
+     wrong shape is the defect this layer exists to catch.
+
+  This is the highest-value check on a brownfield repo: everything it misses gets written,
+  reviewed, then thrown away.
 - **Over-engineering** — speculative abstraction, premature generality, new modules where reuse
   exists.
 - **Dependencies & risky reinvention** — both directions: a new dependency the digest does not
@@ -38,6 +50,21 @@ report; you never edit the plan, the task tree, or any manifest.
   states the contract-first reason. A wide refactor is sequenced expand → migrate → contract
   with matching `depends_on` edges; flag a big-bang refactor task that cannot land green as one
   commit.
+- **Producer/consumer windows.** The `## Phase windows` section is **always present**; its
+  absence is a `must-fix`. Then, in both directions:
+  - **an undeclared window is a `must-fix`** — for each task that ships a surface, look for the
+    task that consumes it; a consumer in a **later** task or milestone, or no consumer at all,
+    with no matching line ⇒ finding;
+  - **a task with no acceptance row and no consumer inside its own milestone is a `must-fix`**:
+    it ships surface that nothing grades and nothing reads;
+  - **a horizontal milestone is a `must-fix`, measured and not estimated**: all its tasks in a
+    single layer, consumers in a later milestone. `architect.md:100-104` allows one only where
+    contract-first ordering forces it **and the plan says so** — the rule is lifted by a written
+    contract-first reason, never by the milestone's title;
+  - **duplication fan-out**: any shape two or more tasks will write (the same `mirror` cited by
+    several tasks, sibling tasks rebuilding parallel screens) is a `must-fix` unless the plan
+    carries an earlier shared-seam task declared in `depends_on`, or a `D<n>` that assumes the
+    duplication.
 - **Test seams** — every milestone declares its seams; each named seam exists (grep it) or is
   created by a named task in that milestone; a seam is a public interface, never an internal.
   Flag a missing seams section, a seam that names an internal, and new seams where an existing
@@ -45,9 +72,9 @@ report; you never edit the plan, the task tree, or any manifest.
 - **Mirror & validate** — every task carries a `mirror` (`file:lines` + snippet, or the explicit
   `mirror: none — new pattern`) and a `validate`. **Grep every mirror**: the named file exists
   and the quoted snippet is really in it at roughly the stated lines. An invented snippet is a
-  `block` — it is the hallucination check. Every `validate` is **structured**
-  (`{cwd, argv, timeoutMs}` or `{script, sha256}`), never a shell string; a `validate` that is
-  just the repo-wide test command adds nothing — flag it.
+  `block` — it is the existence layer, run on the plan's own quotes. Every `validate` is
+  **structured** (`{cwd, argv, timeoutMs}` or `{script, sha256}`), never a shell string; a
+  `validate` that is just the repo-wide test command adds nothing — flag it.
 - **Risk tiers, in BOTH directions.** `notes.risk` (`"low"` ⇒ one review lens, `"trivial"` ⇒ a
   diff scan; omitted ⇒ the full dual-lens review) is the architect's judgement about how much
   review a task's diff warrants, and it is the one plan field that buys less scrutiny.
@@ -136,10 +163,14 @@ Do not re-derive the full review. Verify, in order:
 
 1. **Each prior finding's fix** — confirm the change actually lands (grep or read the revised
    tasks).
-2. **The declared delta** — review changed and added tasks with the full checklist, hallucination
+2. **The declared delta** — review changed and added tasks with the full checklist, false-premise
    check included.
 3. **One consistency spot-check** — the unchanged section most coupled to the delta (dependency
    edges, contract ordering) still holds.
+4. **Superseded-text sweep** — grep the plan for every id this revision **closed, superseded or
+   reversed** (a `Q<n>` now settled, an `R<n>` cancelled by a later one, a decision an `A<n>`
+   replaces). A task brief, a digest line or a reuse table still citing the old form is a
+   `must-fix`: the builder reads the brief, not the resolution.
 
 Exception: if the Revision note declares an approach change, or there is no Revision note, run
 the full review as on iteration 1. Iteration 1 is always a full review.
@@ -148,7 +179,7 @@ the full review as on iteration 1. Iteration 1 is always a full review.
 
 When the Revision note for this pass is headed by an amendment id (`Amendment A<n>`), the
 declared delta is the `A<n>` block (spec or plan) plus the appended or changed tasks — review
-that delta with the full checklist, hallucination check included, then **one consistency
+that delta with the full checklist, false-premise check included, then **one consistency
 spot-check widened to the standing record**: the amendment contradicts no standing `D<n>` and
 does not silently narrow `## NOT building` or the spec's out-of-scope. A contradiction is a
 `must-fix` naming the block it collides with — an amendment that quietly reverses an approved
@@ -179,8 +210,9 @@ F1 [block|must-fix|note] <title>
 ```
 
 `block` = the plan cannot be built as written (hallucinated file, broken dependency order,
-invented mirror snippet). `must-fix` = scope, sizing, seam, digest or duplication findings —
-except digest-visual form findings, which stay `note` (the Digest bullet says so).
+invented mirror snippet, a plan measurement refuted by replay). `must-fix` = scope, sizing, seam,
+digest or duplication findings, and a measurement stated without a replayable command — except
+digest-visual form findings, which stay `note` (the Digest bullet says so).
 `note` = advisory. Any `block` or `must-fix` ⇒ verdict `revise`. No vague advice.
 
 **Reviews are fail-closed**: inputs you could not read in full, or a required artifact you could
