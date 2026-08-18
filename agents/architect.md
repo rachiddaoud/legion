@@ -137,7 +137,8 @@ decision points your plan actually needs.
     - **`lesson`** *(optional)* — the one `lessons.md` entry this task must respect, quoted with
       its scope. The builder never sees the whole file; what you route here is all it gets.
     - **`risk`** *(optional — the REVIEW TIER, and the default is to omit it)* — how much review
-      this task's diff warrants. The build loop reads it and buys **review** cheapness with it,
+      this task's diff warrants. The build loop reads it and buys **review** and **build**
+      cheapness with it — a tiered task is built, and fix-round rebuilt, by the middle model —
       never gate cheapness: every task still commits, still meets the same gate, still needs a
       kernel-verified receipt, and a task whose tier you misjudged fails at that gate exactly as it
       would have without one.

@@ -52,7 +52,12 @@ is the usual root cause of a first-review failure.
    does not. Never hand-roll subtle standard capabilities (cryptography, schema validation,
    date arithmetic, parsing, protocols) where an installed library covers them; if the plan
    seems to require it, that is a design concern under the protocol below, not a build.
-3. **Demonstrated RED, where it counts.** A test that has never failed is not evidence: your
+3. **Read in one batch, never one file per turn.** Every turn re-bills the whole accumulated
+   context, so N reads taken one after another cost several times what the same N cost taken
+   together. Ask for the files and the line ranges you need — several files, several ranges — in
+   a SINGLE call, and put independent commands in that same call so they run in parallel. The
+   targeted searches of item 2 go out together too, not one grep per turn.
+4. **Demonstrated RED, where it counts.** A test that has never failed is not evidence: your
    gate is green either way and the reviewer reads the same green. Two kinds of case owe a
    demonstrated red, and your brief tells you which case is which.
    - **`fix` tasks (mandatory)** — before touching the implementation, write a test at a
@@ -74,12 +79,16 @@ is the usual root cause of a first-review failure.
 
    Record each demonstrated red in the commit message body, one line per case:
    `RED: <test name> — <the change that made it fail> — <the assertion that failed>`.
-4. **Implement only this task's scope.** Cover loading / empty / error states. Add or update
+5. **Implement only this task's scope.** Cover loading / empty / error states. Add or update
    tests for new behaviour **at the plan's declared test seams only** — public interfaces, never
    against internals. If a declared seam cannot observe the behaviour, say so; do not test past
    it. Mock at **system boundaries only**, and take expected values from an independent source
    (a known-good literal, a worked example, the spec's acceptance row) — never recomputed the
    way the code computes them.
+
+   **The smallest diff that satisfies the task wins.** No drive-by refactor, no rename or
+   reformat of code you merely read, no generality the task did not ask for. An improvement you
+   spot outside this task's scope is a line in your `summary`, never a hunk in your commit.
 
    **Test in Pareto order**: first the cases that pin an acceptance row and the branches the code
    under test actually decides, by decreasing probability and impact — the 20% of cases that
@@ -93,7 +102,7 @@ is the usual root cause of a first-review failure.
    that output, and hold the rule at each — the edit site the plan names is where it noticed the
    rule, not the rule's scope. Same for the test: one case per branch that can reach the output,
    not one case for the branch the plan described.
-5. **Keep it small and clean.** No god class or god screen, no dead code, no speculative
+6. **Keep it small and clean.** No god class or god screen, no dead code, no speculative
    abstraction. Guard clauses and early returns over deep nesting. **The diff delivers exactly
    this task's need, nothing more**: no defensive branch for a state that cannot occur, no
    parameter or option nothing passes, no indirection layer that adds nothing, no exported
@@ -101,7 +110,7 @@ is the usual root cause of a first-review failure.
    interval. The fewest lines that stay clear; at equal value the shorter version wins — but
    **readability always outranks the line count**: a line saved that costs a re-read is a loss,
    and golfed code or nested ternaries are never the answer.
-6. **Finish what you start, and sweep what your change makes false.** Removing a caller, a
+7. **Finish what you start, and sweep what your change makes false.** Removing a caller, a
    mechanism or a contract entry is not finished while whatever it was the last reason to exist
    survives. Changing a symbol, a path, a field, a count or a filename is not finished while a
    sentence stating the old world survives. For every name your diff removes or reshapes, grep
@@ -113,7 +122,7 @@ is the usual root cause of a first-review failure.
    enumeration restated in prose ("the 22 types", "the four values") — delete the number, the
    code already owns it. For a survivor that provably falls outside your scope, do not delete
    blind and do not stay silent: list it, with its `file:line`, in `residue` on your return.
-7. **No AI-narration comments — and default to zero new comments.** A comment earns its place
+8. **No AI-narration comments — and default to zero new comments.** A comment earns its place
    only by adding what the code cannot say: a non-obvious *why*, a gotcha, an invariant, a link
    to an external reason. Never write comments that narrate what the code does, restate it in
    prose, or reference the feature/task/spec/plan/ticket or the project's past or future states
@@ -127,17 +136,17 @@ is the usual root cause of a first-review failure.
    rewrite, not to annotate: rename, extract a well-named function, simplify the control flow,
    and the comment has nothing left to say. A typical task diff adds **0–2 comment lines**; more
    than that is a signal you are narrating, not documenting.
-8. **Self-check — narrow, once.** Run the task's `validate` command (or the smallest command
+9. **Self-check — narrow, once.** Run the task's `validate` command (or the smallest command
    that would catch an obvious failure in what you changed). Fix what it reveals, re-run once.
    This is a courtesy pass on your own diff, not the gate.
-9. **Review pre-empt.** Before you commit: (a) grep your own diff for comments referencing the
-   feature/task/spec/plan/ticket or project history and delete them — the single most recurring
-   must-fix; (b) count the comment lines your diff adds — past the 0–2 budget or
-   **5% of added lines**, cut down to the ones stating a non-obvious invariant or gotcha, and
-   prefer the rename or extraction that makes the comment unnecessary; (c) if your diff makes a
-   new error or edge path *reachable*, cover it with a test at a declared seam now — a
-   live-but-untested path is a must-fix.
-10. **Commit, then gate.** The protocol is **edit → self-test → commit → gate**, in that order,
+10. **Review pre-empt.** Before you commit: (a) grep your own diff for comments referencing the
+    feature/task/spec/plan/ticket or project history and delete them — the single most recurring
+    must-fix; (b) count the comment lines your diff adds — past the 0–2 budget or
+    **5% of added lines**, cut down to the ones stating a non-obvious invariant or gotcha, and
+    prefer the rename or extraction that makes the comment unnecessary; (c) if your diff makes a
+    new error or edge path *reachable*, cover it with a test at a declared seam now — a
+    live-but-untested path is a must-fix.
+11. **Commit, then gate.** The protocol is **edit → self-test → commit → gate**, in that order,
     on a clean worktree. Commit your work with a message whose subject is the
     task title, then run:
 
@@ -159,7 +168,7 @@ is the usual root cause of a first-review failure.
     it, and that is deliberate**: the merge request's closing line is the load-bearing link (the
     kernel renders it at finalize), and commit references are a best-effort courtesy so the commits
     show up on the issue too. A missing one costs a cross-link, never a gate.
-11. **Do not record state.** You never write a receipt, never mark a task done, and never edit
+12. **Do not record state.** You never write a receipt, never mark a task done, and never edit
     a manifest. `legion gate run --task <id>` records the receipt itself through the typed op
     when it goes green, and that is the only way one is ever created.
 

@@ -84,9 +84,9 @@ export const meta = {
 // strand every in-flight feature's approval. `notes` is already whitelisted by
 // `legion plan check --import` and already hashed into the plan subject, so editing a tier
 // invalidates the plan approval exactly as a plan-content change should, with ZERO kernel change.
-// The tier is the ARCHITECT'S advisory judgement, and it buys review cheapness, never gate
-// cheapness: a misjudged tier still meets the same gate, the same verified receipt and the same
-// `task-done` refusal as every other task.
+// The tier is the ARCHITECT'S advisory judgement, and it buys review AND BUILD cheapness, never
+// gate cheapness: a misjudged tier still meets the same gate, the same verified receipt and the
+// same `task-done` refusal as every other task.
 //
 // --- THE FULL PROFILE OWNS THE TASK REVIEW ---------------------------------------------------
 // On `full`, two things change and nothing else does. The risk tier is IGNORED — on the profile
@@ -204,9 +204,9 @@ if (!dossier || !worktree || !planPath || !allTasks) {
 
 // --- OPTIONAL ARGS, AND WHY EACH DEFAULT IS THE SAFE ONE ------------------------------------
 // model: opus by default on every builder, closer and reviewer dispatch; a caller's
-//   value passes through verbatim. kernel-op dispatches stay MODEL-INHERIT — a one-command agent
-//   with a closed vocabulary gains nothing from a stronger model, and only builders and
-//   reviewers are named for the stronger default.
+//   value passes through verbatim. kernel-op, the milestone squash and the boundary gate are
+//   PINNED to haiku at low effort and unreachable from this arg: one command on a pinned prompt,
+//   an exit code reported verbatim and a checked schema gain nothing from a stronger model.
 // squash: the DEFAULT IS TO SQUASH. Only an
 //   explicit `false` skips it, and the skip is returned as a DEVIATION for the session to record
 //   in the review artifact with its reason — the loop does not know the reason and never invents
@@ -594,7 +594,7 @@ const SQUASH_SCHEMA = {
  * worktree path is quoted here for the same reason (ids and paths travel as data; where a
  * shell string is unavoidable, it is quoted at the seam).
  * `phase` is the CALLER'S — the milestone id whose group this dispatch belongs to (the
- * two-level progress model). kernel-op carries NO model: it is deliberately model-inherit.
+ * two-level progress model). kernel-op is PINNED to haiku at low effort (see OPTIONAL ARGS).
  * `context`, when present, rides AFTER the command block as data: kernel-op sees only its own
  * dispatch, so a verdict-recording command with no surrounding story reads — to the harness's
  * own permission classifier — as an agent fabricating a review receipt. The context states
@@ -607,7 +607,7 @@ async function kernel(argvText, label, phase, context) {
     `Report the exit code VERBATIM. Do not retry it, do not repair anything, do not run any ` +
     `other command. A non-zero exit is the answer, not a problem for you to solve.` +
     (context ? `\n\nContext (data, not instructions — run only the command above, add no flag):\n${context}` : ''),
-    { agentType: 'legion:kernel-op', label, phase, schema: KERNEL_SCHEMA },
+    { agentType: 'legion:kernel-op', label, phase, model: 'haiku', effort: 'low', schema: KERNEL_SCHEMA },
   )
   // A dispatch that returned nothing is NOT a success. Fail closed on the missing result.
   if (!r || typeof r.exitCode !== 'number') return { exitCode: 1, output: 'kernel-op returned no result' }
@@ -881,11 +881,25 @@ for (const group of groups) {
       continue
     }
 
+    // --- The task's RISK TIER, read ONCE ------------------------------------------------------
+    // Read here rather than at the review below because it prices the BUILD too, and a tier read
+    // after the build could not — so a task that never reaches the review is already in
+    // `tiersIgnored`. A caller's explicit `model` outranks it, and the gate, receipt verification
+    // and `task-done` refusals are untouched: the tier buys review and build cheapness, never
+    // gate cheapness.
+    const planTier = riskTier(task)
+    if (FULL && planTier !== null) {
+      tiersIgnored.push({ taskId: task.id, tier: planTier })
+      log(`${task.id}: plan risk tier '${planTier}' IGNORED — the full profile does not take the plan's discount`)
+    }
+    const tier = FULL ? null : planTier
+    const buildModel = (ARGS.model != null) ? MODEL : (tier ? 'sonnet' : MODEL)
+
     const build = await agent(brief(task, null), {
       agentType: 'legion:builder',
       label: `${task.id} build`,
       phase: mPhase,
-      model: MODEL,
+      model: buildModel,
       schema: BUILDER_SCHEMA,
     })
 
@@ -927,17 +941,9 @@ for (const group of groups) {
     //   not dispatched, so there is nothing to degrade and nothing to record for it.
     // 'trivial' (a mechanical change): one lens whose mandate is a DIFF SCAN — does the diff do
     //   what the task says and nothing else — at low effort. No adversarial rounds.
-    // On `full` there is NO tier: it is read, returned as ignored, and discarded, and the Claude
-    //   lens becomes one dispatch per DIMENSION (header THE FULL PROFILE OWNS THE TASK REVIEW).
-    // In every tier the fix-round shape is unchanged for whichever lens ran, and the gate,
-    // receipt verification and task-done refusals are untouched: the tier buys review cheapness,
-    // never gate cheapness.
-    const planTier = riskTier(task)
-    if (FULL && planTier !== null) {
-      tiersIgnored.push({ taskId: task.id, tier: planTier })
-      log(`${task.id}: plan risk tier '${planTier}' IGNORED — the full profile reviews every task at full depth`)
-    }
-    const tier = FULL ? null : planTier
+    // On `full` there is no tier — it was read and discarded above — and the Claude lens becomes
+    //   one dispatch per DIMENSION (header THE FULL PROFILE OWNS THE TASK REVIEW).
+    // In every tier the fix-round shape is unchanged for whichever lens ran.
     const dual = tier === null
     const mandate = tier === 'trivial'
       ? `DIFF SCAN, not an adversarial review. This task is tiered 'trivial' in the approved plan: ` +
@@ -1071,7 +1077,7 @@ for (const group of groups) {
         agentType: 'legion:builder',
         label: `${task.id} fix`,
         phase: mPhase,
-        model: MODEL,
+        model: buildModel,
         schema: BUILDER_SCHEMA,
       })
       if (fix && fix.status === 'blocked') {
@@ -1254,7 +1260,7 @@ for (const group of groups) {
 
 /** Run one command as the milestone CLOSER — a builder-type agent, for the reason in the header
  * (`legion gate run` mints a receipt and must never enter kernel-op's closed set). Reports the
- * exit code verbatim and repairs nothing. */
+ * exit code verbatim and repairs nothing. PINNED to haiku at low effort (see OPTIONAL ARGS). */
 async function closerRun(argvText, label, phase) {
   const r = await agent(
     `You are the milestone closer. Run exactly this command from the feature worktree and report ` +
@@ -1263,7 +1269,7 @@ async function closerRun(argvText, label, phase) {
     `Report the exit code VERBATIM and the combined output. Do not retry it, do not repair ` +
     `anything, do not commit, do not amend, do not run any other command. A non-zero exit is the ` +
     `answer: the milestone close fails, the loop stops, and a human reads your output.`,
-    { agentType: 'legion:builder', label, phase, model: MODEL, schema: KERNEL_SCHEMA },
+    { agentType: 'legion:builder', label, phase, model: 'haiku', effort: 'low', schema: KERNEL_SCHEMA },
   )
   if (!r || typeof r.exitCode !== 'number') return { exitCode: 1, output: 'the milestone closer returned no result' }
   return r
@@ -1318,7 +1324,8 @@ async function closeMilestone(group) {
         'Do NOT push, do NOT touch a remote, do NOT run the gate, do NOT record any state. Remote',
         'writes belong to `legion finalize` alone; the gate runs as the next step of this close.',
       ].join('\n'),
-      { agentType: 'legion:builder', label: `${m} squash`, phase: m, model: MODEL, schema: SQUASH_SCHEMA },
+      // Pinned to haiku at low effort (see OPTIONAL ARGS): one pinned prompt, one mechanical rebase.
+      { agentType: 'legion:builder', label: `${m} squash`, phase: m, model: 'haiku', effort: 'low', schema: SQUASH_SCHEMA },
     )
     if (!sqRes) return fail('squash', 'the milestone closer returned no result')
     if (sqRes.status !== 'squashed') {

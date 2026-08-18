@@ -1027,7 +1027,7 @@ test("notes.risk 'low' reviews with ONE lens: codex is never dispatched, one ver
     'by design is NOT degradation — the pre-merge human must be able to tell them apart');
   assert.deepEqual(result.built, ['T1']);
   assert.ok(logs.some((l) => /single-lens review BY DESIGN/.test(l)));
-  // The tier buys review cheapness, never gate cheapness.
+  // The tier buys review and build cheapness, never gate cheapness.
   assert.ok(kernelCmds.includes("gate verify-receipt --task 'T1'"));
   assert.ok(kernelCmds.includes("state task-done 'T1'"));
   // The advisory notes still ride the brief in full — a tier must not swallow the mirror.
@@ -1208,31 +1208,78 @@ test('an absent, unknown or malformed risk tier falls through to the DUAL-lens p
   }
 });
 
-// --- T28: OPUS BY DEFAULT (S-009) -------------------------------------------------------------
+// --- T28: OPUS BY DEFAULT (S-009), EXCEPT THE THREE MECHANICAL DISPATCHES ---------------------
+// kernel-op, the milestone squash and the boundary gate each run ONE command (or one pinned
+// prompt) and report an exit code verbatim, so they are pinned to haiku at low effort and a
+// caller's `model` must not reach them.
 
-test('builder, closer and reviewer dispatches default to opus; kernel-op inherits; args.model overrides', async () => {
+/** The three pinned dispatches, told apart the way the harness sees them: kernel-op by agentType,
+ * the other two by label (both are builder-type agents). */
+const isPinned = (d) => d.agentType === 'legion:kernel-op'
+  || d.label === 'M1 squash' || /boundary gate/.test(d.label);
+
+test('builder and reviewer dispatches default to opus; kernel-op, squash and boundary gate are pinned to haiku/low; args.model overrides everything else', async () => {
   const { dispatches } = await runLoop([row('T1')], {
     lensResult: (type, label) =>
       (label === 'T1 review:code-reviewer' ? { verdict: 'fail', findings: [mustFix('one round')] } : undefined),
   });
   assert.ok(dispatches.length > 8);
+  assert.ok(dispatches.some((d) => d.agentType === 'legion:kernel-op'), 'kernel ops are dispatched');
+  assert.ok(dispatches.some((d) => d.label === 'M1 squash'), 'the squash is dispatched');
+  assert.ok(dispatches.some((d) => /boundary gate/.test(d.label)), 'the boundary gate is dispatched');
   for (const d of dispatches) {
-    if (d.agentType === 'legion:kernel-op') {
-      assert.equal('model' in d.opts, false,
-        `${d.label}: kernel-op must stay model-inherit — a one-command agent needs no opus`);
+    if (isPinned(d)) {
+      assert.equal(d.opts.model, 'haiku', `${d.label}: a one-command dispatch is pinned to haiku`);
+      assert.equal(d.opts.effort, 'low', `${d.label}: pinned at low effort`);
     } else {
       assert.equal(d.opts.model, 'opus', `${d.label} must default to opus`);
     }
   }
-  // Every non-kernel role is represented above, or the loop would be vacuous.
+  // Every role is represented above, or the loop would be vacuous — kernel-op included, so a
+  // dispatch that silently loses its pin cannot pass this test.
   assert.deepEqual([...new Set(dispatches.filter((d) => d.opts.model).map((d) => d.agentType))].sort(),
-    ['legion:builder', 'legion:code-reviewer', 'legion:codex-consult', 'legion:product-reviewer']);
+    ['legion:builder', 'legion:code-reviewer', 'legion:codex-consult', 'legion:kernel-op', 'legion:product-reviewer']);
 
   const override = await runLoop([row('T1')], { args: { model: 'sonnet' } });
+  assert.ok(override.dispatches.some(isPinned), 'the pinned dispatches run under an override too');
   for (const d of override.dispatches) {
-    if (d.agentType === 'legion:kernel-op') assert.equal('model' in d.opts, false);
-    else assert.equal(d.opts.model, 'sonnet', `${d.label}: args.model must pass through verbatim`);
+    if (isPinned(d)) {
+      assert.equal(d.opts.model, 'haiku', `${d.label}: args.model must not reach a pinned dispatch`);
+      assert.equal(d.opts.effort, 'low', `${d.label}: args.model must not raise its effort either`);
+    } else {
+      assert.equal(d.opts.model, 'sonnet', `${d.label}: args.model must pass through verbatim`);
+    }
   }
+});
+
+/** One dispatch's model, by the label the harness recorded it under. */
+const modelOf = (dispatches, label) => dispatches.find((d) => d.label === label).opts.model;
+/** A failing Claude lens on T1, so the fix round runs and its own model is assertable too. */
+const oneFixRound = {
+  lensResult: (type, label) =>
+    (label === 'T1 review:code-reviewer' ? { verdict: 'fail', findings: [mustFix('one round')] } : undefined),
+};
+
+test('the plan risk tier buys the BUILDER model too: a tiered task builds and re-builds at sonnet, an explicit model and the full profile do not', async () => {
+  const tiered = { notes: { risk: 'low', mirror: 'src/x.mjs:1' } };
+
+  const tier = await runLoop([row('T1', tiered)], oneFixRound);
+  assert.equal(modelOf(tier.dispatches, 'T1 build'), 'sonnet', 'a tiered task is built at the middle model');
+  assert.equal(modelOf(tier.dispatches, 'T1 fix'), 'sonnet', 'the fix round is the same build and carries the same price');
+
+  const untiered = await runLoop([row('T1')], oneFixRound);
+  assert.equal(modelOf(untiered.dispatches, 'T1 build'), 'opus', 'no tier ⇒ the top model, exactly as before');
+  assert.equal(modelOf(untiered.dispatches, 'T1 fix'), 'opus');
+
+  const override = await runLoop([row('T1', tiered)], { ...oneFixRound, args: { model: 'opus' } });
+  assert.equal(modelOf(override.dispatches, 'T1 build'), 'opus', "a caller's model outranks the tier");
+  assert.equal(modelOf(override.dispatches, 'T1 fix'), 'opus');
+
+  const full = await runLoop([row('T1', tiered)], FULL);
+  assert.equal(modelOf(full.dispatches, 'T1 build'), 'opus',
+    'the profile that declined the tier for the review declines it for the build as well');
+  assert.deepEqual(full.result.tiersIgnored, [{ taskId: 'T1', tier: 'low' }]);
+  assert.equal(full.logs.filter((l) => /risk tier 'low' IGNORED/.test(l)).length, 1, 'read once, logged once');
 });
 
 // --- T31: GATE-FAILURE → IN-LOOP RECOVERY, the LOOP half (PLAN-V3 M1a fixture case 2) ---------
