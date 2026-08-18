@@ -31,6 +31,19 @@ A `SessionStart` hook has already injected a compact rendering of `feature.json`
 into your context and recorded this session id. **That injected block is your stage, not your
 memory of the transcript.** If it is absent, read the two manifests in the dossier yourself.
 
+**If that block is absent, record this session first — before anything else.** Absent means the
+hook did not fire (a resume launched from the main root is the usual cause), so nothing recorded
+this session id, and the receipt hooks resolve a feature by it whenever your cwd is not the
+worktree. From the worktree, with **this session's own id**:
+
+```
+cd <worktree> && legion state session-record --session-id <id>
+```
+
+The id is in the Bash environment as `$CLAUDE_CODE_SESSION_ID`. If it is empty, **do not invent
+one and do not substitute a transcript filename or a timestamp** — say so and move on: a
+fabricated id is a false record, and it would claim receipts for whatever session really owns it.
+
 ## Rule 1 — the judgement is yours, the MECHANISM is the kernel's
 
 Approvals bind to **artifact hashes**, and a changed artifact deterministically invalidates its

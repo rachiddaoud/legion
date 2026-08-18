@@ -35,10 +35,22 @@
 //    here: a hook process is single-purpose and exits within milliseconds, so there is no
 //    concurrent code whose relative-path assumptions could break.
 //
+// D. THE PAYLOAD cwd IS NOT ALWAYS THE FEATURE WORKTREE, which is why fact C alone is not
+//    enough (issue #3). Two sessions are legion features and still hand these hooks a cwd that
+//    matches no worktree: a `/legion:start` session, which becomes the feature session while
+//    standing in the MAIN ROOT, and a `/legion:feature` resume launched from that root. The
+//    harness also stamps the Bash tool's PERSISTENT cwd on hook input, so one stray
+//    `cd <dossier>` before a reviewer dispatch drifts the payload out of an ordinary worktree
+//    session too. In every one of those the cwd→worktree match fails, the receipt hooks take the
+//    sanctioned-silence path, and `legion state review-record` then refuses forever for want of
+//    evidence the reviewer really did run. So resolveFeature has a SECOND resolution, tried only
+//    when the first finds nothing: the feature whose feature.json `currentSession` equals the
+//    payload's session_id (see resolveBySession below).
+//
 // FAIL-SAFE vs FAIL-CLOSED, the distinction every hook header repeats concretely:
-//   - "this cwd is not a legion feature worktree" ⇒ do nothing, exit 0, print nothing. This
-//     is the ONLY sanctioned silence; Claude Code loads this plugin globally and most
-//     sessions are not legion features.
+//   - "neither the payload's cwd nor its session id names a legion feature" ⇒ do nothing,
+//     exit 0, print nothing. This is the ONLY sanctioned silence; Claude Code loads this plugin
+//     globally and most sessions are not legion features.
 //   - a kernel command that RAN and REFUSED is never swallowed. Each hook surfaces it
 //     through the loudest channel its event actually supports (which is not the same channel
 //     for every event — see the per-hook headers).
@@ -48,7 +60,8 @@
 //     corrupt tasks.json ALIKE. A broken dossier rendered as "not a legion feature" is a session
 //     running with NO GATE AT ALL. The three outcomes are now separated, and existsSync is what
 //     separates ABSENT from CORRUPT — that distinction is the whole fix:
-//       unregistered cwd / no index / no feature.json ⇒ null (silence, as above);
+//       unresolvable cwd AND session / no index /
+//       no feature.json                              ⇒ null (silence, as above);
 //       tasks.json ABSENT                            ⇒ {…, tasks: null} — an ordinary early
 //                                                      stage, before `legion state init`;
 //       ANY manifest PRESENT but unreadable or of an
@@ -58,9 +71,10 @@
 // TWO R9 RESIDUALS, stated rather than left to be rediscovered:
 //   (i)  an ABSENT feature.json in a registered worktree stays SILENT. It is asserted as silence
 //        by test/hooks.test.mjs and is out of T12's scope; absent is not corrupt.
-//   (ii) a cwd matching MULTIPLE features reads as unregistered here, because separating it needs
-//        a second copy of resolveDossier's matcher. `legion state` refuses it loudly, and the
-//        index CAS makes a duplicate registration unreachable in ordinary use.
+//   (ii) a cwd matching MULTIPLE features reads as unresolved here (and so falls through to fact
+//        D's session fallback), because separating it needs a second copy of resolveDossier's
+//        matcher. `legion state` refuses it loudly, and the index CAS makes a duplicate
+//        registration unreachable in ordinary use.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -114,16 +128,54 @@ function readPresentManifest(path) {
   return { doc };
 }
 
+/** The feature whose feature.json claims `sessionId` as its `currentSession`, or null — the
+ * second resolution of fact D, and the reason it is trustworthy from ANY cwd: `currentSession`
+ * is written by the typed op `legion state session-record` (src/kernel/state.mjs), i.e. only for
+ * a session that explicitly recorded ITSELF into that one feature. It is a stronger signal than
+ * a cwd, which is merely where a process happens to stand.
+ * Returns {worktree, dossier} from the index entry — the same two facts resolveDossier keys on.
+ * A UNIQUE claimant is required: zero is the ordinary "this session recorded nothing" case, and
+ * two features claiming one session id is a state nothing legitimate produces (session-record
+ * overwrites, it does not share), so both stay silent rather than guess which tree a receipt
+ * belongs to.
+ * A candidate whose feature.json cannot be parsed at all is SKIPPED, not reported: from an
+ * unresolved cwd we cannot tell whose manifest it is, and turning one broken dossier into a
+ * corruption report in every unrelated session on the machine trades R9's fix for a new lie. A
+ * manifest that parses but is off-schema still matches here and is left to the caller's ordinary
+ * readPresentManifest pass, which is loud about it exactly as on the cwd path. */
+function resolveBySession(idx, sessionId) {
+  if (typeof sessionId !== 'string' || sessionId === '') return null;
+  const matches = [];
+  for (const p of idx?.projects ?? []) {
+    for (const feat of p?.features ?? []) {
+      if (typeof feat?.dossier !== 'string' || typeof feat?.worktree !== 'string') continue;
+      const fp = join(feat.dossier, 'feature.json');
+      if (!existsSync(fp)) continue;
+      let doc;
+      try { doc = readJson(fp); } catch { continue; }
+      if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) continue;
+      if (doc.currentSession === sessionId) matches.push({ worktree: feat.worktree, dossier: feat.dossier });
+    }
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
 /** Resolve the feature this hook fired inside.
- * RETURNS null FOR EXACTLY ONE THING — "not a registered legion feature worktree, do nothing" —
- * which is the only sanctioned silence (header FAIL-SAFE). Otherwise it returns
- * {cwd, dossier, feature, tasks, corrupt}, where `corrupt` is null or {what, path, detail} and
- * EVERY caller must handle it before touching `feature`/`tasks`: on the corrupt path
- * feature/tasks may be null, because the point is that they could not be read.
- * The chdir is fact C above. Manifests are read directly rather than through a kernel
- * subprocess: this runs on every SessionStart and must stay cheap. */
+ * RETURNS null FOR EXACTLY ONE THING — "this hook did not fire inside a legion feature, do
+ * nothing" — which is the only sanctioned silence (header FAIL-SAFE). Two resolutions answer
+ * that question, in this order: the payload cwd against the registered worktrees (fact C), and,
+ * when that matches nothing, the payload session_id against the features' recorded
+ * `currentSession` (fact D). Otherwise it returns {cwd, dossier, feature, tasks, corrupt}, where
+ * `corrupt` is null or {what, path, detail} and EVERY caller must handle it before touching
+ * `feature`/`tasks`: on the corrupt path feature/tasks may be null, because the point is that
+ * they could not be read.
+ * The two resolutions return the SAME shape and leave the process in the SAME place: the session
+ * fallback chdir()s into the feature worktree and reports it as `cwd`, so every caller's relative
+ * paths and every runKernel(argv, cwd) resolve against the feature, not against the main root the
+ * payload named. Manifests are read directly rather than through a kernel subprocess: this runs
+ * on every SessionStart and must stay cheap. */
 export function resolveFeature(input) {
-  const cwd = typeof input?.cwd === 'string' && existsSync(input.cwd) ? input.cwd : null;
+  let cwd = typeof input?.cwd === 'string' && existsSync(input.cwd) ? input.cwd : null;
   if (!cwd) return null;
   try { process.chdir(cwd); } catch { return null; }
   const corrupt = (what, path, detail) => ({ cwd, dossier: null, feature: null, tasks: null, corrupt: { what, path, detail } });
@@ -133,8 +185,8 @@ export function resolveFeature(input) {
   // anywhere, which is the ordinary case for most sessions; present-but-broken ⇒ every feature on
   // this machine is unresolvable and saying "not a legion feature" would be a lie.
   const idxPath = projectsIndexPath();
+  let idx = null;
   if (existsSync(idxPath)) {
-    let idx;
     try { idx = readJson(idxPath); } catch (e) { return corrupt('projects.json', idxPath, String(e?.message ?? e)); }
     if (idx === null || typeof idx !== 'object' || Array.isArray(idx)) {
       return corrupt('projects.json', idxPath, 'not a JSON object');
@@ -162,8 +214,22 @@ export function resolveFeature(input) {
         `\`projects\` is ${idx.projects === undefined ? 'missing' : 'not an array'}`);
     }
   }
-  let dossier;
-  try { dossier = resolveDossier({}); } catch { return null; } // unregistered cwd ⇒ silence
+  let dossier = null;
+  try { dossier = resolveDossier({}); } catch { dossier = null; } // unresolved cwd ⇒ try fact D
+
+  // THE SESSION FALLBACK (fact D), tried from ANY unresolved cwd and not only from a registered
+  // main root: `currentSession` matches a session that recorded ITSELF, so it says more about
+  // which feature this hook belongs to than the directory the payload happens to name. Still
+  // nothing ⇒ the sanctioned silence, unchanged. On a match the process moves INTO the feature
+  // worktree and `cwd` becomes it, so what the caller gets back is indistinguishable from a
+  // cwd-resolved feature (doc comment above).
+  if (dossier === null) {
+    const viaSession = resolveBySession(idx, input?.session_id);
+    if (!viaSession) return null;
+    try { process.chdir(viaSession.worktree); } catch { return null; } // vanished worktree ⇒ silence
+    cwd = viaSession.worktree;
+    dossier = viaSession.dossier;
+  }
 
   // feature.json ABSENT is silence (residual (i) in the header); PRESENT but broken is corruption.
   const featurePath = join(dossier, 'feature.json');

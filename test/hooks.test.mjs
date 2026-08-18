@@ -74,7 +74,7 @@ function scenario({ attach = [] } = {}) {
   const dossier = join(home, 'orgs', 'default', 'projects', 'fix-proj', 'features', 'f1');
   const worktree = realpathSync(join(base, '.legion-worktrees', 'fix-proj', 'f1', 'checkout'));
   const s = {
-    home, base, dossier, worktree, env, intakeRepos,
+    home, base, repo, dossier, worktree, env, intakeRepos,
     configPath: join(home, 'orgs', 'default', 'projects', 'fix-proj', 'project.json'),
   };
   assert.equal(kernel(s, 'state', 'init', ...NOW).status, 0);
@@ -556,6 +556,89 @@ test('two lenses stopping CONCURRENTLY both mint — the manifest lock loses nei
   assert.equal(b.code, 0, b.stderr);
   const ids = readTasksJson(s).reviewReceipts.map((x) => x.agentId).sort();
   assert.deepEqual(ids, ['lens-a', 'lens-b'], 'a lost update here IS a lost review');
+});
+
+// --- issue #3: the SESSION FALLBACK — a feature session whose cwd is NOT the worktree ---------
+// A `/legion:start` session, and a `/legion:feature` resume launched from the main root, ARE
+// feature sessions standing in the main checkout; the harness also stamps the Bash tool's
+// persistent cwd on hook input, so one stray `cd <dossier>` drifts an ordinary worktree session
+// the same way. Each of those made every receipt hook take the sanctioned-silence path, and
+// `legion state review-record` then refused forever for want of evidence. The second resolution
+// is feature.json's `currentSession`, written by `legion state session-record` — a session that
+// recorded ITSELF into exactly one feature.
+
+/** Record `id` as f1's currentSession, the way the skills tell the session to. */
+const recordSession = (s, id) => {
+  const r = kernel(s, 'state', 'session-record', '--session-id', id, ...NOW);
+  assert.equal(r.status, 0, r.stderr);
+  return id;
+};
+
+const mintFromCwd = (s, cwd, extra = {}) => fire(s, 'review-receipt', {
+  hook_event_name: 'SubagentStop', agent_type: 'legion:code-reviewer', agent_id: 'rev-root',
+  agent_transcript_path: '/dev/null', stop_hook_active: false, cwd,
+  last_assistant_message: '{"verdict":"pass","subject":"task:T1","findings":[]}',
+  ...extra,
+});
+
+for (const [where, cwdOf] of [['the MAIN REPO ROOT', (s) => s.repo], ['the DOSSIER', (s) => s.dossier]]) {
+  test(`a reviewer stopping with cwd at ${where} still mints, via the recorded session id`, () => {
+    const s = scenario();
+    recordSession(s, 'sess-root-1');
+    const r = mintFromCwd(s, cwdOf(s), { session_id: 'sess-root-1' });
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(r.stderr, '', 'the mint must go through, not merely be attempted');
+    const receipt = readTasksJson(s).reviewReceipts.at(-1);
+    assert.equal(receipt.agentId, 'rev-root');
+    assert.equal(receipt.verdict, 'pass');
+    assert.equal(receipt.subject, 'task:T1');
+    // The receipt keys to the FEATURE WORKTREE's tree, which is the whole point of the chdir:
+    // resolved-by-session and resolved-by-cwd must be indistinguishable downstream.
+    assert.equal(receipt.treeHash, sh(s.worktree, 'rev-parse', 'HEAD^{tree}'));
+  });
+}
+
+test('an UNRECORDED session id is not a resolution — silence, exactly as before', () => {
+  const s = scenario();
+  const before = readTasksJson(s).revision;
+  for (const payload of [{ session_id: 'sess-never-recorded' }, {}]) {
+    const r = mintFromCwd(s, s.repo, payload);
+    assert.equal(r.status, 0);
+    assert.equal(r.stderr, '', 'an unresolvable payload is the one sanctioned silence');
+  }
+  assert.equal(readTasksJson(s).revision, before, 'nothing was minted at a feature nobody named');
+});
+
+test('TWO features claiming one session id resolve to NEITHER — a receipt is never guessed', () => {
+  const s = scenario();
+  recordSession(s, 'sess-shared');
+  // f2 is a second feature of the same project, hand-set to claim the same session. Nothing
+  // legitimate produces this (session-record overwrites, it does not share), which is exactly why
+  // it must not be repaired by picking one: the receipt would certify the wrong tree.
+  let r = spawnSync(NODE, [BIN, 'feature', 'start', 'f2', '--base', 'main'], { cwd: s.repo, encoding: 'utf8', env: s.env });
+  assert.equal(r.status, 0, r.stderr);
+  const f2 = join(s.home, 'orgs', 'default', 'projects', 'fix-proj', 'features', 'f2');
+  r = spawnSync(NODE, [BIN, 'state', 'session-record', '--session-id', 'sess-shared', ...NOW],
+    { cwd: realpathSync(join(s.base, '.legion-worktrees', 'fix-proj', 'f2', 'checkout')), encoding: 'utf8', env: s.env });
+  assert.equal(r.status, 0, r.stderr);
+
+  const before = readTasksJson(s).revision;
+  const hook = mintFromCwd(s, s.repo, { session_id: 'sess-shared' });
+  assert.equal(hook.status, 0);
+  assert.equal(hook.stderr, '', 'ambiguity is silence, not a coin toss');
+  assert.equal(readTasksJson(s).revision, before, 'nothing minted for either claimant');
+});
+
+test('a CORRUPT projects.json stays LOUD from a main-root cwd — the fallback never softens R9', () => {
+  // The index preflight runs BEFORE either resolution, so a broken index is still a corruption
+  // report and never "not a legion feature", session id or no session id.
+  const s = scenario();
+  recordSession(s, 'sess-corrupt-root');
+  writeFileSync(join(s.home, 'projects.json'), '{ "projects": not json\n');
+  const r = mintFromCwd(s, s.repo, { session_id: 'sess-corrupt-root' });
+  assert.equal(r.status, 0, 'a reviewer stop is never blocked');
+  assert.match(r.stderr, /DOSSIER CORRUPT/);
+  assert.match(r.stderr, /projects\.json/, 'the unreadable index must be named');
 });
 
 // --- Notification ----------------------------------------------------------------------------

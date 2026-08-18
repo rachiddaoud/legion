@@ -204,10 +204,15 @@ cd <worktree> && legion state session-record --session-id <id>
 
 The id is in the Bash environment as `$CLAUDE_CODE_SESSION_ID` (present in the 2.1.219/2.1.220
 builds; re-verify after a Claude Code upgrade). If it is empty, **do not invent one and do not
-substitute a transcript filename or a timestamp** — say so and move on: session history is
-bookkeeping and nothing in the kernel gates on it, whereas a fabricated id is a false record.
-This op needs only `feature.json`, so it works before `legion state init` — which is why it comes
-first, while you are still thinking about it.
+substitute a transcript filename or a timestamp** — say so and move on: a fabricated id is a
+false record, and it would claim another session's receipts. This op needs only `feature.json`,
+so it works before `legion state init` — which is why it comes first, while you are still
+thinking about it.
+
+**This one is load-bearing, not bookkeeping.** The recorded id is how the `SubagentStop` receipt
+hooks find this feature at all: your cwd is the main root, which matches no worktree, so without
+it every reviewer and builder stops without minting a receipt and the recording ops refuse
+afterwards for want of evidence. Run it before you dispatch anything.
 
 **(b) Read the manifests yourself.** There is no injected stage block in your context and there
 will not be one until this session restarts. Open `feature.json` and `tasks.json` from the dossier
@@ -269,6 +274,12 @@ otherwise. What holds:
   were removed 2026-08-07, and a hand-rolled push meets nothing local.
 - **You** keep the discipline the isolation used to keep for you: edits belong in the worktree,
   and feature branches leave through finalize.
+- **The receipt hooks still fire, because step 4(a) ran.** They resolve this feature by the
+  session id you recorded whenever the cwd they are handed is not the worktree — the main root
+  included. Skip step 4(a) and that stops being true: reviewers and builders then stop without
+  minting anything, and the recording ops refuse afterwards with no way to repair the run
+  short of re-dispatching. What a main-root session genuinely loses is the injected stage block,
+  which step 4(b) replaces by hand.
 
 There is no local guard layer: the server refusal `legion doctor` verifies is the only barrier,
 and the discipline is yours.

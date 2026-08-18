@@ -21,7 +21,10 @@
 //     model, a `session-record` refusal cannot stop the session. It is surfaced instead as a
 //     LEGION KERNEL REFUSAL block at the TOP of the injected context, where the model reads
 //     it and can act. Claiming this hook fails closed would be a claim the code does not
-//     deliver; the session-history write is bookkeeping, and nothing downstream gates on it.
+//     deliver. The write is not mere bookkeeping, though: `currentSession` is what
+//     _common.mjs's session fallback (fact D) resolves a feature by when the payload cwd is not
+//     the worktree, so a session that never got recorded is a session whose receipt hooks fall
+//     silent from a main root — the refusal above is worth acting on, not filing.
 //   - A CORRUPT MANIFEST IS LOUD IN-BAND (R9). SessionStart cannot block anything, so the
 //     loudest channel it has is additionalContext — the model reads that. On corruption this hook
 //     injects the corruption ALONE, naming the file and its path and saying in terms that the

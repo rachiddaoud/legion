@@ -33,7 +33,8 @@
 // any other reviewer is off-contract output, never a licence to drop its verdict.
 //
 // FAIL-SAFE vs FAIL-CLOSED — one DELIBERATE ASYMMETRY with builder-receipt.mjs:
-//   - the silences are identical (not a reviewer, unregistered cwd, no tasks.json ⇒ exit 0);
+//   - the silences are identical (not a reviewer, a payload neither cwd nor session id resolves
+//     to a feature — _common.mjs fact D — no tasks.json ⇒ exit 0);
 //   - but NOTHING HERE EVER EXITS 2. A corrupt dossier, and even a kernel REFUSAL of the mint,
 //     are LOUD on stderr and then release the reviewer (exit 0). Blocking a reviewer's stop
 //     cannot mint anything and the reviewer has no remedial action a builder has (there is no
