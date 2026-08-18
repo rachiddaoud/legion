@@ -976,6 +976,8 @@ test('the decision grammar is declared across the plan surface', () => {
   const iInputs = architect.indexOf('## Inputs');
   assert.match(architect.slice(iInputs, architect.indexOf('## Do')), /lessons\.md/,
     'the architect reads the project lessons file whole');
+  assert.match(architect, /\*\*build\*\*/,
+    'the risk tier is stated to buy build cheapness too, not review cheapness alone');
 
   const critic = read('agents', 'plan-critic.md');
   assert.match(critic, /always present/,
@@ -988,12 +990,16 @@ test('the decision grammar is declared across the plan surface', () => {
   assert.match(critic, /[Dd]eletion/, 'and the over-design probe');
   assert.match(critic, /[Uu]ndeclared structuring choice/,
     'a structuring choice visible in the tree with no block is a finding');
+  assert.match(critic, /subsystems/,
+    'the sizing check names a concrete over-sizing signal, not only a principle');
 
   const builder = read('agents', 'builder.md');
   assert.match(builder, /"kind":\s*"design"/, 'the builder can contest a plan premise as typed data');
   assert.match(builder, /premise/, 'with the contested premise named');
   assert.match(builder, /alternative/, 'and the simpler route named');
   assert.match(builder, /plan stage/, 'and told where the concern routes — never to a task answer');
+  assert.match(builder, /re-bills/, 'the builder is told to group its reads, and why');
+  assert.match(builder, /drive-by/, 'and to write the smallest diff that satisfies the task');
 
   assert.match(read('agents', 'code-reviewer.md'), /category/,
     'reviewer findings can carry the recurrence slug');

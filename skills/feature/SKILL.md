@@ -407,8 +407,11 @@ done-tasks-skip filter reads them, so a re-run in any session retries only outst
   as `tasks`. It is how the loop knows a milestone's close already happened in an earlier run.
   Omit it and every close runs again (safe, and reported); pass a stale hand-built list and you
   have told the loop a close happened that did not.
-- **`model`** (optional) overrides the loop's default of `opus` on every builder, closer and
-  reviewer dispatch. **`squash: false`** (optional) turns off the per-milestone squash default —
+- **`model`** (optional) rides verbatim on every builder, closer and reviewer dispatch, in place
+  of the loop's default of `opus`. It never reaches the mechanical dispatches: kernel-op, the
+  milestone squash and the boundary gate are pinned to `haiku` whatever you pass. With no
+  override, a task the approved plan tiers `low` or `trivial` builds — and fix-round rebuilds —
+  at `sonnet`. **`squash: false`** (optional) turns off the per-milestone squash default —
   see review step 1 before you use it.
 
 **The loop is MILESTONE-INTERLEAVED.** Per milestone,

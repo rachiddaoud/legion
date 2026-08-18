@@ -45,6 +45,9 @@ report; you never edit the plan, the task tree, or any manifest.
 - **Task sizing** — each task is one coherent, independently gateable change. Flag
   **over-splitting as firmly as over-sizing**: sibling tasks that would land as one commit
   should be one task, because each extra task costs a full builder + gate + review cycle.
+  Concretely: a task whose plan slice implies more than about five files, or reaches across
+  several subsystems, is a `must-fix` to split — an over-sized task is what produces a builder
+  that reads and edits for hundreds of turns.
 - **Slice shape** — milestones are vertical tracer-bullet slices with a demoable acceptance
   surface, not horizontal layers. A foundational no-UI milestone passes only when the plan
   states the contract-first reason. A wide refactor is sequenced expand → migrate → contract
