@@ -631,6 +631,11 @@ test('the one-task skip is decided PER MILESTONE — a two-task milestone in the
   assert.deepEqual(result.milestones[0].close.squash, { skipped: true, reason: 'single-task milestone' });
   assert.equal(result.milestones[1].close.squash.treeAfter, TREE, 'M2 squashed, and reported the tree pair it preserved');
   assert.deepEqual(result.squashDeviations, []);
+  const squash = dispatches.find((d) => d.label === 'M2 squash');
+  assert.match(squash.prompt, /the LAST COMMIT of the PREVIOUS/,
+    'the rewrite boundary is stated as the previous milestone\'s last commit, whatever its shape');
+  assert.doesNotMatch(squash.prompt, /produced by this same step/,
+    'M1 held one task, so no squashed commit marks its end — a closer told to look for one cannot find the boundary');
 });
 
 test('a failing close review costs ONE fix round: fix -> RE-GATE -> the SAME role re-judges its own findings', async () => {
