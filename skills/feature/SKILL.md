@@ -418,7 +418,9 @@ done-tasks-skip filter reads them, so a re-run in any session retries only outst
   have told the loop a close happened that did not.
 - **`model`** (optional) rides verbatim on every builder, closer and reviewer dispatch, in place
   of the loop's default of `opus`. It never reaches the mechanical dispatches: kernel-op, the
-  milestone squash and the boundary gate are pinned to `haiku` whatever you pass. With no
+  milestone squash and the boundary gate are pinned to `haiku` whatever you pass — and neither is
+  the **codex lens**, pinned to `haiku` at every scope because its invocation is pinned too and
+  the reviewing in that dispatch is codex's, not the dispatching model's. With no
   override, a task the approved plan tiers `low` or `trivial` builds — and fix-round rebuilds —
   at `sonnet`. **`squash: false`** (optional) turns off the per-milestone squash default —
   see review step 1 before you use it.
@@ -539,7 +541,7 @@ a **lessons trigger** (the Lessons section below): the decision that survived, o
 that fell, lands in `lessons.md` with its scope and its re-evaluation condition.
 
 **PERSIST THE RETURN VALUE BEFORE YOU DO ANYTHING ELSE — to the dossier, never to session
-notes.** Five of its fields exist **only** there: the workflow rebuilds them per run, a re-run
+notes.** Six of its fields exist **only** there: the workflow rebuilds them per run, a re-run
 over finished work returns them empty, and `tasks.json` records the reviews that happened, never
 the ones that did not. Session context is not durable — a `/clear` or a compaction between this
 return and the review artifact would silently thin the pre-merge evidence, and nobody downstream
@@ -555,6 +557,13 @@ facts survive to reach it.
   unavailable" from "codex was never dispatched", and the human decides on a review thinner than
   the profile promised without being told. Empty on `express`, which reviews no task — a close
   report carrying `degraded` is the only form this fact takes there.
+- **`codexOff`** — `null`, or `{after, reason, detail}`: the task or milestone that discovered the
+  codex lens was **durably** gone (`cli-missing`, `not-authenticated`, `quota`), the classified
+  cause, and codex's own message. From that subject on the lens was **not dispatched again** — one
+  dispatch costs ~26k tokens whatever it reports, and the answer was already known. The tasks that
+  followed are still listed in `degraded`; this is the one line that says why they stopped costing
+  a dispatch. A transient absence (`network`, `timeout`) never latches, so `codexOff` stays `null`
+  and each `degraded` id is its own one-off loss.
 - **`singleLens`** — `{taskId, tier}` for every task reviewed by one lens **because the approved
   plan tiered it that way**. This is a different fact from `degraded` and must stay a different
   line in the artifact: one is cheapness the human approved, the other is a hole in the review.
@@ -622,7 +631,11 @@ flags the milestone's tasks `notes.visual` — the visual reviewer, with every v
    - **Every task returned as `degraded`, by id** — reviewed by one lens because the codex lens was
      unavailable — **and every milestone whose close report carries `degraded`** — closed without
      the advisory codex lens for the same reason (express and full; the close continues by design,
-     but the pre-merge human is entitled to know which second opinions never happened).
+     but the pre-merge human is entitled to know which second opinions never happened). The lens
+     can go dark MID-RUN and stay dark: on a durable absence the loop stops dispatching it and
+     returns `codexOff`. Every id is still listed — a review nobody bought is exactly as thin as
+     one that was attempted and failed — and `codexOff` is what tells the human from which subject
+     on, and why.
      On `express` the TASK half of this entry and the next two read **"not applicable on this
      profile"** — that profile runs no task review, so those fields are empty by profile and not by
      omission; a milestone whose close report carries `degraded` is still reported, and on this
