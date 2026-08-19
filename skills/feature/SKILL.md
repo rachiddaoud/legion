@@ -425,6 +425,18 @@ done-tasks-skip filter reads them, so a re-run in any session retries only outst
   at `sonnet`. **`squash: false`** (optional) turns off the per-milestone squash default —
   see review step 1 before you use it.
 
+**THE CONSULT BACKEND IS PLUGIN CONFIG, NOT A WORKFLOW ARG.** Which external second opinion the
+consult lens buys — `codex` (the default), `gemini`, or an OpenAI-compatible API — is a **global
+setting on the legion plugin**, so it is the same on every feature in every repository and no
+argument here can move it. Set it from `/plugin` → legion → configure, or by editing
+`pluginConfigs.legion.options` in **`~/.claude/settings.json`** (user scope only — a project-scope
+copy is ignored by design). The four keys are `consult_backend`, `consult_model`,
+`consult_base_url` and `consult_token_env`. **`consult_token_env` is the NAME of an environment
+variable, never a token**: the value stays in the operator's shell environment and legion never
+stores, transports or prints it. Nothing is required to get the old behaviour — unset means
+`codex`. If the operator asks where the second opinion comes from, or wants a different one, that
+is the whole answer; do not add an argument for it.
+
 **The loop is MILESTONE-INTERLEAVED.** Per milestone,
 in order, and milestone N+1 does not start until milestone N has closed:
 
@@ -553,17 +565,22 @@ approval — the review artifact at the next stage is the hashed record; this fi
 facts survive to reach it.
 
 - **`degraded`** — task ids whose consult lens was **unavailable**, so they got one lens. Not a
-  failure and not a second pass. Lose the list and the pre-merge gate cannot tell "the consult lens was
-  unavailable" from "it was never dispatched", and the human decides on a review thinner than
+  failure and not a second pass. Lose the list and the pre-merge gate cannot tell "the consult lens
+  was unavailable" from "it was never dispatched", and the human decides on a review thinner than
   the profile promised without being told. Empty on `express`, which reviews no task — a close
-  report carrying `degraded` is the only form this fact takes there.
+  report carrying `degraded` is the only form this fact takes there. **Which** backend was missing
+  is in the lens's own return: it carries a `backend` field on every answer, available or not.
 - **`consultOff`** — `null`, or `{after, reason, detail}`: the task or milestone that discovered the
-  consult lens was **durably** gone (`cli-missing`, `not-authenticated`, `quota`), the classified
-  cause, and the backend's own message. From that subject on the lens was **not dispatched again** — one
+  consult lens was **durably** gone (`cli-missing`, `not-authenticated`, `quota`, `misconfigured`),
+  the classified cause, and the backend's own message. From that subject on the lens was **not
+  dispatched again** — one
   dispatch costs ~26k tokens whatever it reports, and the answer was already known. The tasks that
   followed are still listed in `degraded`; this is the one line that says why they stopped costing
   a dispatch. A transient absence (`network`, `timeout`) never latches, so `consultOff` stays `null`
-  and each `degraded` id is its own one-off loss.
+  and each `degraded` id is its own one-off loss. **`misconfigured` means the plugin's consult
+  config is wrong** — an unknown backend name, a missing base URL, token env var or model, or a
+  Claude model on an API backend — and it is fixed where it lives, in `pluginConfigs.legion.options`
+  of `~/.claude/settings.json`, never by an argument to this workflow.
 - **`singleLens`** — `{taskId, tier}` for every task reviewed by one lens **because the approved
   plan tiered it that way**. This is a different fact from `degraded` and must stay a different
   line in the artifact: one is cheapness the human approved, the other is a hole in the review.
@@ -635,7 +652,9 @@ flags the milestone's tasks `notes.visual` — the visual reviewer, with every v
      can go dark MID-RUN and stay dark: on a durable absence the loop stops dispatching it and
      returns `consultOff`. Every id is still listed — a review nobody bought is exactly as thin as
      one that was attempted and failed — and `consultOff` is what tells the human from which subject
-     on, and why.
+     on, and why. **Name the backend** while you are there: the lens returns a `backend` field on
+     every answer, and "no second opinion because gemini is not installed" is a different fact for
+     the human than "no second opinion because the API key expired".
      On `express` the TASK half of this entry and the next two read **"not applicable on this
      profile"** — that profile runs no task review, so those fields are empty by profile and not by
      omission; a milestone whose close report carries `degraded` is still reported, and on this
@@ -649,7 +668,12 @@ flags the milestone's tasks `notes.visual` — the visual reviewer, with every v
    - **Every accepted residual** (RR3): the findings not fixed, each with the reason.
    - **Every adjudicated consult fail** (RR4): the rejected finding, why, and the residual.
 3. **Settle what is still open.** Every recorded `consult` fail is either fixed or
-   adjudicated in the artifact before this stage completes — never left standing (RR4). A failing
+   adjudicated in the artifact before this stage completes — never left standing (RR4).
+   **A feature started before the rename may hold rows recorded under the old role name
+   `codex-consult`.** They are inert to every predicate — no profile's required set and no stage
+   check names either role — but they are still a recorded second opinion that failed, so RR4
+   applies to them exactly as it does to a `consult` row: fix it or adjudicate it in the artifact.
+   The lens itself re-runs under the new name; nothing needs migrating. A failing
    review that came back from a milestone close goes through the same shape the loop used: fix
    commit → `legion gate run --boundary` for a fresh receipt → **warm re-review by the reviewer
    that failed, its findings as the checklist** (RR1), within the round budget of RR2 → record the
@@ -701,7 +725,9 @@ just earned.
 ### pre-merge
 
 1. Present the human gate: the diff, the boundary receipt, every review verdict, the consult
-   findings on the express and full profiles, anything the reviewers marked `unverified`, **every task
+   findings on the express and full profiles — **naming the backend they came from**, which the
+   lens's return states, because "a second model read this" is only evidence once the human knows
+   which one — anything the reviewers marked `unverified`, **every task
    the review artifact records as `degraded`** — a task reviewed by one lens because the consult lens was
    unavailable — **every task it records under `singleLens`, with its plan-assigned tier** — one
    lens by design, which is a different thing — **every task under `tiersIgnored`** — the profile
