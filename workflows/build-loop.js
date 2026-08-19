@@ -1,7 +1,7 @@
 export const meta = {
   name: 'build-loop',
   description:
-    'The shipped legion build stage, MILESTONE-INTERLEAVED: for each milestone of the approved, hash-locked plan — every outstanding task (brief, build, VERIFIED gate receipt, review at the task\'s risk tier, one fix round, recorded verdicts, typed task-done), then that milestone CLOSES (squash, boundary gate, milestone code review, product review) before the next milestone starts. Fail-closed, re-runnable: done tasks skip and a milestone whose close verdicts are already recorded passing skips its close.',
+    'The shipped legion build stage, MILESTONE-INTERLEAVED: for each milestone of the approved, hash-locked plan — every outstanding task (brief, build, VERIFIED gate receipt, review at the task\'s risk tier except on express, which reviews no task, one fix round, recorded verdicts, typed task-done), then that milestone CLOSES (squash, boundary gate, milestone code review, product review) before the next milestone starts. Fail-closed, re-runnable: done tasks skip and a milestone whose close verdicts are already recorded passing skips its close.',
   whenToUse:
     'Invoked by /legion:feature after plan approval. Requires args {dossier, worktree, planPath, tasks}; pass {profile, reviews} so the milestone close knows which reviews it owes and which are already on record, and {model, squash} to override the defaults. Not for direct invocation: it assumes an approved plan whose hash the kernel already bound, and it makes no approval judgement of its own.',
   // STATIC TITLES ONLY. The LIVE phase groups are the milestone ids themselves (opts.phase on
@@ -9,7 +9,7 @@ export const meta = {
   // read args, so it can never enumerate them. These three entries describe what happens inside
   // a milestone group; they are not the groups.
   phases: [
-    { title: 'Milestone tasks', detail: 'per task: builder, kernel-verified gate receipt, review at the task risk tier, at most one fix round, typed task-done' },
+    { title: 'Milestone tasks', detail: 'per task: builder, kernel-verified gate receipt, review at the task risk tier (none on express), at most one fix round, typed task-done' },
     { title: 'Milestone close', detail: 'squash (the default), boundary gate, milestone code review, product review — inside the loop, before the next milestone builds' },
     { title: 'Deferral', detail: 'a milestone that does not close defers every later milestone whole: nothing builds on top of an unclosed milestone' },
   ],
@@ -207,10 +207,11 @@ if (!dossier || !worktree || !planPath || !allTasks) {
 //   value passes through verbatim. kernel-op, the milestone squash and the boundary gate are
 //   PINNED to haiku at low effort and unreachable from this arg: one command on a pinned prompt,
 //   an exit code reported verbatim and a checked schema gain nothing from a stronger model.
-// squash: the DEFAULT IS TO SQUASH. Only an
-//   explicit `false` skips it, and the skip is returned as a DEVIATION for the session to record
-//   in the review artifact with its reason — the loop does not know the reason and never invents
-//   one (SKILL.md review step 1 owns that rule).
+// squash: the DEFAULT IS TO SQUASH. Two things skip it and only one of them is a deviation. An
+//   explicit `false` is returned as a DEVIATION for the session to record in the review artifact
+//   with its reason — the loop does not know the reason and never invents one (SKILL.md review
+//   step 1 owns that rule). A milestone holding a single task is skipped by the loop's own rule,
+//   with the loop's own reason, and is therefore a plain skip and never a deviation.
 // profile: selects whether the milestone close owes a PRODUCT review, and — on `full` — what the
 //   per-task review IS (header THE FULL PROFILE OWNS THE TASK REVIEW). Absent ⇒ treated as
 //   standard, i.e. product review REQUIRED, and said so in the return: over-review is a cost,
@@ -229,6 +230,7 @@ const PROFILE_RECOGNISED = PROFILE_GIVEN && KNOWN_PROFILES.indexOf(ARGS.profile)
 const PROFILE = PROFILE_RECOGNISED ? ARGS.profile : 'standard'
 const PROFILE_COERCED = PROFILE_GIVEN && !PROFILE_RECOGNISED
 const FULL = PROFILE === 'full'
+const EXPRESS = PROFILE === 'express'
 /** The `full` profile's task-review lenses (header THE FULL PROFILE OWNS THE TASK REVIEW). Each
  * `owns` slice is disjoint and the three together cover agents/code-reviewer.md's whole `## Check`
  * list — the reviewer reads its scoped-dispatch section and answers to this narrowing. */
@@ -475,9 +477,11 @@ function closeAlreadyRecorded(group) {
 // (builder, two review lenses, five kernel-op dispatches), fewer on a risk-tiered task, more with
 // a fix round, and two more per task on `full`, whose Claude lens is one dispatch per dimension —
 // plus roughly 6 per milestone close (squash, boundary gate, one or two reviewers,
-// their review-record dispatches). Log it rather than silently blowing past the medium-workflow
-// guideline of ~15.
-const perTask = 8 + (FULL ? DIMENSIONS.length - 1 : 0)
+// their review-record dispatches). EXPRESS is 4 — builder plus task-start, verify-receipt and
+// task-done — because that profile runs no task review and so records no task-scope verdict; its
+// whole code judgement is bought at the close instead. Log it rather than silently blowing past
+// the medium-workflow guideline of ~15.
+const perTask = EXPRESS ? 4 : 8 + (FULL ? DIMENSIONS.length - 1 : 0)
 const closesPending = groups.filter(g => g.outstanding.length > 0 || !closeAlreadyRecorded(g))
 log(`agent budget: ~${outstanding.length * perTask + closesPending.length * 6} dispatches ` +
   `for ${outstanding.length} task(s) and ${closesPending.length} milestone close(s)`)
@@ -521,6 +525,19 @@ const BUILDER_SCHEMA = {
     receipt: { type: 'boolean', description: 'True only if `legion gate run --task <id>` exited 0 for you' },
     summary: { type: 'string', description: 'What changed, in two lines, for the reviewer' },
     files: { type: 'array', items: { type: 'string' }, description: 'Repo-relative paths you touched' },
+    contested: {
+      type: 'array',
+      description: 'Fix rounds only: findings judged technically wrong and deliberately not implemented. Absent or [] on every ordinary return',
+      items: {
+        type: 'object',
+        required: ['finding', 'reason', 'evidence'],
+        properties: {
+          finding: { type: 'string', description: "The finding's title, VERBATIM from the brief, so the lens that raised it can match its own" },
+          reason: { type: 'string', description: 'Why it is wrong — one claim, not a preference' },
+          evidence: { type: 'string', description: 'file:line, a measurement, or the rule that says otherwise' },
+        },
+      },
+    },
   },
 }
 
@@ -781,6 +798,55 @@ const RECERTIFY_MANDATE =
   `pass unless the fix broke something YOU certify; a regression in your domain is a fail ` +
   `carrying the finding that proves it.`
 
+/** The contest offer both fix briefs carry, task scope and close scope. A fix round used to be
+ * unconditional — "address EXACTLY these findings and nothing else" — so a finding that was simply
+ * wrong got implemented: the builder had no channel to say so, and the round it would have spent
+ * arguing is the only round it gets. The offer is bounded so it cannot become an escape hatch out
+ * of work: a claim without evidence is not a contest, every finding left uncontested is still
+ * fixed, and the lens that raised the finding is the one that adjudicates it — inside the
+ * re-review already scheduled, so the whole exchange buys no dispatch and no extra round. */
+const CONTEST_OFFER = [
+  'YOU MAY CONTEST A FINDING INSTEAD OF IMPLEMENTING IT — with evidence, never as a preference.',
+  'Fix every finding you do not contest; one you neither fix nor contest is simply left unfixed.',
+  'For a finding you judge TECHNICALLY WRONG, leave the code alone and return it in `contested`:',
+  '[{ "finding": "<its title above, VERBATIM>", "reason": "<one claim: why it is wrong>",',
+  '   "evidence": "<file:line, a measurement, or the rule that says otherwise>" }]',
+  'The lens that raised it adjudicates it inside the re-review that already runs: it sustains the',
+  'finding, and the verdict stays fail, or it withdraws it as a note carrying why it withdrew it.',
+  'An entry with no reason or no evidence, or whose title matches no finding of the lens that',
+  'raised it, is NOT a contest: that finding stands, unfixed and unargued.',
+].join('\n')
+
+/** The other half of the offer, carried back to ONE lens at its re-review: the contests of its own
+ * findings, verbatim, and nothing else. Routing is by finding TITLE — the title is what the builder
+ * was handed to copy — and per lens for the reason the re-review checklist itself is per lens: a
+ * lens handed another's contest would adjudicate a finding it never raised and cannot judge, so an
+ * entry naming no finding of `own` reaches it in no form at all. A malformed entry is refused out
+ * loud rather than dropped, or the lens meets an unfixed finding and no reason it stayed.
+ * `adjudicable` rides with the text so the checklist above it states its withdrawal exception only
+ * where one is actually offered. */
+function contestBlock(contested, own) {
+  const titles = new Set(own.map(f => f.title))
+  const mine = (Array.isArray(contested) ? contested : []).filter(c => c && titles.has(c.finding))
+  const valid = mine.filter(c => c.reason && c.evidence)
+  const refused = mine.filter(c => !c.reason || !c.evidence).map(c => c.finding)
+  const lines = []
+  if (valid.length > 0) {
+    lines.push(
+      'THE BUILDER CONTESTS THESE FINDINGS OF YOURS and did not implement them. Adjudicate each on ' +
+      'its claim: SUSTAIN it — return it at its blocking tier, the verdict stays fail — or WITHDRAW ' +
+      'it, returning it as tier `note` carrying why you withdrew it. Everything else you raised was ' +
+      'fixed and is judged as usual.',
+      ...valid.map((c, i) => `C${i + 1} contests: ${c.finding}\n  reason: ${c.reason}\n  evidence: ${c.evidence}`),
+    )
+  }
+  if (refused.length > 0) {
+    lines.push(`Returned as contested with no reason or no evidence, which is not a contest — ` +
+      `${refused.join('; ')} — stands unchanged and unfixed; judge it as you raised it.`)
+  }
+  return { adjudicable: valid.length > 0, text: lines.length > 0 ? `\n${lines.join('\n')}` : '' }
+}
+
 /** Compose a task's brief in plain JS. Deliberately not an agent's job: the brief is the one
  * place where the approved plan meets the builder, and a model composing it is a paraphrase
  * step with no approval behind it. Recorded Q&A is folded in here — that is what makes a
@@ -804,7 +870,7 @@ function brief(task, feedback) {
       : 'This task declares no validate command — say so in your summary; the gate will run tiers only.',
     '',
     answers ? `RECORDED ANSWERS — these are settled decisions. Build within them; do not ask again.\n${answers}` : null,
-    feedback ? `FIX ROUND — address EXACTLY these findings and nothing else:\n${feedback}` : null,
+    feedback ? `FIX ROUND — address EXACTLY these findings and nothing else:\n${feedback}\n\n${CONTEST_OFFER}` : null,
     '',
     MUTATION_SWEEP,
     '',
@@ -933,244 +999,265 @@ for (const group of groups) {
       continue
     }
 
-    // --- Review, at the task's RISK TIER (and, on `full`, split by DIMENSION) -----------------
-    // Default (no tier): two lenses in parallel. The codex lens is INDEPENDENT;
-    // a missing codex CLI degrades the review to one lens, which is logged and RETURNED as a
-    // degradation, never counted as a pass.
-    // 'low' (docs-only, test-only, low blast radius): ONE lens — legion:code-reviewer. Codex is
-    //   not dispatched, so there is nothing to degrade and nothing to record for it.
-    // 'trivial' (a mechanical change): one lens whose mandate is a DIFF SCAN — does the diff do
-    //   what the task says and nothing else — at low effort. No adversarial rounds.
-    // On `full` there is no tier — it was read and discarded above — and the Claude lens becomes
-    //   one dispatch per DIMENSION (header THE FULL PROFILE OWNS THE TASK REVIEW).
-    // In every tier the fix-round shape is unchanged for whichever lens ran.
-    const dual = tier === null
-    const mandate = tier === 'trivial'
-      ? `DIFF SCAN, not an adversarial review. This task is tiered 'trivial' in the approved plan: ` +
-        `a mechanical change. Confirm the diff does what the task says and NOTHING ELSE — no ` +
-        `unrelated edit, no scope the task did not name, no product behaviour changed in passing. ` +
-        `Do not open new lines of review beyond that scan. ${BLAST_RADIUS}`
-      : BLAST_RADIUS
-    const reviewPrompt =
-      `Review task ${task.id} of feature dossier ${dossier}, in worktree ${worktree}.\n` +
-      subjectLine(`task:${task.id}`) +
-      `Start from the task's diff, not whole files. The task's commit: ${build.commit || '(read git log)'}\n` +
-      `Builder's summary: ${build.summary || '(none)'}\n` +
-      `The approved plan is at ${planPath} — the task's declared test seams and NOT-building list live there.\n` +
-      mandate
-
-    // The Claude side of the review: ONE lens on express/standard, one PER DIMENSION on full.
-    // `dim` is null for the whole-checklist lens, which is what keeps every label, `unconfirmedBy`
-    // entry and log line on the other profiles byte-identical to what they were.
-    const claudeDims = FULL && dual ? DIMENSIONS : [null]
-    const claudeLabel = dim => `code-reviewer${dim ? `[${dim.key}]` : ''}`
-    const claudePrompt = dim => (dim ? `${reviewPrompt}\n\n${dimensionMandate(dim)}` : reviewPrompt)
-    let claudeResults = []
-    let codexLens = null
-    if (dual) {
-      const lenses = await parallel([
-        ...claudeDims.map(dim => () => agent(claudePrompt(dim), {
-          agentType: 'legion:code-reviewer',
-          label: `${task.id} review:${claudeLabel(dim)}`,
-          phase: mPhase,
-          model: MODEL,
-          schema: REVIEW_SCHEMA,
-        })),
-        () => agent(reviewPrompt, {
-          agentType: 'legion:codex-consult',
-          label: `${task.id} review:codex-consult`,
-          phase: mPhase,
-          model: MODEL,
-          schema: REVIEW_SCHEMA,
-        }),
-      ])
-      claudeResults = lenses.slice(0, claudeDims.length)
-      codexLens = lenses[claudeDims.length]
-      if (FULL) log(`${task.id}: ${DIMENSIONS.length} dimension lenses (${DIMENSIONS.map(d => d.key).join(', ')}) — the full profile's task review`)
-      if (!codexLens || codexLens.available === false) {
-        // Returned, not just logged. `tasks.reviews` will hold ONE verdict for this task and no
-        // record of why — from the pre-merge gate, "codex was unavailable" and "codex was never
-        // dispatched" look identical, and the human deciding on that evidence should be told which.
-        degraded.push(task.id)
-        log(`${task.id}: DEGRADED review — codex lens unavailable; Claude lens only (this is not a second pass)`)
-      }
-    } else {
-      const opts = {
-        agentType: 'legion:code-reviewer',
-        label: `${task.id} review:code-reviewer`,
-        phase: mPhase,
-        model: MODEL,
-        schema: REVIEW_SCHEMA,
-      }
-      if (tier === 'trivial') opts.effort = 'low'
-      claudeResults = [await agent(reviewPrompt, opts)]
-      singleLens.push({ taskId: task.id, tier })
-      log(`${task.id}: single-lens review BY DESIGN (plan risk tier '${tier}') — not a degradation`)
-    }
-
-    // The lenses that actually RAN, each with its own result — kept apart rather than merged,
-    // because the re-review below is per lens and a merged list would hand each lens the other's
-    // findings to grade. The codex lens appears only when it ran; a lens that did not run has no
-    // findings and cannot re-review anything. Each dimension is its OWN lens for exactly the same
-    // reason: it re-reviews its own findings and nobody else's.
-    //
-    // Fail closed on an unreadable lens: a review that did not happen is not a pass.
-    const claudeRuns = claudeDims.map((dim, i) => ({
-      role: 'code-reviewer',
-      label: claudeLabel(dim),
-      agentType: 'legion:code-reviewer',
-      dim,
-      result: claudeResults[i] || {
-        verdict: 'fail',
-        findings: [{ tier: 'block', title: `incomplete review — ${claudeLabel(dim)} returned no result`, where: task.id }],
-      },
-    }))
-    const lensRuns = [...claudeRuns]
-    if (codexLens && codexLens.available !== false) {
-      lensRuns.push({ role: 'codex-consult', label: 'codex-consult', agentType: 'legion:codex-consult', dim: null, result: codexLens })
-    }
-    const lensFindings = lens => (lens.result && lens.result.findings) || []
-    const lensBlocking = lens => lensFindings(lens).filter(blocking)
-    let findings = lensRuns.flatMap(lensBlocking)
-    noteCategories(task.id, lensRuns.flatMap(lensFindings))
-    // THE CLAUDE VERDICT IS AN AND-FOLD ACROSS THE DIMENSIONS, never the last one seen. `reviews`
-    // is append-only and its readers take the LATEST row for a role+subject (src/kernel/state.mjs
-    // stageSatisfied), so a passing dimension recorded after a failing one would MASK it — the
-    // durable evidence would say the code-reviewer passed this task when one third of it did not.
-    // Hence one fold, one row, on every profile.
-    const claudePass = claudeRuns.every(l => l.result.verdict === 'pass')
-    let verdict = claudePass && findings.length === 0 ? 'pass' : 'fail'
-
-    // Each lens's own verdict, as it stood — not the loop's combined one. The codex lens is
-    // recorded only when it actually ran: recording a verdict for a review that did not happen
-    // would forge the very evidence the degradation log is honest about.
-    //
-    // `recorded` ACCUMULATES over every verdict this task produces, including the codex lens and
-    // the re-review below. Tracking only the last one would enforce the durable-evidence rule for
-    // one lens and quietly exempt the others, which is the same hole in a smaller shape.
-    let recorded = await recordVerdict(task.id, 'code-reviewer', claudePass ? 'pass' : 'fail', mPhase)
-    if (codexLens && codexLens.available !== false) {
-      const codexRecorded = await recordVerdict(task.id, 'codex-consult', codexLens.verdict === 'pass' ? 'pass' : 'fail', mPhase)
-      recorded = recorded && codexRecorded
-    }
-
-    // --- Exactly ONE fix round ---------------------------------------------------------------
-    // One, not "until green": a second automatic round is how a loop burns attempts on a task that
-    // needs a human or a plan change instead. After it, the task fails closed and
-    // the session decides — re-run, answer, or bounce the plan back to the architect.
-    // Roles whose findings NO re-review ever confirmed or cleared, reported in the failure payload:
-    // "the fix was never judged by the lens that rejected it" is a different fact from "the fix was
-    // judged and rejected again", and the session cannot act on the first without being told.
-    //
-    // A NON-EMPTY `unconfirmedBy` IS ITSELF A FAIL, independently of any finding. The fail-closed
-    // here cannot be carried by the findings list, because a lens legitimately rejects a task while
-    // raising only note-tier findings — then `lensBlocking(lens)` is empty, nothing is carried
-    // forward, and a lens that rejected the task and then vanished would be silently forgotten
-    // while the log claimed it was "failing closed". The rejecting lens never re-judged its own
-    // verdict; that fact fails the task on its own.
+    // --- THE TASK REVIEW, and the profile that does not run it -------------------------------
+    // EXPRESS RUNS NO TASK-SCOPE REVIEW AT ALL, and it is REMOVED rather than relocated: no
+    // verdict is recorded at `task:<id>` on this profile either, because no review happened there
+    // and a task verdict re-used at milestone scope would be forged evidence. Express requires no
+    // review role, `task-done` wants a receipt and never a review, and finalize refuses a
+    // `task:<id>` verdict as sign-off — so the two lenses spent here were read by nothing, and the
+    // profile's whole code judgement is bought once at the milestone close instead. The price is
+    // detection latency (nobody reads the code until that close), which is why SKILL.md tells the
+    // operator a milestone past ~3 tasks on express means the profile was misclassified.
+    // The four names below are hoisted because the kernel-authority tail reads all four; on
+    // express they carry the whole truth of the path. `singleLens`, `degraded` and `tiersIgnored`
+    // therefore stay empty here by construction, and the returned `profile` is what tells the
+    // pre-merge human they are empty BY PROFILE rather than by omission.
+    let verdict = 'pass'
+    let findings = []
+    let recorded = true
     const unconfirmedBy = []
-    if (verdict === 'fail') {
-      const feedback = renderFindings(findings)
-      log(`${task.id}: ${findings.length} blocking finding(s) — one fix round`)
+    if (!EXPRESS) {
+      // --- Review, at the task's RISK TIER (and, on `full`, split by DIMENSION) -----------------
+      // Default (no tier): two lenses in parallel. The codex lens is INDEPENDENT;
+      // a missing codex CLI degrades the review to one lens, which is logged and RETURNED as a
+      // degradation, never counted as a pass.
+      // 'low' (docs-only, test-only, low blast radius): ONE lens — legion:code-reviewer. Codex is
+      //   not dispatched, so there is nothing to degrade and nothing to record for it.
+      // 'trivial' (a mechanical change): one lens whose mandate is a DIFF SCAN — does the diff do
+      //   what the task says and nothing else — at low effort. No adversarial rounds.
+      // On `full` there is no tier — it was read and discarded above — and the Claude lens becomes
+      //   one dispatch per DIMENSION (header THE FULL PROFILE OWNS THE TASK REVIEW).
+      // In every tier the fix-round shape is unchanged for whichever lens ran.
+      const dual = tier === null
+      const mandate = tier === 'trivial'
+        ? `DIFF SCAN, not an adversarial review. This task is tiered 'trivial' in the approved plan: ` +
+          `a mechanical change. Confirm the diff does what the task says and NOTHING ELSE — no ` +
+          `unrelated edit, no scope the task did not name, no product behaviour changed in passing. ` +
+          `Do not open new lines of review beyond that scan. ${BLAST_RADIUS}`
+        : BLAST_RADIUS
+      const reviewPrompt =
+        `Review task ${task.id} of feature dossier ${dossier}, in worktree ${worktree}.\n` +
+        subjectLine(`task:${task.id}`) +
+        `Start from the task's diff, not whole files. The task's commit: ${build.commit || '(read git log)'}\n` +
+        `Builder's summary: ${build.summary || '(none)'}\n` +
+        `The approved plan is at ${planPath} — the task's declared test seams and NOT-building list live there.\n` +
+        mandate
 
-      const fix = await agent(brief(task, feedback), {
-        agentType: 'legion:builder',
-        label: `${task.id} fix`,
-        phase: mPhase,
-        model: buildModel,
-        schema: BUILDER_SCHEMA,
-      })
-      if (fix && fix.status === 'blocked') {
-        blockedTasks.push(blockedEntry(task, group, fix, '(builder blocked during fix round)'))
-        blockedIds.add(task.id)
-        continue
-      }
-      if (!fix) {
-        failed.push({ taskId: task.id, milestone: group.id, stage: 'fix', detail: 'builder returned no result on the fix round' })
-        blockedIds.add(task.id)
-        continue
-      }
-      // The fix round produced a new commit, so the receipt that certified the pre-fix tree no
-      // longer keys to HEAD. Re-verify rather than assume the builder re-gated.
-      const reGated = await receiptOk(task.id, `${task.id} verify-receipt (fix)`, mPhase)
-      if (reGated.exitCode !== 0) {
-        failed.push({ taskId: task.id, milestone: group.id, stage: 'gate-receipt', detail: reGated.output, round: 'fix' })
-        blockedIds.add(task.id)
-        log(`${task.id}: NO VALID GATE RECEIPT after the fix round — ${reGated.output}`)
-        continue
-      }
-      // --- THE RE-REVIEW BELONGS TO THE LENS THAT FAILED (header) ----------------------------
-      // Every lens that rejected this task re-judges its own fix, with its own findings verbatim as
-      // the checklist. A lens that passed is not re-dispatched: it has nothing to confirm, and its
-      // round-1 verdict already stands recorded. This set cannot be empty here — `verdict` is fail
-      // only because some Claude lens returned fail (first clause) or some lens raised a blocking
-      // finding (second clause), so at least one lens matches.
-      const failingLenses = lensRuns.filter(l => lensBlocking(l).length > 0 || (l.result && l.result.verdict) !== 'pass')
-      // Each Claude lens's STANDING verdict, seeded from round 1 and updated only by its own
-      // re-review. The AND-fold below is what a single `primaryVerdict = reVerdict` assignment
-      // cannot express once there is more than one Claude lens: the last dimension to re-review
-      // would decide the task, and a passing 'design' re-review would clear a still-failing
-      // 'correctness' one.
-      const claudeVerdicts = new Map(claudeRuns.map(l => [l, l.result.verdict === 'pass' ? 'pass' : 'fail']))
-      let claudeReReviewed = false
-      // Every tier: the counter reads this list, and `findings` below takes the blocking subset.
-      const confirmed = []
-      for (const lens of failingLenses) {
-        const own = renderFindings(lensBlocking(lens))
-        const reOpts = {
-          agentType: lens.agentType,
-          label: `${task.id} re-review:${lens.label}`,
+      // The Claude side of the review: ONE lens on standard, one PER DIMENSION on full.
+      // `dim` is null for the whole-checklist lens, which is what keeps every label, `unconfirmedBy`
+      // entry and log line on the other profiles byte-identical to what they were.
+      const claudeDims = FULL && dual ? DIMENSIONS : [null]
+      const claudeLabel = dim => `code-reviewer${dim ? `[${dim.key}]` : ''}`
+      const claudePrompt = dim => (dim ? `${reviewPrompt}\n\n${dimensionMandate(dim)}` : reviewPrompt)
+      let claudeResults = []
+      let codexLens = null
+      if (dual) {
+        const lenses = await parallel([
+          ...claudeDims.map(dim => () => agent(claudePrompt(dim), {
+            agentType: 'legion:code-reviewer',
+            label: `${task.id} review:${claudeLabel(dim)}`,
+            phase: mPhase,
+            model: MODEL,
+            schema: REVIEW_SCHEMA,
+          })),
+          () => agent(reviewPrompt, {
+            agentType: 'legion:codex-consult',
+            label: `${task.id} review:codex-consult`,
+            phase: mPhase,
+            model: MODEL,
+            schema: REVIEW_SCHEMA,
+          }),
+        ])
+        claudeResults = lenses.slice(0, claudeDims.length)
+        codexLens = lenses[claudeDims.length]
+        if (FULL) log(`${task.id}: ${DIMENSIONS.length} dimension lenses (${DIMENSIONS.map(d => d.key).join(', ')}) — the full profile's task review`)
+        if (!codexLens || codexLens.available === false) {
+          // Returned, not just logged. `tasks.reviews` will hold ONE verdict for this task and no
+          // record of why — from the pre-merge gate, "codex was unavailable" and "codex was never
+          // dispatched" look identical, and the human deciding on that evidence should be told which.
+          degraded.push(task.id)
+          log(`${task.id}: DEGRADED review — codex lens unavailable; Claude lens only (this is not a second pass)`)
+        }
+      } else {
+        const opts = {
+          agentType: 'legion:code-reviewer',
+          label: `${task.id} review:code-reviewer`,
           phase: mPhase,
           model: MODEL,
           schema: REVIEW_SCHEMA,
         }
-        if (tier === 'trivial') reOpts.effort = 'low'
-        const reReview = await agent(
-          `${reviewPrompt}\nRE-REVIEW after one fix round. The findings below are YOUR OWN, verbatim, ` +
-          `from your verdict on this task — they are the checklist and the whole of it. Verify each is ` +
-          `addressed and review only the diff since your verdict; an unaddressed finding keeps the ` +
-          `verdict fail. Do not open new lines of review.\n` +
-          `${own || '(you raised no blocking finding and still returned fail — say now what would clear it, or pass)'}`,
-          reOpts,
-        )
-        // A lens that has become unavailable cannot confirm its own fix, and the OTHER lens must not
-        // stand in for it — that substitution is the defect this block exists to close. Record
-        // nothing (a verdict for a review that did not happen is forged evidence), carry its
-        // findings forward unconfirmed, and let the task fail closed to the session.
-        if (!reReview || reReview.available === false) {
-          confirmed.push(...lensFindings(lens))
-          if (lens.role === 'code-reviewer') claudeVerdicts.set(lens, 'fail')
-          unconfirmedBy.push(lens.label)
-          // Also a DEGRADATION, for the same reason the round-1 unavailability is one: the review
-          // this task got is not the review it was supposed to get, and the review artifact the
-          // pre-merge human reads lists degraded tasks by id (skills/feature/SKILL.md review step
-          // 5). The round-1 push fires only when codex was already gone before the first pass, so
-          // without this a lens that vanishes MID-round never reaches that list.
-          if (!degraded.includes(task.id)) degraded.push(task.id)
-          log(`${task.id}: ${lens.label} could not re-review its own findings — unconfirmed, failing closed`)
+        if (tier === 'trivial') opts.effort = 'low'
+        claudeResults = [await agent(reviewPrompt, opts)]
+        singleLens.push({ taskId: task.id, tier })
+        log(`${task.id}: single-lens review BY DESIGN (plan risk tier '${tier}') — not a degradation`)
+      }
+
+      // The lenses that actually RAN, each with its own result — kept apart rather than merged,
+      // because the re-review below is per lens and a merged list would hand each lens the other's
+      // findings to grade. The codex lens appears only when it ran; a lens that did not run has no
+      // findings and cannot re-review anything. Each dimension is its OWN lens for exactly the same
+      // reason: it re-reviews its own findings and nobody else's.
+      //
+      // Fail closed on an unreadable lens: a review that did not happen is not a pass.
+      const claudeRuns = claudeDims.map((dim, i) => ({
+        role: 'code-reviewer',
+        label: claudeLabel(dim),
+        agentType: 'legion:code-reviewer',
+        dim,
+        result: claudeResults[i] || {
+          verdict: 'fail',
+          findings: [{ tier: 'block', title: `incomplete review — ${claudeLabel(dim)} returned no result`, where: task.id }],
+        },
+      }))
+      const lensRuns = [...claudeRuns]
+      if (codexLens && codexLens.available !== false) {
+        lensRuns.push({ role: 'codex-consult', label: 'codex-consult', agentType: 'legion:codex-consult', dim: null, result: codexLens })
+      }
+      const lensFindings = lens => (lens.result && lens.result.findings) || []
+      const lensBlocking = lens => lensFindings(lens).filter(blocking)
+      findings = lensRuns.flatMap(lensBlocking)
+      noteCategories(task.id, lensRuns.flatMap(lensFindings))
+      // THE CLAUDE VERDICT IS AN AND-FOLD ACROSS THE DIMENSIONS, never the last one seen. `reviews`
+      // is append-only and its readers take the LATEST row for a role+subject (src/kernel/state.mjs
+      // stageSatisfied), so a passing dimension recorded after a failing one would MASK it — the
+      // durable evidence would say the code-reviewer passed this task when one third of it did not.
+      // Hence one fold, one row, on every profile.
+      const claudePass = claudeRuns.every(l => l.result.verdict === 'pass')
+      verdict = claudePass && findings.length === 0 ? 'pass' : 'fail'
+
+      // Each lens's own verdict, as it stood — not the loop's combined one. The codex lens is
+      // recorded only when it actually ran: recording a verdict for a review that did not happen
+      // would forge the very evidence the degradation log is honest about.
+      //
+      // `recorded` ACCUMULATES over every verdict this task produces, including the codex lens and
+      // the re-review below. Tracking only the last one would enforce the durable-evidence rule for
+      // one lens and quietly exempt the others, which is the same hole in a smaller shape.
+      recorded = await recordVerdict(task.id, 'code-reviewer', claudePass ? 'pass' : 'fail', mPhase)
+      if (codexLens && codexLens.available !== false) {
+        const codexRecorded = await recordVerdict(task.id, 'codex-consult', codexLens.verdict === 'pass' ? 'pass' : 'fail', mPhase)
+        recorded = recorded && codexRecorded
+      }
+
+      // --- Exactly ONE fix round ---------------------------------------------------------------
+      // One, not "until green": a second automatic round is how a loop burns attempts on a task that
+      // needs a human or a plan change instead. After it, the task fails closed and
+      // the session decides — re-run, answer, or bounce the plan back to the architect.
+      // Roles whose findings NO re-review ever confirmed or cleared, reported in the failure payload:
+      // "the fix was never judged by the lens that rejected it" is a different fact from "the fix was
+      // judged and rejected again", and the session cannot act on the first without being told.
+      //
+      // A NON-EMPTY `unconfirmedBy` IS ITSELF A FAIL, independently of any finding. The fail-closed
+      // here cannot be carried by the findings list, because a lens legitimately rejects a task while
+      // raising only note-tier findings — then `lensBlocking(lens)` is empty, nothing is carried
+      // forward, and a lens that rejected the task and then vanished would be silently forgotten
+      // while the log claimed it was "failing closed". The rejecting lens never re-judged its own
+      // verdict; that fact fails the task on its own.
+      if (verdict === 'fail') {
+        const feedback = renderFindings(findings)
+        log(`${task.id}: ${findings.length} blocking finding(s) — one fix round`)
+
+        const fix = await agent(brief(task, feedback), {
+          agentType: 'legion:builder',
+          label: `${task.id} fix`,
+          phase: mPhase,
+          model: buildModel,
+          schema: BUILDER_SCHEMA,
+        })
+        if (fix && fix.status === 'blocked') {
+          blockedTasks.push(blockedEntry(task, group, fix, '(builder blocked during fix round)'))
+          blockedIds.add(task.id)
           continue
         }
-        confirmed.push(...(reReview.findings || []))
-        const reVerdict = reReview.verdict === 'pass' ? 'pass' : 'fail'
-        if (lens.role === 'code-reviewer') {
-          claudeVerdicts.set(lens, reVerdict)
-          claudeReReviewed = true
-        } else {
-          recorded = recorded && await recordVerdict(task.id, lens.role, reVerdict, mPhase)
+        if (!fix) {
+          failed.push({ taskId: task.id, milestone: group.id, stage: 'fix', detail: 'builder returned no result on the fix round' })
+          blockedIds.add(task.id)
+          continue
         }
+        // The fix round produced a new commit, so the receipt that certified the pre-fix tree no
+        // longer keys to HEAD. Re-verify rather than assume the builder re-gated.
+        const reGated = await receiptOk(task.id, `${task.id} verify-receipt (fix)`, mPhase)
+        if (reGated.exitCode !== 0) {
+          failed.push({ taskId: task.id, milestone: group.id, stage: 'gate-receipt', detail: reGated.output, round: 'fix' })
+          blockedIds.add(task.id)
+          log(`${task.id}: NO VALID GATE RECEIPT after the fix round — ${reGated.output}`)
+          continue
+        }
+        // --- THE RE-REVIEW BELONGS TO THE LENS THAT FAILED (header) ----------------------------
+        // Every lens that rejected this task re-judges its own fix, with its own findings verbatim as
+        // the checklist. A lens that passed is not re-dispatched: it has nothing to confirm, and its
+        // round-1 verdict already stands recorded. This set cannot be empty here — `verdict` is fail
+        // only because some Claude lens returned fail (first clause) or some lens raised a blocking
+        // finding (second clause), so at least one lens matches.
+        const failingLenses = lensRuns.filter(l => lensBlocking(l).length > 0 || (l.result && l.result.verdict) !== 'pass')
+        // Each Claude lens's STANDING verdict, seeded from round 1 and updated only by its own
+        // re-review. The AND-fold below is what a single `primaryVerdict = reVerdict` assignment
+        // cannot express once there is more than one Claude lens: the last dimension to re-review
+        // would decide the task, and a passing 'design' re-review would clear a still-failing
+        // 'correctness' one.
+        const claudeVerdicts = new Map(claudeRuns.map(l => [l, l.result.verdict === 'pass' ? 'pass' : 'fail']))
+        let claudeReReviewed = false
+        // Every tier: the counter reads this list, and `findings` below takes the blocking subset.
+        const confirmed = []
+        for (const lens of failingLenses) {
+          const own = renderFindings(lensBlocking(lens))
+          const reOpts = {
+            agentType: lens.agentType,
+            label: `${task.id} re-review:${lens.label}`,
+            phase: mPhase,
+            model: MODEL,
+            schema: REVIEW_SCHEMA,
+          }
+          if (tier === 'trivial') reOpts.effort = 'low'
+          const contests = contestBlock(fix.contested, lensBlocking(lens))
+          const reReview = await agent(
+            `${reviewPrompt}\nRE-REVIEW after one fix round. The findings below are YOUR OWN, verbatim, ` +
+            `from your verdict on this task — they are the checklist and the whole of it. Verify each is ` +
+            `addressed and review only the diff since your verdict; an unaddressed finding keeps the ` +
+            `verdict fail${contests.adjudicable ? ' unless you withdraw it below' : ''}. Do not open new ` +
+            `lines of review.\n` +
+            `${own || '(you raised no blocking finding and still returned fail — say now what would clear it, or pass)'}` +
+            contests.text,
+            reOpts,
+          )
+          // A lens that has become unavailable cannot confirm its own fix, and the OTHER lens must not
+          // stand in for it — that substitution is the defect this block exists to close. Record
+          // nothing (a verdict for a review that did not happen is forged evidence), carry its
+          // findings forward unconfirmed, and let the task fail closed to the session.
+          if (!reReview || reReview.available === false) {
+            confirmed.push(...lensFindings(lens))
+            if (lens.role === 'code-reviewer') claudeVerdicts.set(lens, 'fail')
+            unconfirmedBy.push(lens.label)
+            // Also a DEGRADATION, for the same reason the round-1 unavailability is one: the review
+            // this task got is not the review it was supposed to get, and the review artifact the
+            // pre-merge human reads lists degraded tasks by id (skills/feature/SKILL.md review step
+            // 5). The round-1 push fires only when codex was already gone before the first pass, so
+            // without this a lens that vanishes MID-round never reaches that list.
+            if (!degraded.includes(task.id)) degraded.push(task.id)
+            log(`${task.id}: ${lens.label} could not re-review its own findings — unconfirmed, failing closed`)
+            continue
+          }
+          confirmed.push(...(reReview.findings || []))
+          const reVerdict = reReview.verdict === 'pass' ? 'pass' : 'fail'
+          if (lens.role === 'code-reviewer') {
+            claudeVerdicts.set(lens, reVerdict)
+            claudeReReviewed = true
+          } else {
+            recorded = recorded && await recordVerdict(task.id, lens.role, reVerdict, mPhase)
+          }
+        }
+        // ONE code-reviewer row for the whole round, folded — for the masking reason the round-1
+        // fold documents. Recorded only when a Claude lens actually re-reviewed and returned: a
+        // round where every dimension vanished produces no verdict at all, because a verdict for a
+        // review that did not happen is forged evidence, and `unconfirmedBy` already fails the task.
+        const primaryVerdict = [...claudeVerdicts.values()].every(v => v === 'pass') ? 'pass' : 'fail'
+        if (claudeReReviewed) {
+          recorded = recorded && await recordVerdict(task.id, 'code-reviewer', primaryVerdict, mPhase)
+        }
+        noteCategories(task.id, confirmed)
+        findings = confirmed.filter(blocking)
+        // `unconfirmedBy.length === 0` is a THIRD, independent condition — see the docblock above it.
+        verdict = primaryVerdict === 'pass' && findings.length === 0 && unconfirmedBy.length === 0 ? 'pass' : 'fail'
       }
-      // ONE code-reviewer row for the whole round, folded — for the masking reason the round-1
-      // fold documents. Recorded only when a Claude lens actually re-reviewed and returned: a
-      // round where every dimension vanished produces no verdict at all, because a verdict for a
-      // review that did not happen is forged evidence, and `unconfirmedBy` already fails the task.
-      const primaryVerdict = [...claudeVerdicts.values()].every(v => v === 'pass') ? 'pass' : 'fail'
-      if (claudeReReviewed) {
-        recorded = recorded && await recordVerdict(task.id, 'code-reviewer', primaryVerdict, mPhase)
-      }
-      noteCategories(task.id, confirmed)
-      findings = confirmed.filter(blocking)
-      // `unconfirmedBy.length === 0` is a THIRD, independent condition — see the docblock above it.
-      verdict = primaryVerdict === 'pass' && findings.length === 0 && unconfirmedBy.length === 0 ? 'pass' : 'fail'
     }
 
     if (verdict !== 'pass') {
@@ -1285,7 +1372,15 @@ async function closeMilestone(group) {
   const fail = (stage, detail) => ({ ok: false, stage, detail, report })
 
   // --- 1. SQUASH — THE DEFAULT --------------------------------------------------------------
-  if (!SQUASH) {
+  // A milestone holding ONE task has nothing to collapse: the closer would rewrite a single commit
+  // into itself and then prove, with two `git rev-parse HEAD^{tree}` calls, that a tree equals
+  // itself. The argument is cleanliness, not price — the squash below is pinned to haiku at low
+  // effort — and the skip is the LOOP'S OWN rule, so it is not a deviation: squashDeviations
+  // carries `squash: false` alone, whose reason only a human can write.
+  if (group.tasks.length === 1) {
+    report.squash = { skipped: true, reason: 'single-task milestone' }
+    log(`milestone ${m}: squash SKIPPED (single-task milestone) — one task commit has nothing to collapse`)
+  } else if (!SQUASH) {
     // The loop records no reason because it HAS none: `squash: false` arrived as an arg. The
     // deviation rides back to the session, which owns the review artifact and the reason
     // (SKILL.md review step 1) — a loop that invented a reason would put words in a human's mouth.
@@ -1303,12 +1398,13 @@ async function closeMilestone(group) {
         `Squash THIS MILESTONE'S task commits into ONE conventional commit. The milestone's tasks:`,
         ...group.tasks.map(t => `  - ${t.id}: ${t.title || '(untitled)'}`),
         '',
-        'THE REWRITE WINDOW IS EXACTLY THIS MILESTONE. It starts after the commit that closed the',
-        'PREVIOUS milestone (a squashed conventional commit produced by this same step) or, for the',
-        "first milestone, after the feature's pinned base. You may NOT rewrite at or before that",
-        'boundary: those commits carry another milestone\'s certified history. If you cannot',
-        'identify the boundary with certainty, return status "refused" and say why — a rebase that',
-        'reaches too far is not recoverable by anything downstream.',
+        'THE REWRITE WINDOW IS EXACTLY THIS MILESTONE. It starts after the LAST COMMIT of the PREVIOUS',
+        'milestone — a squashed conventional commit when that milestone held more than one task, that',
+        "task's own commit (plus any red-gate fixups) when it held one — or, for the first milestone,",
+        "after the feature's pinned base. You may NOT rewrite at or before that boundary: those commits",
+        "carry another milestone's certified history. If you cannot identify the boundary with certainty,",
+        'return status "refused" and say why — a rebase that reaches too far is not recoverable by',
+        'anything downstream.',
         '',
         'CONTENT MUST NOT CHANGE. Run `git rev-parse HEAD^{tree}` BEFORE the squash and again',
         'AFTER, and report both verbatim as treeBefore / treeAfter. They must be identical: task',
@@ -1389,10 +1485,13 @@ async function closeMilestone(group) {
   if (roles.length !== closeRolesFor(group).length) {
     return fail('close-review', `internal: ${closeRolesFor(group).length} required close role(s) but ${roles.length} dispatched`)
   }
-  // The ADVISORY consult lens (full only; operator ruling 2026-07-31: a second lens, never the
-  // unique one). Dispatched and recorded when it runs; null / available:false degrades on record
-  // — never a verdict, never a failed close, never counted by the resume predicate.
-  if (PROFILE === 'full') {
+  // The ADVISORY consult lens (operator ruling 2026-07-31: a second lens, never the unique one).
+  // Dispatched and recorded when it runs; null / available:false degrades on record — never a
+  // verdict, never a failed close, never counted by the resume predicate. Two profiles now, for
+  // opposite reasons: `full` buys a second opinion on top of a deep per-task review, `express`
+  // buys the only second opinion it gets anywhere, since it reviews no task at all. `standard`
+  // keeps its per-task consult and closes without one.
+  if (FULL || EXPRESS) {
     roles.push({
       role: 'codex-consult',
       agentType: 'legion:codex-consult',
@@ -1456,12 +1555,15 @@ async function closeMilestone(group) {
       [
         `MILESTONE ${m} CLOSE FIX ROUND, in worktree ${worktree}.`,
         `The milestone's close review failed. Address EXACTLY these findings and nothing else,`,
-        `as one commit on top of the squashed milestone commit — never by amending or rebasing it`,
-        `(the reviewers judged that commit and the boundary gate certified its tree).`,
+        `as one commit on top of ${group.tasks.length !== 1 ? 'the squashed milestone commit' : "this milestone's single task commit"} —`,
+        `never by amending or rebasing it (the reviewers judged that commit and the boundary gate`,
+        `certified its tree).`,
         `The approved, hash-locked plan is at ${planPath}; the dossier is ${dossier}.`,
         `Tasks in this milestone: ${ids.join(', ')}.`,
         '',
         feedback || '(the reviewers raised no blocking finding and still failed — read their verdicts and stop if nothing is actionable)',
+        '',
+        CONTEST_OFFER,
         '',
         MUTATION_SWEEP,
         '',
@@ -1494,13 +1596,16 @@ async function closeMilestone(group) {
     const stillFailing = []
     for (const run of failing) {
       const own = renderFindings(runBlocking(run))
+      const contests = contestBlock(fixRes.contested, runBlocking(run))
       const reReview = await agent(
         `${closeReviewPrompt(group, run.role, ids)}\n` +
         `RE-REVIEW after one fix round. The findings below are YOUR OWN, verbatim, from your ` +
         `verdict on this milestone — they are the checklist and the whole of it. Verify each is ` +
         `addressed and review only the diff since your verdict; an unaddressed finding keeps the ` +
-        `verdict fail. Do not open new lines of review.\n` +
-        `${own || '(you raised no blocking finding and still returned fail — say now what would clear it, or pass)'}`,
+        `verdict fail${contests.adjudicable ? ' unless you withdraw it below' : ''}. Do not open new ` +
+        `lines of review.\n` +
+        `${own || '(you raised no blocking finding and still returned fail — say now what would clear it, or pass)'}` +
+        contests.text,
         { agentType: run.agentType, label: `${m} re-review:${run.role}`, phase: m, model: MODEL, schema: REVIEW_SCHEMA },
       )
       if (!reReview || reReview.available === false) {
@@ -1572,19 +1677,28 @@ async function closeMilestone(group) {
  * because the close's single fix round is spent on the long tail otherwise. */
 function closeReviewPrompt(group, role, ids) {
   const m = group.id
+  // A one-task milestone was never squashed (step 1 of the close), and a reviewer sent looking for
+  // a commit that does not exist reads the wrong diff — or invents one.
+  const squashed = group.tasks.length !== 1
   const head = `MILESTONE ${m} of feature dossier ${dossier}, in worktree ${worktree}.\n` +
     subjectLine(`milestone:${m}`) +
     `Tasks in this milestone: ${ids.join(', ')}.\n` +
     `The approved plan is at ${planPath} — this milestone's slice, its declared test seams and the ` +
-    `NOT-building list live there. The milestone's task commits have been squashed into one commit ` +
+    `NOT-building list live there. ${squashed
+      ? `The milestone's task commits have been squashed into one commit`
+      : `The milestone holds its single task's commits — one task has nothing to squash —`} ` +
     `and \`legion gate run --boundary\` is green on that tree.\n`
   if (role === 'codex-consult') {
     return `${head}` +
-      `Second-opinion CONSULT at MILESTONE scope: assemble this milestone's ASSEMBLED diff — the ` +
-      `squashed milestone commit (plus its close-fix commit if the log shows one), not one ` +
+      `Second-opinion CONSULT at MILESTONE scope: assemble this milestone's ASSEMBLED diff — ` +
+      `${squashed ? `the squashed milestone commit` : `this milestone's commits`} (plus its ` +
+      `close-fix commit if the log shows one), not one ` +
       `task's — and hand the external codex CLI that diff with the milestone-mode question: the ` +
       `seams between the tasks, the interfaces they agreed on, and anything only wrong when the ` +
-      `tasks are read together. The per-task consults already happened; do not repeat them. ` +
+      `tasks are read together. ${EXPRESS
+        ? `This profile runs NO per-task consult — these tasks have never been read by codex, so ` +
+          `read them, then judge the seams. `
+        : `The per-task consults already happened; do not repeat them. `}` +
       `Return codex's findings verbatim in substance. If the CLI is unavailable, return ` +
       `available: false exactly as your contract says — you are the ADVISORY second lens: the ` +
       `close records the degradation and continues, so honesty about absence costs nothing and ` +
@@ -1613,8 +1727,10 @@ function closeReviewPrompt(group, role, ids) {
   return `${head}` +
     `Review this milestone in MILESTONE MODE: the assembled diff of the whole milestone, not one ` +
     `task's — the seams between the tasks, the interfaces they agreed on, and anything that is ` +
-    `only wrong when the tasks are read together. The per-task reviews already happened; do not ` +
-    `repeat them.\n${BLAST_RADIUS}`
+    `only wrong when the tasks are read together. ${EXPRESS
+      ? `This profile runs NO per-task review — these tasks have never been reviewed, so review ` +
+        `them in full, then judge the seams.`
+      : `The per-task reviews already happened; do not repeat them.`}\n${BLAST_RADIUS}`
 }
 
 // The session reads this and decides. The workflow makes no approval judgement, records no
@@ -1650,5 +1766,5 @@ return {
     ? 'Surface each question to the human. A blocked entry carrying kind:"design", and any non-empty designSignals, is a PLAN problem — the skill routes it through the plan stage (architect revision, re-import, critic, human re-approval), never through task-answer. Ordinary questions: record the answer with the task-answer typed op, then re-run this workflow — only the blocked task retries, and its milestone closes when the milestone is whole.'
     : failed.length || milestoneReports.some(r => r.outcome === 'close-failed')
       ? 'Fail closed: a task or a milestone close did not complete, and every later milestone was left untouched. Read the findings; a thin or wrong task bounces UP to the architect and plan re-approval, never sideways into a re-plan here. Re-run after the fix — closed milestones skip.' + signalsClause
-      : 'Every milestone is closed: squashed, boundary-gated, and reviewed at milestone scope with the verdicts recorded. Return to the skill for the FEATURE-level review stage — the review artifact (degraded ids, by-design single-lens ids, residuals, adjudications, squash deviations) and stage completion.' + signalsClause,
+      : 'Every milestone is closed: squashed where it held more than one task, boundary-gated, and reviewed at milestone scope with the verdicts recorded. Return to the skill for the FEATURE-level review stage — the review artifact (degraded ids, by-design single-lens ids, residuals, adjudications, squash deviations) and stage completion.' + signalsClause,
 }
