@@ -4,5 +4,31 @@
   "author": {
     "name": "Rachid Mohamed-Daoud",
     "email": "daoud.mohamed.rachid@gmail.com"
+  },
+  "userConfig": {
+    "consult_backend": {
+      "type": "string",
+      "title": "Consult backend",
+      "description": "codex | gemini (CLIs) — openai | google | xai | deepseek | mistral (hosted APIs) — api (custom OpenAI-compatible endpoint)",
+      "default": "codex"
+    },
+    "consult_model": {
+      "type": "string",
+      "title": "Consult model",
+      "description": "Model name. Optional for codex/gemini (empty = the CLI's own default), REQUIRED for API backends",
+      "default": ""
+    },
+    "consult_base_url": {
+      "type": "string",
+      "title": "Consult API base URL",
+      "description": "backend=api: required OpenAI-compatible endpoint. Named providers: optional override",
+      "default": ""
+    },
+    "consult_token_env": {
+      "type": "string",
+      "title": "Consult token env var",
+      "description": "NAME of the env var holding the API token (the value stays in your shell env). backend=api: required. Named providers: optional override",
+      "default": ""
+    }
   }
 }

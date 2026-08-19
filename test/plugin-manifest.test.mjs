@@ -84,6 +84,48 @@ test('plugin.json parses and matches the manifest schema shape', () => {
   assert.ok(manifest.author.name.length > 0, 'author.name must be non-empty');
 });
 
+test('the manifest declares the consult backend userConfig — four string keys, defaults, no enum, no sensitive', () => {
+  // WHERE THESE VALUES GO AND WHY IT MATTERS: `userConfig` options are stored USER-SCOPE in
+  // ~/.claude/settings.json under `pluginConfigs.<plugin-id>.options` — project scope is ignored
+  // by design — so the consult backend is a GLOBAL choice by construction, which is the operator
+  // ruling this block implements. The values reach agents/consult.md as `${user_config.<key>}`
+  // placeholders substituted when the agent is loaded (MEASURED on Claude Code 2.1.236, at both
+  // the Agent-tool and the Workflow-tool dispatch path).
+  const manifest = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
+  const uc = manifest.userConfig;
+  assert.ok(uc && typeof uc === 'object', 'the consult lens is configured through plugin userConfig');
+  assert.deepEqual(
+    Object.keys(uc).sort(),
+    ['consult_backend', 'consult_base_url', 'consult_model', 'consult_token_env'],
+    'exactly the four keys agents/consult.md reads — a key added here that the agent never reads is dead config',
+  );
+  for (const [key, field] of Object.entries(uc)) {
+    assert.equal(field.type, 'string', `${key}: string is the only type the agent parses`);
+    assert.ok(field.title && field.title.length > 0, `${key}: the config dialog labels the field with this`);
+    assert.ok(field.description && field.description.length > 0, `${key}: the accepted values live here`);
+    assert.equal(typeof field.default, 'string', `${key}: a declared default, so the dialog never starts empty-handed`);
+    // NO `enum` — MEASURED: `claude plugin validate` rejects it (`Unrecognized key: "enum"`), so
+    // there is no select in the config dialog. The accepted values are therefore prose in
+    // `description`, and the STRICT validation lives in the agent, which answers an unknown value
+    // with `available:false` / `unavailable:"misconfigured"`.
+    assert.equal(field.enum, undefined, 'enum is rejected by the plugin validator — the agent validates instead');
+    // NO `sensitive` FIELD, DELIBERATELY. A `sensitive:true` option is stored in the Keychain and
+    // surfaces only as a CLAUDE_PLUGIN_OPTION_* env var for hooks/MCP/LSP — it never reaches the
+    // Bash the consult agent runs, so a token stored there would be unreadable at the one place
+    // that needs it. legion therefore stores no token at all: `consult_token_env` names the env
+    // var, the operator exports the value in their own shell, and legion never holds or prints it.
+    assert.equal(field.sensitive, undefined, 'legion stores no token — it stores the NAME of the env var holding one');
+  }
+  assert.equal(uc.consult_backend.default, 'codex',
+    'an unconfigured legion behaves exactly as it did before this option existed');
+  for (const key of ['consult_model', 'consult_base_url', 'consult_token_env']) {
+    assert.equal(uc[key].default, '', `${key}: empty means "not set", which the agent reads as the backend's own default`);
+  }
+  assert.match(uc.consult_backend.description, /codex/, 'the accepted values are listed for the operator');
+  assert.match(uc.consult_token_env.description, /NAME/,
+    'the field takes the env var NAME, never the token — say so where the operator types it');
+});
+
 test('.claude-plugin/ contains only the two manifests — components never nest inside it', () => {
   // Assert against git's index, not the working directory — Finder's .DS_Store (and any
   // other untracked junk) must not flake the invariant, while an accidentally COMMITTED
