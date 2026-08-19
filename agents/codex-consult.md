@@ -69,7 +69,7 @@ authority; the Claude reviewer adjudicates every finding you return.
      | signal | `unavailable` |
      | --- | --- |
      | `command -v codex` fails | `cli-missing` |
-     | `codex login status` reports no login, or the message names auth | `not-authenticated` |
+     | the message names auth — not logged in, unauthorized, invalid API key | `not-authenticated` |
      | the message names a usage/rate limit (it carries a retry date) | `quota` |
      | the message names a connection, DNS or TLS failure | `network` |
      | the run exited 142 (the perl alarm fired) | `timeout` |

@@ -394,6 +394,71 @@ test('a lens LATCHED OFF before the close is not dispatched there, and the close
   assert.equal(verdictsFor(kernelCmds, 'product-reviewer', "milestone:'M1'"), 1);
 });
 
+test('the close-scope latch SET path: a lens that dies AT the close is never re-asked by the next milestone', async () => {
+  // The mirror of the cases above, and the only thing keeping the close's own `latchCodexOff`
+  // call honest: here the discovery happens at M1's close, and what must not re-pay for it is M2 —
+  // at its task review AND at its own close.
+  const { result, dispatches } = await runLoop([row('T1'), row('T2', { milestone: 'M2' })], {
+    args: { profile: 'full' },
+    lensResult: (type, label) => (label === 'M1 codex review' ? codexGone('quota', 'usage limit reached') : undefined),
+  });
+  assert.deepEqual(codexDispatched(dispatches), ['T1 review:codex-consult', 'M1 codex review'],
+    'everything M2 would have asked is bought away');
+  assert.deepEqual(result.codexOff, { after: 'M1', reason: 'quota', detail: 'usage limit reached' },
+    'a milestone id is as legitimate an `after` as a task id');
+  assert.deepEqual(result.degraded, ['T2'], "M1's task review had its lens; M2's never got one");
+  assert.deepEqual(result.milestones.map((mm) => mm.close.degraded), [['codex-consult'], ['codex-consult']],
+    'both closes report the second opinion they did not get — the dispatched-and-dead one and the latched one');
+});
+
+test('a lens that dies BETWEEN rounds latches too — the cause is discovered at the re-review', async () => {
+  // The three sites that read a codex result between rounds (task re-review, close re-review,
+  // close re-certification) carry a DYNAMIC agentType, which is exactly how the haiku pin missed
+  // them when it was first written. Quota dies mid-task here: the re-review is the only place that
+  // can learn it, and T2 must not re-buy the answer.
+  const { result, dispatches } = await runLoop([row('T1'), row('T2')], {
+    lensResult: (type, label) => {
+      if (label === 'T1 review:codex-consult') return { verdict: 'fail', available: true, findings: [mustFix('codex saw it')] };
+      if (label === 'T1 re-review:codex-consult') return codexGone('quota', 'usage limit reached');
+      return undefined;
+    },
+  });
+  assert.deepEqual(codexDispatched(dispatches), ['T1 review:codex-consult', 'T1 re-review:codex-consult'],
+    'the answer arrived one round late and still costs T2 nothing');
+  assert.deepEqual(result.codexOff, { after: 'T1', reason: 'quota', detail: 'usage limit reached' });
+  assert.deepEqual(result.failed.map((f) => f.taskId), ['T1'],
+    'the finding nobody re-judged still fails T1 closed — the latch changes no verdict, only dispatches');
+  assert.deepEqual(result.degraded, ['T1', 'T2']);
+});
+
+test('the CLOSE-scope between-rounds sites latch too — re-review and re-certification', async () => {
+  // The other two dynamic-agentType sites. Neither is observable through a skipped later dispatch:
+  // a codex close re-review FAILS the close, which stops the run and leaves nothing to skip, and
+  // the re-certification is the last thing a close does. What is observable is the return —
+  // `codexOff` is what the review artifact reads, and a site that never latches leaves it null.
+  const reReview = await runLoop([row('T1')], {
+    args: { profile: 'full' },
+    lensResult: (type, label) => {
+      if (label === 'M1 codex review') return { verdict: 'fail', findings: [mustFix('codex saw the seam')] };
+      if (label === 'M1 re-review:codex-consult') return codexGone('quota', 'usage limit reached');
+      return undefined;
+    },
+  });
+  assert.deepEqual(reReview.result.codexOff, { after: 'M1', reason: 'quota', detail: 'usage limit reached' },
+    'the lens died re-judging its own close findings — as durable an answer as any other');
+
+  const reCertify = await runLoop([row('T1')], {
+    args: { profile: 'full' },
+    lensResult: (type, label) => {
+      if (label === 'M1 milestone review') return { verdict: 'fail', findings: [mustFix('seam finding')] };
+      if (label === 'M1 re-certify:codex-consult') return codexGone('cli-missing', 'codex CLI not installed');
+      return undefined;
+    },
+  });
+  assert.deepEqual(reCertify.result.codexOff, { after: 'M1', reason: 'cli-missing', detail: 'codex CLI not installed' },
+    'and the delta re-certification is the fifth and last site that sees a codex result');
+});
+
 // --- T20: the mutation sweep rides in every brief (M0 finding 7) -----------------------------
 
 test('every builder brief carries the mutation sweep, fix rounds included', async () => {
