@@ -313,6 +313,152 @@ test('a mid-round lens loss is pushed to `degraded` ONCE, not once per lens', as
   assert.deepEqual(result.built, []);
 });
 
+// --- THE CODEX LATCH: one durable absence, one dispatch --------------------------------------
+// A dispatch that only reports the lens dead still bills its context (measured: 26 415 tokens for
+// one quota answer), and the loop used to re-ask on every task. The latch is pure CONTROL FLOW —
+// which dispatch happens, and which degradation is still recorded when it does not — so it is
+// invisible to a source grep and lives here. Every case reads the codex dispatches by label:
+// `T<n> review:codex-consult` at task scope, `M1 codex review` at close scope.
+
+/** Every codex dispatch this run actually paid for, in order — the only honest measure of "not
+ * dispatched", since a skipped thunk leaves no other trace. */
+const codexDispatched = (dispatches) => dispatches.filter((d) => d.agentType === 'legion:codex-consult').map((d) => d.label);
+/** A codex return that says the lens is gone, with the cause it classified (agents/codex-consult.md
+ * step 3). `verdict: 'pass'` on purpose: available:false is not a verdict, and a case that carried
+ * its fail in `findings` would prove nothing about the latch. */
+const codexGone = (unavailable, reason) => ({ verdict: 'pass', findings: [], available: false, ...(unavailable ? { unavailable } : {}), ...(reason ? { reason } : {}) });
+
+test('a DURABLE codex absence LATCHES the lens off — the next task pays no dispatch and is still degraded', async () => {
+  // T1 discovers a spent quota, which lasts days. T2 must not re-ask (that is the whole change),
+  // and must still be reported as reviewed by one lens: the latch buys away the DISPATCH, never
+  // the degradation the pre-merge human decides on.
+  const { result, dispatches, logs } = await runLoop([row('T1'), row('T2')], {
+    lensResult: (type, label) =>
+      (label === 'T1 review:codex-consult' ? codexGone('quota', 'usage limit reached; resets 2026-08-22') : undefined),
+  });
+  assert.deepEqual(codexDispatched(dispatches), ['T1 review:codex-consult'],
+    'one dispatch bought the answer; every later one would re-buy it');
+  assert.deepEqual(result.degraded, ['T1', 'T2'],
+    'a task whose second lens was never dispatched is exactly as thinly reviewed as one whose lens died');
+  assert.deepEqual(result.codexOff, { after: 'T1', reason: 'quota', detail: 'usage limit reached; resets 2026-08-22' },
+    'the return carries WHERE the lens went dark and WHY — the review artifact quotes it');
+  assert.ok(logs.some((l) => /codex lens LATCHED OFF after T1 — quota/.test(l)), 'said out loud, once, where it was discovered');
+  assert.ok(logs.some((l) => /T2: DEGRADED review — codex lens LATCHED OFF since T1 \(quota\)/.test(l)),
+    'and T2\'s degradation says latched, not unavailable — nothing was dispatched to be unavailable');
+  assert.deepEqual(result.built, ['T1', 'T2'], 'a missing second lens never fails a task, latched or not');
+});
+
+test('a TRANSIENT codex absence does NOT latch — the next task still pays for its second lens', async () => {
+  // A connection blip lasts seconds; skipping every later lens over one would be the expensive
+  // mistake in the other direction. No consecutive-failure counter either: transient never latches.
+  const { result, dispatches } = await runLoop([row('T1'), row('T2')], {
+    lensResult: (type, label) =>
+      (label === 'T1 review:codex-consult' ? codexGone('network', 'connection reset by peer') : undefined),
+  });
+  assert.deepEqual(codexDispatched(dispatches), ['T1 review:codex-consult', 'T2 review:codex-consult'],
+    'the lens is asked again — the cause it named does not outlive the task');
+  assert.equal(result.codexOff, null, 'nothing latched');
+  assert.deepEqual(result.degraded, ['T1'], 'only the task whose lens actually vanished');
+});
+
+test('available:false with NO cause latches nothing — an older agent build behaves exactly as before', async () => {
+  // The loop and the agent ship as one plugin but not necessarily as one INSTALL: a return with no
+  // `unavailable` field is the pre-latch contract, and it must cost today's behaviour, not a run
+  // silently stripped of its second lens on a cause nobody classified.
+  const { result, dispatches } = await runLoop([row('T1'), row('T2')], {
+    lensResult: (type, label) => (label === 'T1 review:codex-consult' ? codexGone() : undefined),
+  });
+  assert.deepEqual(codexDispatched(dispatches), ['T1 review:codex-consult', 'T2 review:codex-consult']);
+  assert.equal(result.codexOff, null, "an unclassified absence is not a durable one — 'other' does not latch either");
+  assert.deepEqual(result.degraded, ['T1']);
+});
+
+test('a lens LATCHED OFF before the close is not dispatched there, and the close still reports it degraded', async () => {
+  // The asymmetry that is the whole risk in the latch: at task scope the skip degrades for free
+  // (the falsy codexLens branch), at close scope a role never pushed into `roles` has no result to
+  // reach the loop that fills `closeDegraded` — so a full-profile close would silently read as one
+  // that got its advisory second opinion.
+  const { result, dispatches, kernelCmds, logs } = await runLoop([row('T1')], {
+    args: { profile: 'full' },
+    lensResult: (type, label) =>
+      (label === 'T1 review:codex-consult' ? codexGone('cli-missing', 'codex CLI not installed') : undefined),
+  });
+  assert.deepEqual(codexDispatched(dispatches), ['T1 review:codex-consult'], 'no `M1 codex review` — the lens is dark');
+  assert.equal(result.milestones[0].outcome, 'closed', 'the advisory lens never fails a close, missing or latched');
+  assert.deepEqual(result.milestones[0].close.degraded, ['codex-consult'],
+    'the close report records the second opinion that never happened, exactly as an unavailable lens does');
+  assert.equal(verdictsFor(kernelCmds, 'codex-consult', "milestone:'M1'"), 0,
+    'nothing recorded for a review that was never dispatched');
+  assert.ok(logs.some((l) => /DEGRADED close — the advisory codex lens is LATCHED OFF since T1 \(cli-missing\)/.test(l)));
+  assert.equal(verdictsFor(kernelCmds, 'code-reviewer', "milestone:'M1'"), 1, 'the required lenses close it');
+  assert.equal(verdictsFor(kernelCmds, 'product-reviewer', "milestone:'M1'"), 1);
+});
+
+test('the close-scope latch SET path: a lens that dies AT the close is never re-asked by the next milestone', async () => {
+  // The mirror of the cases above, and the only thing keeping the close's own `latchCodexOff`
+  // call honest: here the discovery happens at M1's close, and what must not re-pay for it is M2 —
+  // at its task review AND at its own close.
+  const { result, dispatches } = await runLoop([row('T1'), row('T2', { milestone: 'M2' })], {
+    args: { profile: 'full' },
+    lensResult: (type, label) => (label === 'M1 codex review' ? codexGone('quota', 'usage limit reached') : undefined),
+  });
+  assert.deepEqual(codexDispatched(dispatches), ['T1 review:codex-consult', 'M1 codex review'],
+    'everything M2 would have asked is bought away');
+  assert.deepEqual(result.codexOff, { after: 'M1', reason: 'quota', detail: 'usage limit reached' },
+    'a milestone id is as legitimate an `after` as a task id');
+  assert.deepEqual(result.degraded, ['T2'], "M1's task review had its lens; M2's never got one");
+  assert.deepEqual(result.milestones.map((mm) => mm.close.degraded), [['codex-consult'], ['codex-consult']],
+    'both closes report the second opinion they did not get — the dispatched-and-dead one and the latched one');
+});
+
+test('a lens that dies BETWEEN rounds latches too — the cause is discovered at the re-review', async () => {
+  // The three sites that read a codex result between rounds (task re-review, close re-review,
+  // close re-certification) carry a DYNAMIC agentType, which is exactly how the haiku pin missed
+  // them when it was first written. Quota dies mid-task here: the re-review is the only place that
+  // can learn it, and T2 must not re-buy the answer.
+  const { result, dispatches } = await runLoop([row('T1'), row('T2')], {
+    lensResult: (type, label) => {
+      if (label === 'T1 review:codex-consult') return { verdict: 'fail', available: true, findings: [mustFix('codex saw it')] };
+      if (label === 'T1 re-review:codex-consult') return codexGone('quota', 'usage limit reached');
+      return undefined;
+    },
+  });
+  assert.deepEqual(codexDispatched(dispatches), ['T1 review:codex-consult', 'T1 re-review:codex-consult'],
+    'the answer arrived one round late and still costs T2 nothing');
+  assert.deepEqual(result.codexOff, { after: 'T1', reason: 'quota', detail: 'usage limit reached' });
+  assert.deepEqual(result.failed.map((f) => f.taskId), ['T1'],
+    'the finding nobody re-judged still fails T1 closed — the latch changes no verdict, only dispatches');
+  assert.deepEqual(result.degraded, ['T1', 'T2']);
+});
+
+test('the CLOSE-scope between-rounds sites latch too — re-review and re-certification', async () => {
+  // The other two dynamic-agentType sites. Neither is observable through a skipped later dispatch:
+  // a codex close re-review FAILS the close, which stops the run and leaves nothing to skip, and
+  // the re-certification is the last thing a close does. What is observable is the return —
+  // `codexOff` is what the review artifact reads, and a site that never latches leaves it null.
+  const reReview = await runLoop([row('T1')], {
+    args: { profile: 'full' },
+    lensResult: (type, label) => {
+      if (label === 'M1 codex review') return { verdict: 'fail', findings: [mustFix('codex saw the seam')] };
+      if (label === 'M1 re-review:codex-consult') return codexGone('quota', 'usage limit reached');
+      return undefined;
+    },
+  });
+  assert.deepEqual(reReview.result.codexOff, { after: 'M1', reason: 'quota', detail: 'usage limit reached' },
+    'the lens died re-judging its own close findings — as durable an answer as any other');
+
+  const reCertify = await runLoop([row('T1')], {
+    args: { profile: 'full' },
+    lensResult: (type, label) => {
+      if (label === 'M1 milestone review') return { verdict: 'fail', findings: [mustFix('seam finding')] };
+      if (label === 'M1 re-certify:codex-consult') return codexGone('cli-missing', 'codex CLI not installed');
+      return undefined;
+    },
+  });
+  assert.deepEqual(reCertify.result.codexOff, { after: 'M1', reason: 'cli-missing', detail: 'codex CLI not installed' },
+    'and the delta re-certification is the fifth and last site that sees a codex result');
+});
+
 // --- T20: the mutation sweep rides in every brief (M0 finding 7) -----------------------------
 
 test('every builder brief carries the mutation sweep, fix rounds included', async () => {
