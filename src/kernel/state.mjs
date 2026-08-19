@@ -292,7 +292,7 @@ export const UNCLASSIFIED_PROFILE = 'unclassified';
  * profile (artifacts, approval conversations, ceremony) stays skill data: do not grow this into a
  * profile engine. `express` requires NONE here by design — its product sign-off is still demanded
  * by finalize's C5, a separate layered check that reads subjects, not roles.
- * NO row names `codex-consult`: the consult is a SECOND lens, never
+ * NO row names `consult`: the consult is a SECOND lens, never
  * the unique one, and its absence is an environmental fact about a machine, not a fact about the
  * feature — a kernel requirement here turns a missing CLI into an unfinishable feature. Full's
  * extra rigour (the plan-stage consult, the milestone-close consult) is skill/loop ceremony that
@@ -1430,7 +1430,7 @@ export const REVIEW_RECEIPT_AGENT_ROLES = {
   'product-reviewer': 'product-reviewer',
   'visual-reviewer': 'visual-reviewer',
   'plan-critic': 'plan-critic',
-  'codex-consult': 'codex-consult',
+  'consult': 'consult',
 };
 // The roles review-record demands a receipt for. Any OTHER role records exactly as before:
 // role has never had a whitelist, no stage predicate counts an unknown role, and refusing one

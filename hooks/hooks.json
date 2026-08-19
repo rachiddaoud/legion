@@ -44,7 +44,7 @@
         ]
       },
       {
-        "matcher": "^(legion:)?(code-reviewer|product-reviewer|visual-reviewer|plan-critic|codex-consult)$",
+        "matcher": "^(legion:)?(code-reviewer|product-reviewer|visual-reviewer|plan-critic|consult)$",
         "hooks": [
           {
             "type": "command",

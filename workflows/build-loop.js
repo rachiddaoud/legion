@@ -98,8 +98,8 @@ export const meta = {
 // only by sampling noise: same checklist, same blind spots. Diversity has to come from the
 // MANDATE, so each dimension owns a disjoint slice of the reviewer's `## Check` list and reads
 // the whole diff hunting one class of defect instead of nine. That is independent of whether the
-// codex CLI exists on this machine — which is the whole reason `full` needed a meaning that is
-// not "a second vendor is installed".
+// consult lens's external backend exists on this machine — which is the whole reason `full`
+// needed a meaning that is not "a second vendor is installed".
 //
 // The dimensions PARTITION the reviewer's checklist: every bullet of agents/code-reviewer.md
 // `## Check` plus its smell baseline lands in exactly one. A bullet owned by no dimension is a
@@ -150,7 +150,7 @@ export const meta = {
 //
 // --- THE RE-REVIEW BELONGS TO THE LENS THAT FAILED --------------------------------------------
 // The fix round is judged by the lens whose findings caused it, never by the other one. A
-// build round once re-reviewed a CODEX fail with the CLAUDE lens: the fix was blessed by an agent that
+// build round once re-reviewed a CONSULT fail with the CLAUDE lens: the fix was blessed by an agent that
 // had never raised the finding, and the lens that rejected the task never confirmed its own
 // finding fixed — which is a pass with no confirming evidence behind it, dressed as two lenses
 // agreeing. So `failingLenses` below is computed per lens, each failing lens is re-dispatched to
@@ -207,9 +207,9 @@ if (!dossier || !worktree || !planPath || !allTasks) {
 //   value passes through verbatim. kernel-op, the milestone squash and the boundary gate are
 //   PINNED to haiku at low effort and unreachable from this arg: one command on a pinned prompt,
 //   an exit code reported verbatim and a checked schema gain nothing from a stronger model.
-//   THE CODEX LENS IS PINNED TO HAIKU TOO, and equally unreachable — agents/codex-consult.md
-//   pins its invocation, so the dispatch runs one fixed command and maps codex's own JSON onto
-//   the finding shape: the reviewing is CODEX's, and the tier a caller pays for buys none of it.
+//   THE CONSULT LENS IS PINNED TO HAIKU TOO, and equally unreachable — agents/consult.md
+//   pins its invocation, so the dispatch runs one fixed command and maps the backend's own JSON onto
+//   the finding shape: the reviewing is THE BACKEND's, and the tier a caller pays for buys none of it.
 //   Its EFFORT stays default, unlike the three above — those report an exit code, this one
 //   carries every finding across verbatim, and fidelity per finding is the whole contract.
 // squash: the DEFAULT IS TO SQUASH. Two things skip it and only one of them is a deviation. An
@@ -229,9 +229,9 @@ if (!dossier || !worktree || !planPath || !allTasks) {
 //   Absent ⇒ treated as NOTHING recorded (every close runs), and said so in the return.
 const MODEL = (ARGS.model === undefined || ARGS.model === null) ? 'opus' : ARGS.model
 /** The model for a dispatch whose agentType is only known at runtime — the lens re-review, the
- * close roles and their re-certification all dispatch a role variable. The codex lens is pinned
+ * close roles and their re-certification all dispatch a role variable. The consult lens is pinned
  * (see OPTIONAL ARGS); everything else rides MODEL. */
-const modelFor = (agentType) => (agentType === 'legion:codex-consult' ? 'haiku' : MODEL)
+const modelFor = (agentType) => (agentType === 'legion:consult' ? 'haiku' : MODEL)
 const SQUASH = ARGS.squash !== false
 const PROFILE_GIVEN = typeof ARGS.profile === 'string' && ARGS.profile.length > 0
 const KNOWN_PROFILES = ['express', 'standard', 'full']
@@ -468,8 +468,8 @@ function visualRequired(group) {
  * PER GROUP, not a constant: a global list would let a flagged milestone's close skip on two
  * recorded verdicts when three are owed — a false "closed", the exact hole the resume predicate
  * below exists to close. */
-// codex-consult is DELIBERATELY absent from this set (operator ruling 2026-07-31: the consult is
-// a second lens, never the unique one). On full the close still DISPATCHES it — see the advisory
+// The consult role is DELIBERATELY absent from this set (operator ruling 2026-07-31: the consult
+// is a second lens, never the unique one). On full the close still DISPATCHES it — see the advisory
 // push in closeMilestone — but it is not required, not counted by the resume predicate, and its
 // absence degrades on record instead of failing anything.
 const baseCloseRoles = productRequired ? ['code-reviewer', 'product-reviewer'] : ['code-reviewer']
@@ -503,7 +503,7 @@ if (closesPending.length === 0) {
   log('nothing outstanding: every task is done and every milestone close is recorded passing — ' +
     'returning without a single dispatch')
   return {
-    built: [], blocked: [], failed: [], deferred: [], degraded: [], codexOff: null, singleLens: [], tiersIgnored: [],
+    built: [], blocked: [], failed: [], deferred: [], degraded: [], consultOff: null, singleLens: [], tiersIgnored: [],
     milestones: groups.map(g => ({ id: g.id, tasks: g.tasks.length, outcome: 'close-already-recorded' })),
     squashDeviations: [], designSignals: [], profile: PROFILE, profileAssumed: !PROFILE_GIVEN, profileCoerced: PROFILE_COERCED,
     reviewsProvided: RECORDED_REVIEWS !== null,
@@ -572,13 +572,13 @@ const REVIEW_SCHEMA = {
         },
       },
     },
-    available: { type: 'boolean', description: 'codex lens only: false when the codex CLI is absent' },
+    available: { type: 'boolean', description: 'consult lens only: false when the configured consult backend is absent or misconfigured' },
     unavailable: {
       type: 'string',
       enum: ['cli-missing', 'not-authenticated', 'quota', 'network', 'timeout', 'other'],
-      description: 'codex lens only, with available:false: WHICH absence, off the fixed table in agents/codex-consult.md. The loop latches the lens off for the rest of the run on a durable cause and pays for another dispatch on a transient one — so this is a lookup, never a guess',
+      description: 'consult lens only, with available:false: WHICH absence, off the fixed table in agents/consult.md. The loop latches the lens off for the rest of the run on a durable cause and pays for another dispatch on a transient one — so this is a lookup, never a guess',
     },
-    reason: { type: 'string', description: "codex lens only, with available:false: codex's own error message, verbatim — what makes the degradation quotable in the review artifact" },
+    reason: { type: 'string', description: "consult lens only, with available:false: the backend's own error message, verbatim — what makes the degradation quotable in the review artifact" },
   },
 }
 
@@ -900,12 +900,12 @@ const blockedTasks = []
 const failed = []
 const deferred = []
 const degraded = []
-// THE CODEX LATCH — one durable absence, one dispatch. Rationale in latchCodexOff below.
-let codexOff = null
-const CODEX_DURABLE = ['cli-missing', 'not-authenticated', 'quota']
+// THE CONSULT LATCH — one durable absence, one dispatch. Rationale in latchConsultOff below.
+let consultOff = null
+const CONSULT_DURABLE = ['cli-missing', 'not-authenticated', 'quota']
 // BY-DESIGN SINGLE LENS, KEPT APART FROM `degraded` ON PURPOSE. A task reviewed by one
 // lens because its architect-assigned tier says so, and a task reviewed by one lens because the
-// codex CLI was missing, look identical in tasks.json — and the pre-merge human must be able to
+// consult backend was missing, look identical in tasks.json — and the pre-merge human must be able to
 // tell "cheap by design" from "thinner than the profile promised". Two lists, two meanings.
 const singleLens = []
 // The mirror image of `singleLens`, and kept apart from it for the same reason: a task whose plan
@@ -918,11 +918,11 @@ const milestoneReports = []
 const blockedIds = new Set()
 let stopped = null // set when a milestone close fails: later milestones are untouched
 
-/** Latch the codex lens off when THIS result says its absence is durable. A dispatch that only
+/** Latch the consult lens off when THIS result says its absence is durable. A dispatch that only
  * reports the lens dead still COSTS a dispatch — measured at 26 415 tokens for one quota answer,
  * because every turn of a subagent re-bills its context and there is no cheap way to abandon one.
  * The loop had no memory of that answer: a ten-task feature paid ten times for it.
- * CALLED WITH EVERY CODEX RESULT THE LOOP SEES — round 1, re-review and re-certification, at task
+ * CALLED WITH EVERY CONSULT RESULT THE LOOP SEES — round 1, re-review and re-certification, at task
  * and at close scope: quota can die BETWEEN rounds, and a site left uncalled re-pays for the
  * answer it already has (the same defect class as the haiku pin's missed re-review sites).
  * Idempotent and null-safe: the first durable absence wins, so `after` names the subject that
@@ -932,12 +932,12 @@ let stopped = null // set when a milestone close fails: later milestones are unt
  * (no consecutive-failure counter); a result with no `unavailable` at all — an older build of the
  * agent — latches nothing. And it buys the DISPATCH away, never the degradation: every caller
  * still records its own scope's degradation exactly as it does for a lens that came back dead.
- * `reason` is the CLASSIFIED cause (the enum), `detail` codex's own message. */
-function latchCodexOff(res, after) {
-  if (codexOff || !res || res.available !== false) return
-  if (!CODEX_DURABLE.includes(res.unavailable)) return
-  codexOff = { after, reason: res.unavailable, detail: res.reason || '' }
-  log(`codex lens LATCHED OFF after ${after} — ${res.unavailable}${res.reason ? `: ${res.reason}` : ''}. ` +
+ * `reason` is the CLASSIFIED cause (the enum), `detail` the backend's own message. */
+function latchConsultOff(res, after) {
+  if (consultOff || !res || res.available !== false) return
+  if (!CONSULT_DURABLE.includes(res.unavailable)) return
+  consultOff = { after, reason: res.unavailable, detail: res.reason || '' }
+  log(`consult lens LATCHED OFF after ${after} — ${res.unavailable}${res.reason ? `: ${res.reason}` : ''}. ` +
     `Not dispatched again this run; every review from here is DEGRADED and returned as such.`)
 }
 
@@ -1059,11 +1059,11 @@ for (const group of groups) {
     const unconfirmedBy = []
     if (!EXPRESS) {
       // --- Review, at the task's RISK TIER (and, on `full`, split by DIMENSION) -----------------
-      // Default (no tier): two lenses in parallel. The codex lens is INDEPENDENT;
-      // a missing codex CLI degrades the review to one lens, which is logged and RETURNED as a
-      // degradation, never counted as a pass.
-      // 'low' (docs-only, test-only, low blast radius): ONE lens — legion:code-reviewer. Codex is
-      //   not dispatched, so there is nothing to degrade and nothing to record for it.
+      // Default (no tier): two lenses in parallel. The consult lens is INDEPENDENT;
+      // a missing consult backend degrades the review to one lens, which is logged and RETURNED
+      // as a degradation, never counted as a pass.
+      // 'low' (docs-only, test-only, low blast radius): ONE lens — legion:code-reviewer. The consult
+      //   lens is not dispatched, so there is nothing to degrade and nothing to record for it.
       // 'trivial' (a mechanical change): one lens whose mandate is a DIFF SCAN — does the diff do
       //   what the task says and nothing else — at low effort. No adversarial rounds.
       // On `full` there is no tier — it was read and discarded above — and the Claude lens becomes
@@ -1091,10 +1091,10 @@ for (const group of groups) {
       const claudeLabel = dim => `code-reviewer${dim ? `[${dim.key}]` : ''}`
       const claudePrompt = dim => (dim ? `${reviewPrompt}\n\n${dimensionMandate(dim)}` : reviewPrompt)
       let claudeResults = []
-      let codexLens = null
+      let consultLens = null
       // Read BEFORE the dispatch: this task's OWN result may set the latch below, and the log line
       // must still say which of the two happened here.
-      const codexLatched = !!codexOff
+      const consultLatched = !!consultOff
       if (dual) {
         const lenses = await parallel([
           ...claudeDims.map(dim => () => agent(claudePrompt(dim), {
@@ -1104,30 +1104,30 @@ for (const group of groups) {
             model: MODEL,
             schema: REVIEW_SCHEMA,
           })),
-          // A latched lens is not dispatched at all (latchCodexOff).
-          ...(codexLatched ? [] : [() => agent(reviewPrompt, {
-            agentType: 'legion:codex-consult',
-            label: `${task.id} review:codex-consult`,
+          // A latched lens is not dispatched at all (latchConsultOff).
+          ...(consultLatched ? [] : [() => agent(reviewPrompt, {
+            agentType: 'legion:consult',
+            label: `${task.id} review:consult`,
             phase: mPhase,
             model: 'haiku',
             schema: REVIEW_SCHEMA,
           })]),
         ])
         claudeResults = lenses.slice(0, claudeDims.length)
-        codexLens = lenses[claudeDims.length] || null
+        consultLens = lenses[claudeDims.length] || null
         if (FULL) log(`${task.id}: ${DIMENSIONS.length} dimension lenses (${DIMENSIONS.map(d => d.key).join(', ')}) — the full profile's task review`)
-        if (!codexLens || codexLens.available === false) {
+        if (!consultLens || consultLens.available === false) {
           // Returned, not just logged. `tasks.reviews` will hold ONE verdict for this task and no
-          // record of why — from the pre-merge gate, "codex was unavailable" and "codex was never
-          // dispatched" look identical, and the human deciding on that evidence should be told which.
-          // The skipped thunk leaves `codexLens` falsy, so a latched lens lands here exactly as an
+          // record of why — from the pre-merge gate, "the consult lens was unavailable" and "it was
+          // never dispatched" look identical, and the human deciding on that evidence should be told which.
+          // The skipped thunk leaves `consultLens` falsy, so a latched lens lands here exactly as an
           // unavailable one does — which is why task scope owes the latch no push of its own.
           degraded.push(task.id)
-          log(`${task.id}: DEGRADED review — codex lens ` +
-            (codexLatched ? `LATCHED OFF since ${codexOff.after} (${codexOff.reason})` : 'unavailable') +
+          log(`${task.id}: DEGRADED review — consult lens ` +
+            (consultLatched ? `LATCHED OFF since ${consultOff.after} (${consultOff.reason})` : 'unavailable') +
             `; Claude lens only (this is not a second pass)`)
         }
-        latchCodexOff(codexLens, task.id)
+        latchConsultOff(consultLens, task.id)
       } else {
         const opts = {
           agentType: 'legion:code-reviewer',
@@ -1144,7 +1144,7 @@ for (const group of groups) {
 
       // The lenses that actually RAN, each with its own result — kept apart rather than merged,
       // because the re-review below is per lens and a merged list would hand each lens the other's
-      // findings to grade. The codex lens appears only when it ran; a lens that did not run has no
+      // findings to grade. The consult lens appears only when it ran; a lens that did not run has no
       // findings and cannot re-review anything. Each dimension is its OWN lens for exactly the same
       // reason: it re-reviews its own findings and nobody else's.
       //
@@ -1160,8 +1160,8 @@ for (const group of groups) {
         },
       }))
       const lensRuns = [...claudeRuns]
-      if (codexLens && codexLens.available !== false) {
-        lensRuns.push({ role: 'codex-consult', label: 'codex-consult', agentType: 'legion:codex-consult', dim: null, result: codexLens })
+      if (consultLens && consultLens.available !== false) {
+        lensRuns.push({ role: 'consult', label: 'consult', agentType: 'legion:consult', dim: null, result: consultLens })
       }
       const lensFindings = lens => (lens.result && lens.result.findings) || []
       const lensBlocking = lens => lensFindings(lens).filter(blocking)
@@ -1175,17 +1175,17 @@ for (const group of groups) {
       const claudePass = claudeRuns.every(l => l.result.verdict === 'pass')
       verdict = claudePass && findings.length === 0 ? 'pass' : 'fail'
 
-      // Each lens's own verdict, as it stood — not the loop's combined one. The codex lens is
+      // Each lens's own verdict, as it stood — not the loop's combined one. The consult lens is
       // recorded only when it actually ran: recording a verdict for a review that did not happen
       // would forge the very evidence the degradation log is honest about.
       //
-      // `recorded` ACCUMULATES over every verdict this task produces, including the codex lens and
+      // `recorded` ACCUMULATES over every verdict this task produces, including the consult lens and
       // the re-review below. Tracking only the last one would enforce the durable-evidence rule for
       // one lens and quietly exempt the others, which is the same hole in a smaller shape.
       recorded = await recordVerdict(task.id, 'code-reviewer', claudePass ? 'pass' : 'fail', mPhase)
-      if (codexLens && codexLens.available !== false) {
-        const codexRecorded = await recordVerdict(task.id, 'codex-consult', codexLens.verdict === 'pass' ? 'pass' : 'fail', mPhase)
-        recorded = recorded && codexRecorded
+      if (consultLens && consultLens.available !== false) {
+        const consultRecorded = await recordVerdict(task.id, 'consult', consultLens.verdict === 'pass' ? 'pass' : 'fail', mPhase)
+        recorded = recorded && consultRecorded
       }
 
       // --- Exactly ONE fix round ---------------------------------------------------------------
@@ -1280,11 +1280,11 @@ for (const group of groups) {
             // Also a DEGRADATION, for the same reason the round-1 unavailability is one: the review
             // this task got is not the review it was supposed to get, and the review artifact the
             // pre-merge human reads lists degraded tasks by id (skills/feature/SKILL.md review step
-            // 5). The round-1 push fires only when codex was already gone before the first pass, so
-            // without this a lens that vanishes MID-round never reaches that list.
+            // 5). The round-1 push fires only when the consult lens was already gone before the
+            // first pass, so without this a lens that vanishes MID-round never reaches that list.
             if (!degraded.includes(task.id)) degraded.push(task.id)
             log(`${task.id}: ${lens.label} could not re-review its own findings — unconfirmed, failing closed`)
-            if (lens.role === 'codex-consult') latchCodexOff(reReview, task.id)
+            if (lens.role === 'consult') latchConsultOff(reReview, task.id)
             continue
           }
           confirmed.push(...(reReview.findings || []))
@@ -1531,7 +1531,7 @@ async function closeMilestone(group) {
   }
   // closeRolesFor is what the RESUME check reads; the REQUIRED dispatch list above must stay its
   // mirror, or a close would skip on verdicts nobody dispatched (or dispatch a role no resume
-  // ever counts). The check runs BEFORE the advisory codex push below, deliberately: the consult
+  // ever counts). The check runs BEFORE the advisory consult push below, deliberately: the consult
   // lens is dispatched-not-required, so it belongs to neither side of this mirror.
   if (roles.length !== closeRolesFor(group).length) {
     return fail('close-review', `internal: ${closeRolesFor(group).length} required close role(s) but ${roles.length} dispatched`)
@@ -1547,17 +1547,17 @@ async function closeMilestone(group) {
   // close must push its own degradation or it reads as a close that got its second lens.
   const closeDegraded = []
   if (FULL || EXPRESS) {
-    if (codexOff) {
-      closeDegraded.push('codex-consult')
-      log(`milestone ${m}: DEGRADED close — the advisory codex lens is LATCHED OFF since ` +
-        `${codexOff.after} (${codexOff.reason}); not dispatched, no verdict recorded, the close ` +
+    if (consultOff) {
+      closeDegraded.push('consult')
+      log(`milestone ${m}: DEGRADED close — the advisory consult lens is LATCHED OFF since ` +
+        `${consultOff.after} (${consultOff.reason}); not dispatched, no verdict recorded, the close ` +
         `continues on the required lenses (this is not a second pass)`)
     } else {
       roles.push({
-        role: 'codex-consult',
-        agentType: 'legion:codex-consult',
-        label: `${m} codex review`,
-        prompt: closeReviewPrompt(group, 'codex-consult', ids),
+        role: 'consult',
+        agentType: 'legion:consult',
+        label: `${m} consult review`,
+        prompt: closeReviewPrompt(group, 'consult', ids),
       })
     }
   }
@@ -1573,7 +1573,7 @@ async function closeMilestone(group) {
   // verdict recorded is `fail`, which is not a claim about anything: the loop never records a
   // PASS it did not observe, and a recorded fail is the half that shows the close was attempted
   // and refused. THE ADVISORY CONSULT LENS IS THE ONE EXCEPTION (operator ruling 2026-07-31: a
-  // second lens, never the unique one): codex returning nothing or available:false is the
+  // second lens, never the unique one): the consult lens returning nothing or available:false is the
   // task-scope degradation at close scope — NO verdict recorded (a verdict for a review that did
   // not happen is forged evidence), the degradation logged and returned in the close report, and
   // the close continues on the lenses that exist. Any OTHER role returning available:false is
@@ -1581,11 +1581,11 @@ async function closeMilestone(group) {
   const runs = []
   roles.forEach((r, i) => {
     const raw = results[i]
-    if (r.role === 'codex-consult' && (!raw || raw.available === false)) {
+    if (r.role === 'consult' && (!raw || raw.available === false)) {
       closeDegraded.push(r.role)
-      log(`milestone ${m}: DEGRADED close — the advisory codex lens is unavailable; ` +
+      log(`milestone ${m}: DEGRADED close — the advisory consult lens is unavailable; ` +
         `no verdict recorded, the close continues on the required lenses (this is not a second pass)`)
-      latchCodexOff(raw, m)
+      latchConsultOff(raw, m)
       return
     }
     const result = !raw
@@ -1673,13 +1673,13 @@ async function closeMilestone(group) {
       if (!reReview || reReview.available === false) {
         // The role that rejected this milestone never re-judged its own findings, and no other
         // role may stand in for it. Record nothing — a verdict for a review that did not happen is
-        // forged evidence — and fail the close. This holds for the advisory codex lens too, and
+        // forged evidence — and fail the close. This holds for the advisory consult lens too, and
         // does NOT contradict the absence-degrades ruling: what fails the close here is not a
         // missing lens but its OPEN BLOCKING FINDINGS, raised while it existed and cleared by
         // nobody.
         stillFailing.push(`${run.role} (unavailable — its own findings were never re-judged)`)
         log(`milestone ${m}: ${run.role} could not re-review its own findings — unconfirmed, failing closed`)
-        if (run.role === 'codex-consult') latchCodexOff(reReview, m)
+        if (run.role === 'consult') latchConsultOff(reReview, m)
         continue
       }
       noteCategories(m, reReview.findings || [])
@@ -1703,14 +1703,14 @@ async function closeMilestone(group) {
       if (!reCert || reCert.available === false) {
         // The advisory consult lens degrades here exactly as at round 1 (operator ruling
         // 2026-07-31): its stale round-1 pass is counted by nothing — not the kernel's required
-        // set, not the resume predicate — so a vanished codex costs the evidence a degradation
+        // set, not the resume predicate — so a vanished consult lens costs the evidence a degradation
         // note, never the close. Required roles keep the fail-closed rule: their round-1 pass IS
         // counted, binds a dead tree, and un-re-earned would stall stage-complete review.
-        if (run.role === 'codex-consult') {
+        if (run.role === 'consult') {
           if (!closeDegraded.includes(run.role)) closeDegraded.push(run.role)
           report.degraded = closeDegraded
-          log(`milestone ${m}: the advisory codex lens vanished before re-certifying — nothing recorded, the close continues`)
-          latchCodexOff(reCert, m)
+          log(`milestone ${m}: the advisory consult lens vanished before re-certifying — nothing recorded, the close continues`)
+          latchConsultOff(reCert, m)
           continue
         }
         stillFailing.push(`${run.role} (re-certification unavailable — its round-1 pass binds the pre-fix tree and was never re-earned)`)
@@ -1752,18 +1752,19 @@ function closeReviewPrompt(group, role, ids) {
       ? `The milestone's task commits have been squashed into one commit`
       : `The milestone holds its single task's commits — one task has nothing to squash —`} ` +
     `and \`legion gate run --boundary\` is green on that tree.\n`
-  if (role === 'codex-consult') {
+  if (role === 'consult') {
     return `${head}` +
       `Second-opinion CONSULT at MILESTONE scope: assemble this milestone's ASSEMBLED diff — ` +
       `${squashed ? `the squashed milestone commit` : `this milestone's commits`} (plus its ` +
       `close-fix commit if the log shows one), not one ` +
-      `task's — and hand the external codex CLI that diff with the milestone-mode question: the ` +
+      `task's — and hand your configured external backend that diff with the milestone-mode ` +
+      `question: the ` +
       `seams between the tasks, the interfaces they agreed on, and anything only wrong when the ` +
       `tasks are read together. ${EXPRESS
-        ? `This profile runs NO per-task consult — these tasks have never been read by codex, so ` +
-          `read them, then judge the seams. `
+        ? `This profile runs NO per-task consult — these tasks have never been read by the ` +
+          `backend, so read them, then judge the seams. `
         : `The per-task consults already happened; do not repeat them. `}` +
-      `Return codex's findings verbatim in substance. If the CLI is unavailable, return ` +
+      `Return the backend's findings verbatim in substance. If it is unavailable, return ` +
       `available: false exactly as your contract says — you are the ADVISORY second lens: the ` +
       `close records the degradation and continues, so honesty about absence costs nothing and ` +
       `a substituted self-review would poison the one thing you are for.\n${BLAST_RADIUS}`
@@ -1818,7 +1819,7 @@ return {
   degraded,
   // null, or {after, reason, detail}: `degraded` says WHICH reviews lost the lens, this says when
   // it went dark for good and why — the half the review artifact can quote.
-  codexOff,
+  consultOff,
   singleLens,
   tiersIgnored,
   milestones: milestoneReports,

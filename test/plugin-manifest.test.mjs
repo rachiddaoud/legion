@@ -65,7 +65,7 @@ function parseFrontmatter(text, what) {
 }
 
 const AGENT_NAMES = [
-  'architect', 'builder', 'code-reviewer', 'codex-consult', 'kernel-op', 'plan-critic', 'product-reviewer',
+  'architect', 'builder', 'code-reviewer', 'consult', 'kernel-op', 'plan-critic', 'product-reviewer',
   'visual-reviewer',
 ];
 const read = (...p) => readFileSync(join(ROOT, ...p), 'utf8');
@@ -180,7 +180,7 @@ test('every role subagent exists, parses, and declares its tools', () => {
   const kernelOp = parseFrontmatter(read('agents', 'kernel-op.md'), 'kernel-op').frontmatter;
   assert.equal(kernelOp.tools, 'Bash', 'kernel-op must have Bash and nothing else');
   // The reviewers and the critic are read-only by contract; a write tool would break it.
-  for (const ro of ['plan-critic', 'code-reviewer', 'product-reviewer', 'codex-consult', 'visual-reviewer']) {
+  for (const ro of ['plan-critic', 'code-reviewer', 'product-reviewer', 'consult', 'visual-reviewer']) {
     const tools = parseFrontmatter(read('agents', `${ro}.md`), ro).frontmatter.tools;
     for (const banned of ['Edit', 'Write', 'NotebookEdit']) {
       assert.ok(!tools.split(',').map((s) => s.trim()).includes(banned), `${ro} must stay read-only (${banned})`);
@@ -384,7 +384,7 @@ test('the build loop contains NO per-task planning agent — the rule must not r
   // plan. Still no planner. Widen it only when the loop genuinely gains a role, never to quiet a
   // failure.
   const allowed = new Set([
-    'legion:builder', 'legion:code-reviewer', 'legion:codex-consult', 'legion:product-reviewer', 'legion:kernel-op',
+    'legion:builder', 'legion:code-reviewer', 'legion:consult', 'legion:product-reviewer', 'legion:kernel-op',
     'legion:visual-reviewer',
   ]);
   for (const a of dispatched) assert.ok(allowed.has(a), `unexpected agent in the build loop: ${a}`);
@@ -515,7 +515,7 @@ test('every review verdict is recorded in state — an unrecorded review did not
   // loop kept only in memory is a hole in the evidence chain a resumed session cannot see.
   assert.match(src, /state review-record --role \$\{[^}]+\} --verdict \$\{[^}]+\} --subject task:\$\{/);
   // Every lens, not just the primary: `recorded` must ACCUMULATE, or the durable-evidence rule
-  // is enforced for one lens and quietly waived for the codex lens and the re-review.
+  // is enforced for one lens and quietly waived for the consult lens and the re-review.
   const records = [...src.matchAll(/recordVerdict\(/g)].length;
   assert.ok(records >= 3, `all three verdict sites must record, found ${records}`);
   const overwrites = [...src.matchAll(/\brecorded = await recordVerdict\(/g)].length;
@@ -1041,8 +1041,8 @@ test('the decision grammar is declared across the plan surface', () => {
 
   assert.match(read('agents', 'code-reviewer.md'), /category/,
     'reviewer findings can carry the recurrence slug');
-  assert.match(read('agents', 'codex-consult.md'), /category/,
-    'the codex translation carries it too — recurrence counting needs both lenses');
+  assert.match(read('agents', 'consult.md'), /category/,
+    'the consult translation carries it too — recurrence counting needs both lenses');
 });
 
 test('the build stage routes design signals through the PLAN stage, never task-answer', () => {
@@ -1128,17 +1128,17 @@ test('a contested finding is adjudicated by the lens that raised it — in both 
   // The lens that raised a finding is the only one that may withdraw it, and a withdrawal is a
   // `note` carrying why — the shape REVIEW_SCHEMA already has, so the whole rule lives in prose
   // and nothing but this pins it.
-  for (const file of ['code-reviewer.md', 'codex-consult.md']) {
+  for (const file of ['code-reviewer.md', 'consult.md']) {
     const s = agentSection(read('agents', file), 'Adjudicate a contested finding', file);
     assert.match(s, /sustain/i, `${file}: the finding may stand`);
     assert.match(s, /withdraw/i, `${file}: or be withdrawn`);
     assert.match(s, /`note`/, `${file}: a withdrawal is a note, so it rides to the human instead of vanishing`);
     assert.match(s, /evidence/, `${file}: what a contest is judged on`);
   }
-  // The loop records the codex verdict on its own and re-reviews it with codex, so the claim that
+  // The loop records the consult verdict on its own and re-reviews it with the consult lens, so the claim that
   // the Claude lens filters it describes a workflow that does not exist.
-  assert.doesNotMatch(read('agents', 'codex-consult.md'), /adjudicates every finding/,
-    'no lens adjudicates another lens’s findings — codex re-reviews its own');
+  assert.doesNotMatch(read('agents', 'consult.md'), /adjudicates every finding/,
+    'no lens adjudicates another lens’s findings — the consult lens re-reviews its own');
   const builder = agentSection(read('agents', 'builder.md'), 'Contesting a finding', 'builder.md');
   assert.match(builder, /`contested`/, 'the builder is told the channel');
   assert.match(builder, /evidence/, 'and the bar a contest must clear');

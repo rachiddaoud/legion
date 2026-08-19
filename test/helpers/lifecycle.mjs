@@ -38,7 +38,7 @@ export const taskRow = (h, id) => h.readTasks().tasks.find((t) => t.id === id);
  * these tests assert their own copy of it, so satisfyReviews() DISCOVERS the requirement instead by
  * recording one role at a time until the kernel accepts. */
 export const REVIEW_ROLES = [
-  'code-reviewer', 'product-reviewer', 'codex-consult', 'plan-critic',
+  'code-reviewer', 'product-reviewer', 'consult', 'plan-critic',
   'architect', 'builder', 'kernel-op', 'milestone-reviewer',
 ];
 

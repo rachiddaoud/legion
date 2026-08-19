@@ -86,7 +86,7 @@ record them as a side effect of a green run, and every consumer refuses a receip
 gate provenance.
 
 **`review-record` for a reviewer role demands attendance evidence.** When a reviewer agent
-(code-reviewer, product-reviewer, visual-reviewer, plan-critic, codex-consult) stops, its
+(code-reviewer, product-reviewer, visual-reviewer, plan-critic, consult) stops, its
 SubagentStop hook mints a **review receipt**; the record verifies and consumes it. The
 dispatch-the-reviewer-then-record order is therefore **kernel-enforced**, not etiquette: a
 record refused for a missing receipt means the reviewer was never actually dispatched (or the
@@ -156,9 +156,9 @@ report.
    judgement, so read the express bargain at the build stage before choosing it — mini-spec fused
    into the intake recap), **standard** (the default: full plan, critic, per-task reviews, milestone
    product review), **full** (**every task reviewed by three dimension lenses — correctness, tests,
-   design — with the plan's risk tiers ignored**, plus a codex consult at plan and at each milestone
-   close). The dimension split is what makes `full` cost more on any machine; the codex consults are
-   advisory and absent when the CLI is. Record it with `legion state escalate-profile <profile>`.
+   design — with the plan's risk tiers ignored**, plus a consult at plan and at each milestone
+   close). The dimension split is what makes `full` cost more on any machine; the consults are
+   advisory and absent when the backend is. Record it with `legion state escalate-profile <profile>`.
 4. **READ THE TARGET REPOSITORY — before the recap, at the depth this profile sets.**
    Classification comes first *because* it fixes the depth; you read the code with
    Read/Glob/Grep in this session, there is no explore agent to dispatch. Before the code, read
@@ -366,7 +366,7 @@ unreadable fails **closed**, refusing the spec ops in both siblings until it is 
    excuses a *missing* critic verdict on express, and a stale pass reads as absence. **A
    recorded fail still blocks on every profile** — if a critic *was* dispatched on an express
    feature and failed the plan, that fail is as binding as anywhere: revise and re-review, never
-   reclassify around it. On the **full** profile also dispatch **`legion:codex-consult`** in the
+   reclassify around it. On the **full** profile also dispatch **`legion:consult`** in the
    same round and hand its findings to the critic to adjudicate.
 4. Record the verdict:
    `legion state review-record --role plan-critic --verdict <pass|fail> --subject plan`
@@ -419,8 +419,8 @@ done-tasks-skip filter reads them, so a re-run in any session retries only outst
 - **`model`** (optional) rides verbatim on every builder, closer and reviewer dispatch, in place
   of the loop's default of `opus`. It never reaches the mechanical dispatches: kernel-op, the
   milestone squash and the boundary gate are pinned to `haiku` whatever you pass — and neither is
-  the **codex lens**, pinned to `haiku` at every scope because its invocation is pinned too and
-  the reviewing in that dispatch is codex's, not the dispatching model's. With no
+  the **consult lens**, pinned to `haiku` at every scope because its invocation is pinned too and
+  the reviewing in that dispatch is the backend's, not the dispatching model's. With no
   override, a task the approved plan tiers `low` or `trivial` builds — and fix-round rebuilds —
   at `sonnet`. **`squash: false`** (optional) turns off the per-milestone squash default —
   see review step 1 before you use it.
@@ -439,7 +439,7 @@ in order, and milestone N+1 does not start until milestone N has closed:
    dispatched and no verdict recorded at `task:<id>` — see the express bargain below.
 2. Then that milestone **closes, inside the loop**: squash → `legion gate run --boundary` →
    `legion:code-reviewer` in milestone mode → `legion:product-reviewer` (standard and full) →
-   `legion:codex-consult` at milestone scope (express and full: an ADVISORY second lens, never
+   `legion:consult` at milestone scope (express and full: an ADVISORY second lens, never
    the unique one — recorded when it runs, required by nothing, and a missing CLI degrades on
    record while the close continues) →
    `legion:visual-reviewer` for a milestone any of whose tasks carries `notes.visual` in the
@@ -452,7 +452,7 @@ in order, and milestone N+1 does not start until milestone N has closed:
 **THE EXPRESS BARGAIN, stated rather than discovered.** On `express` no task is reviewed at all:
 no lens is dispatched at `task:<id>` and no verdict is recorded there. The **milestone close is
 the whole code judgement** — `legion:code-reviewer` over the assembled diff plus the advisory
-codex lens — and it is what `finalize` demands anyway, which is why the per-task lenses were being
+consult lens — and it is what `finalize` demands anyway, which is why the per-task lenses were being
 paid for and read by nobody. What it costs is detection latency: **nobody reads the code until the
 close**. So a milestone stretched past **~3 tasks** on this profile means the profile was
 misclassified — `legion state escalate-profile standard` rather than stretch it. And the loop's
@@ -552,17 +552,17 @@ overwriting would recreate exactly the loss this file exists to prevent. The fil
 approval — the review artifact at the next stage is the hashed record; this file is how these
 facts survive to reach it.
 
-- **`degraded`** — task ids whose codex lens was **unavailable**, so they got one lens. Not a
-  failure and not a second pass. Lose the list and the pre-merge gate cannot tell "codex was
-  unavailable" from "codex was never dispatched", and the human decides on a review thinner than
+- **`degraded`** — task ids whose consult lens was **unavailable**, so they got one lens. Not a
+  failure and not a second pass. Lose the list and the pre-merge gate cannot tell "the consult lens was
+  unavailable" from "it was never dispatched", and the human decides on a review thinner than
   the profile promised without being told. Empty on `express`, which reviews no task — a close
   report carrying `degraded` is the only form this fact takes there.
-- **`codexOff`** — `null`, or `{after, reason, detail}`: the task or milestone that discovered the
-  codex lens was **durably** gone (`cli-missing`, `not-authenticated`, `quota`), the classified
-  cause, and codex's own message. From that subject on the lens was **not dispatched again** — one
+- **`consultOff`** — `null`, or `{after, reason, detail}`: the task or milestone that discovered the
+  consult lens was **durably** gone (`cli-missing`, `not-authenticated`, `quota`), the classified
+  cause, and the backend's own message. From that subject on the lens was **not dispatched again** — one
   dispatch costs ~26k tokens whatever it reports, and the answer was already known. The tasks that
   followed are still listed in `degraded`; this is the one line that says why they stopped costing
-  a dispatch. A transient absence (`network`, `timeout`) never latches, so `codexOff` stays `null`
+  a dispatch. A transient absence (`network`, `timeout`) never latches, so `consultOff` stays `null`
   and each `degraded` id is its own one-off loss.
 - **`singleLens`** — `{taskId, tier}` for every task reviewed by one lens **because the approved
   plan tiered it that way**. This is a different fact from `degraded` and must stay a different
@@ -628,13 +628,13 @@ flags the milestone's tasks `notes.visual` — the visual reviewer, with every v
    the dossier — the union of every appended run's return** — never off the transcript or your
    memory of the stage (the build stage appended one line per workflow run; an empty field in a
    later line does not erase what an earlier line reported):
-   - **Every task returned as `degraded`, by id** — reviewed by one lens because the codex lens was
+   - **Every task returned as `degraded`, by id** — reviewed by one lens because the consult lens was
      unavailable — **and every milestone whose close report carries `degraded`** — closed without
-     the advisory codex lens for the same reason (express and full; the close continues by design,
+     the advisory consult lens for the same reason (express and full; the close continues by design,
      but the pre-merge human is entitled to know which second opinions never happened). The lens
      can go dark MID-RUN and stay dark: on a durable absence the loop stops dispatching it and
-     returns `codexOff`. Every id is still listed — a review nobody bought is exactly as thin as
-     one that was attempted and failed — and `codexOff` is what tells the human from which subject
+     returns `consultOff`. Every id is still listed — a review nobody bought is exactly as thin as
+     one that was attempted and failed — and `consultOff` is what tells the human from which subject
      on, and why.
      On `express` the TASK half of this entry and the next two read **"not applicable on this
      profile"** — that profile runs no task review, so those fields are empty by profile and not by
@@ -648,7 +648,7 @@ flags the milestone's tasks `notes.visual` — the visual reviewer, with every v
    - **Every `squashDeviations` entry, with the reason** you are supplying for it.
    - **Every accepted residual** (RR3): the findings not fixed, each with the reason.
    - **Every adjudicated consult fail** (RR4): the rejected finding, why, and the residual.
-3. **Settle what is still open.** Every recorded `codex-consult` fail is either fixed or
+3. **Settle what is still open.** Every recorded `consult` fail is either fixed or
    adjudicated in the artifact before this stage completes — never left standing (RR4). A failing
    review that came back from a milestone close goes through the same shape the loop used: fix
    commit → `legion gate run --boundary` for a fresh receipt → **warm re-review by the reviewer
@@ -669,7 +669,7 @@ has **no milestone-scope verdicts recorded**: `tasks.json` holds task-subject re
 that before step 2, and check it
 for **every close role the milestone requires** — `code-reviewer` always, **plus `product-reviewer`
 on standard and full, plus `visual-reviewer` for any milestone whose tasks carry `notes.visual` in
-the approved plan** (never `codex-consult`: the consult is advisory at every scope and counted by
+the approved plan** (never `consult`: the consult is advisory at every scope and counted by
 no predicate) — because an interrupted close (crash, `/clear`, restart between the
 `review-record` calls) leaves some recorded and the rest missing. If **any** required role lacks a
 **passing** verdict at `--subject milestone:<id>` for a milestone whose tasks are all done, that
@@ -683,7 +683,7 @@ means:
 2. `legion gate run --boundary` on a clean worktree. It records the boundary receipt itself.
 3. Dispatch `legion:code-reviewer` in milestone mode over the assembled diff, and — on standard
    and full profiles — `legion:product-reviewer` against the spec's acceptance rows, and — on
-   express and full — `legion:codex-consult` over the milestone's assembled diff (advisory: record its
+   express and full — `legion:consult` over the milestone's assembled diff (advisory: record its
    verdict when it runs; a missing CLI is a degradation noted in the review artifact, never a
    blocker), and — for a milestone whose tasks carry `notes.visual` — `legion:visual-reviewer`
    against the plan's `## Visual review` section. **Every reviewer dispatch prompt carries the proportionality
@@ -700,9 +700,9 @@ just earned.
 
 ### pre-merge
 
-1. Present the human gate: the diff, the boundary receipt, every review verdict, the codex
+1. Present the human gate: the diff, the boundary receipt, every review verdict, the consult
    findings on the express and full profiles, anything the reviewers marked `unverified`, **every task
-   the review artifact records as `degraded`** — a task reviewed by one lens because codex was
+   the review artifact records as `degraded`** — a task reviewed by one lens because the consult lens was
    unavailable — **every task it records under `singleLens`, with its plan-assigned tier** — one
    lens by design, which is a different thing — **every task under `tiersIgnored`** — the profile
    declined the plan's cheapness, because the profile is `full` — and **the accepted residuals and adjudicated
@@ -879,7 +879,7 @@ findings and a fix lands, **continue the same reviewer agent**; its own findings
 it grades against, and it judges nothing else. Dispatch a fresh agent only when the prior one is
 gone (a session restart lost it) — and then its prompt carries **the prior findings verbatim**,
 because a re-review that re-derives its own list judges a fix nobody asked for. Where two lenses
-reviewed, the re-review belongs to **the lens that failed**: a codex fail cleared by the Claude
+reviewed, the re-review belongs to **the lens that failed**: a consult fail cleared by the Claude
 lens is not a confirmation of anything, and the finding that stopped the task was never re-judged
 by the reviewer that raised it. The build workflow obeys the same rule in the only form a sandbox
 allows — it re-dispatches the failing lens with that lens's findings verbatim, since it cannot
@@ -908,7 +908,7 @@ merely doubted.
 counts the review set the **profile** requires, and NO profile's set names the consult lens
 (express requires no role at all; standard and full
 require the code and product reviewers; the consult is a second lens, never the unique one) — so a
-recorded `codex-consult` fail does not block `legion state stage-complete review`. That is
+recorded `consult` fail does not block `legion state stage-complete review`. That is
 deliberate and stays that way: **this is a skill rule, and nothing here is to be added to the
 kernel's profile map.** Which means the honesty is yours to keep. Before completing the review
 stage, every recorded consult fail is either **fixed** (one round, RR2) or **adjudicated**: a

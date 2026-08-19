@@ -814,7 +814,7 @@ test('freshReviewReceipts filters by role, consumption, and the per-kind binding
 test('the reviewer role map and the enforced set agree, and cover exactly the five reviewers', () => {
   assert.deepEqual(
     Object.keys(REVIEW_RECEIPT_AGENT_ROLES).sort(),
-    ['code-reviewer', 'codex-consult', 'plan-critic', 'product-reviewer', 'visual-reviewer'],
+    ['code-reviewer', 'consult', 'plan-critic', 'product-reviewer', 'visual-reviewer'],
   );
   for (const [agent, role] of Object.entries(REVIEW_RECEIPT_AGENT_ROLES)) {
     assert.equal(agent, role, 'agentType base name IS the role — divergence needs a new argument here');

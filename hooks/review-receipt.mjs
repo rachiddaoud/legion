@@ -26,10 +26,10 @@
 // When a source yields nothing the receipt degrades: no verdict ⇒ ATTENDANCE-ONLY (proves the
 // reviewer ran, not what it concluded — existence evidence only, the anti-fold rule has
 // nothing to say); no subject ⇒ UNSCOPED (fungible across subjects at its tree, exactly what
-// pre-scoping receipts were). And a codex-consult — THAT ROLE AND NO OTHER — that reports
+// pre-scoping receipts were). And a consult — THAT ROLE AND NO OTHER — that reports
 // `"available":false` is a MISSING LENS, not a verdict: the loop deliberately never records it,
 // so minting its schema-forced 'fail' would strand an unconsumable fail receipt that blocks the
-// honest pass after codex comes back; that case mints attendance-only too. The same field from
+// honest pass after the backend comes back; that case mints attendance-only too. The same field from
 // any other reviewer is off-contract output, never a licence to drop its verdict.
 //
 // FAIL-SAFE vs FAIL-CLOSED — one DELIBERATE ASYMMETRY with builder-receipt.mjs:
@@ -67,7 +67,7 @@ function subjectIn(text) {
   return m.length === 0 ? null : m[m.length - 1][1];
 }
 
-/** codex-consult's missing-lens marker: the LAST `"available":<bool>` in `text` is false. */
+/** consult's missing-lens marker: the LAST `"available":<bool>` in `text` is false. */
 function unavailableIn(text) {
   const m = [...String(text ?? '').matchAll(/"available"\s*:\s*(true|false)/g)];
   return m.length > 0 && m[m.length - 1][1] === 'false';
@@ -123,7 +123,7 @@ const source = verdictIn(input.last_assistant_message) !== null ? input.last_ass
 // its schema-forced 'fail' strands an unconsumable fail receipt. No other reviewer has that
 // escape — for them `available:false` is off-contract output, its `fail` is the honest half of
 // it, and dropping the verdict would quietly retire the anti-fold rule for that run.
-const consultLens = REVIEW_RECEIPT_AGENT_ROLES[String(input.agent_type).replace(/^legion:/, '')] === 'codex-consult';
+const consultLens = REVIEW_RECEIPT_AGENT_ROLES[String(input.agent_type).replace(/^legion:/, '')] === 'consult';
 const verdict = consultLens && unavailableIn(source) ? null : verdictIn(source);
 const subject = subjectIn(source);
 
