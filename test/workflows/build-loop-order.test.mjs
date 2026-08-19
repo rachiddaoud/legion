@@ -468,18 +468,25 @@ test('milestone N closes BEFORE milestone N+1 dispatches anything', async () => 
   // boundary gate had certified and no reviewer had read.
   const { result, dispatches } = await runLoop([
     row('T1', { milestone: 'M1' }),
-    row('T2', { milestone: 'M2', depends_on: ['T1'] }),
+    row('T2', { milestone: 'M1' }),
+    row('T3', { milestone: 'M2', depends_on: ['T1'] }),
+    row('T4', { milestone: 'M2' }),
   ]);
   assert.deepEqual(flow(dispatches), [
     'T1 build', 'T1 review:code-reviewer', 'T1 review:codex-consult',
-    'M1 squash', 'M1 boundary gate', 'M1 milestone review', 'M1 product review',
     'T2 build', 'T2 review:code-reviewer', 'T2 review:codex-consult',
+    'M1 squash', 'M1 boundary gate', 'M1 milestone review', 'M1 product review',
+    'T3 build', 'T3 review:code-reviewer', 'T3 review:codex-consult',
+    'T4 build', 'T4 review:code-reviewer', 'T4 review:codex-consult',
     'M2 squash', 'M2 boundary gate', 'M2 milestone review', 'M2 product review',
   ], 'tasks then close, per milestone, in §Gates order — never all tasks then all closes');
   assert.deepEqual(result.milestones.map((m) => [m.id, m.outcome]), [['M1', 'closed'], ['M2', 'closed']]);
-  assert.deepEqual(result.built, ['T1', 'T2']);
+  assert.deepEqual(result.built, ['T1', 'T2', 'T3', 'T4']);
   // The close records its verdicts at MILESTONE scope, one per required role, per milestone.
-  const { kernelCmds } = await runLoop([row('T1', { milestone: 'M1' }), row('T2', { milestone: 'M2' })]);
+  const { kernelCmds } = await runLoop([
+    row('T1', { milestone: 'M1' }), row('T2', { milestone: 'M1' }),
+    row('T3', { milestone: 'M2' }), row('T4', { milestone: 'M2' }),
+  ]);
   for (const m of ['M1', 'M2']) {
     assert.equal(verdictsFor(kernelCmds, 'code-reviewer', `milestone:'${m}'`), 1, `${m} code-reviewer verdict`);
     assert.equal(verdictsFor(kernelCmds, 'product-reviewer', `milestone:'${m}'`), 1, `${m} product verdict`);
@@ -520,14 +527,18 @@ test('a milestone whose task did not land does NOT close, and every later milest
 test('a red boundary gate FAILS the close, stops the loop, and leaves later milestones untouched', async () => {
   const { result, dispatches } = await runLoop([
     row('T1', { milestone: 'M1' }),
-    row('T2', { milestone: 'M2' }),
+    row('T2', { milestone: 'M1' }),
+    row('T3', { milestone: 'M2' }),
   ], { gateResult: () => ({ exitCode: 2, output: 'boundary gate red' }) });
-  assert.deepEqual(flow(dispatches), ['T1 build', 'T1 review:code-reviewer', 'T1 review:codex-consult', 'M1 squash', 'M1 boundary gate'],
-    'the close stops at the red gate — no reviewer judges a tree the gate refused');
+  assert.deepEqual(flow(dispatches), [
+    'T1 build', 'T1 review:code-reviewer', 'T1 review:codex-consult',
+    'T2 build', 'T2 review:code-reviewer', 'T2 review:codex-consult',
+    'M1 squash', 'M1 boundary gate',
+  ], 'the close stops at the red gate — no reviewer judges a tree the gate refused');
   assert.deepEqual(result.milestones.map((m) => [m.id, m.outcome]), [['M1', 'close-failed'], ['M2', 'deferred']]);
   assert.equal(result.milestones[0].close.boundaryExit, 2, 'the exit code rides back verbatim');
   assert.match(result.milestones[0].detail, /exited 2/);
-  assert.deepEqual(result.built, ['T1'], 'the task itself did land — the close is what failed');
+  assert.deepEqual(result.built, ['T1', 'T2'], 'the tasks themselves did land — the close is what failed');
 });
 
 test('a squash that MOVED THE TREE fails the close — receipts key to trees', async () => {
@@ -535,7 +546,7 @@ test('a squash that MOVED THE TREE fails the close — receipts key to trees', a
   // TREE hash. A squash that changes the tree orphans every receipt the milestone earned, so the
   // closer reports the pair and the loop refuses on any difference — and refuses just as firmly
   // when the pair is missing, because "they matched" with nothing to compare is the same claim.
-  const moved = await runLoop([row('T1')], {
+  const moved = await runLoop([row('T1'), row('T2')], {
     squashResult: () => ({ status: 'squashed', treeBefore: 'a'.repeat(40), treeAfter: 'b'.repeat(40) }),
   });
   assert.equal(moved.result.milestones[0].outcome, 'close-failed');
@@ -543,17 +554,17 @@ test('a squash that MOVED THE TREE fails the close — receipts key to trees', a
   assert.deepEqual(flow(moved.dispatches).filter((l) => /boundary gate/.test(l)), [],
     'a squash that changed content never reaches the boundary gate');
 
-  const silent = await runLoop([row('T1')], { squashResult: () => ({ status: 'squashed' }) });
+  const silent = await runLoop([row('T1'), row('T2')], { squashResult: () => ({ status: 'squashed' }) });
   assert.equal(silent.result.milestones[0].outcome, 'close-failed');
   assert.match(silent.result.milestones[0].detail, /did not report a usable tree pair/);
 
-  const refused = await runLoop([row('T1')], { squashResult: () => ({ status: 'refused', detail: 'boundary unclear' }) });
+  const refused = await runLoop([row('T1'), row('T2')], { squashResult: () => ({ status: 'refused', detail: 'boundary unclear' }) });
   assert.equal(refused.result.milestones[0].outcome, 'close-failed');
   assert.match(refused.result.milestones[0].detail, /boundary unclear/);
 });
 
 test('the squash prompt carries the two rails that make it safe, and args.squash === false returns a DEVIATION', async () => {
-  const on = await runLoop([row('T1')]);
+  const on = await runLoop([row('T1'), row('T2')]);
   const squash = on.dispatches.find((d) => d.label === 'M1 squash');
   assert.match(squash.prompt, /ONE conventional commit/, 'the default is one commit per milestone');
   assert.match(squash.prompt, /rev-parse HEAD\^\{tree\}/, 'the tree pair is derived by the closer, from git');
@@ -561,7 +572,7 @@ test('the squash prompt carries the two rails that make it safe, and args.squash
   assert.match(squash.prompt, /do NOT push/i, 'remote writes belong to finalize alone');
   assert.deepEqual(on.result.squashDeviations, [], 'the default path is not a deviation');
 
-  const off = await runLoop([row('T1')], { args: { squash: false } });
+  const off = await runLoop([row('T1'), row('T2')], { args: { squash: false } });
   assert.deepEqual(flow(off.dispatches).filter((l) => /squash/.test(l)), [], 'nothing is dispatched to squash');
   assert.equal(off.result.squashDeviations.length, 1);
   assert.match(off.result.squashDeviations[0].deviation, /squash default was disabled/);
@@ -571,8 +582,59 @@ test('the squash prompt carries the two rails that make it safe, and args.squash
   assert.equal(off.result.milestones[0].outcome, 'closed', 'skipping the squash does not fail the close');
 });
 
+test('a milestone holding ONE task dispatches no squash, on every profile, and reports the skip', async () => {
+  // One task commit has nothing to collapse: squashing it would dispatch a closer to rewrite the
+  // commit into itself and prove with two rev-parse calls that a tree equals itself. The rule is
+  // the loop's own, so it applies whatever the profile pays for.
+  for (const profile of ['express', 'standard', 'full']) {
+    const { result, dispatches } = await runLoop([row('T1')], { args: { profile } });
+    const close = flow(dispatches).filter((l) => /^M1 /.test(l));
+    assert.deepEqual(close.filter((l) => / squash$/.test(l)), [], `${profile}: no closer is dispatched to squash one commit`);
+    assert.equal(close[0], 'M1 boundary gate', `${profile}: the close goes straight to the boundary gate`);
+    assert.deepEqual(result.milestones[0].close.squash, { skipped: true, reason: 'single-task milestone' },
+      `${profile}: the skip is reported with the loop's own reason`);
+    assert.equal(result.milestones[0].outcome, 'closed', `${profile}: skipping the squash does not fail the close`);
+    assert.deepEqual(result.squashDeviations, [],
+      `${profile}: a rule the loop applies itself owes no human reason, so it is not a deviation`);
+  }
+});
+
+test('the close-review prompts do not claim a squash that never happened', async () => {
+  // The head sentence is the range a close reviewer diffs: pointed at a squashed commit the close
+  // skipped, a lens reads the wrong one or invents it.
+  const one = await runLoop([row('T1')], { args: { profile: 'full' } });
+  const oneByLabel = Object.fromEntries(one.dispatches.map((d) => [d.label, d.prompt]));
+  for (const label of ['M1 milestone review', 'M1 product review', 'M1 codex review']) {
+    assert.doesNotMatch(oneByLabel[label], /squashed/, `${label} must not claim a squash the close skipped`);
+    assert.match(oneByLabel[label], /holds its single task's commits/, `${label} states what the milestone actually holds`);
+    assert.match(oneByLabel[label], /--boundary` is green on that tree/, `${label} still states the gate is green on that tree`);
+  }
+  assert.match(oneByLabel['M1 codex review'], /ASSEMBLED diff — this milestone's commits \(plus its close-fix commit/,
+    'the consult assembles the commits that exist, not a squashed one');
+
+  const two = await runLoop([row('T1'), row('T2')], { args: { profile: 'full' } });
+  const twoByLabel = Object.fromEntries(two.dispatches.map((d) => [d.label, d.prompt]));
+  for (const label of ['M1 milestone review', 'M1 product review', 'M1 codex review']) {
+    assert.match(twoByLabel[label], /task commits have been squashed into one commit/, `${label} states the squash that did happen`);
+  }
+  assert.match(twoByLabel['M1 codex review'], /ASSEMBLED diff — the squashed milestone commit \(plus its close-fix commit/);
+});
+
+test('the one-task skip is decided PER MILESTONE — a two-task milestone in the same run still squashes', async () => {
+  const { result, dispatches } = await runLoop([
+    row('T1', { milestone: 'M1' }),
+    row('T2', { milestone: 'M2' }),
+    row('T3', { milestone: 'M2' }),
+  ]);
+  assert.deepEqual(flow(dispatches).filter((l) => / squash$/.test(l)), ['M2 squash'],
+    'only the milestone with nothing to collapse skips');
+  assert.deepEqual(result.milestones[0].close.squash, { skipped: true, reason: 'single-task milestone' });
+  assert.equal(result.milestones[1].close.squash.treeAfter, TREE, 'M2 squashed, and reported the tree pair it preserved');
+  assert.deepEqual(result.squashDeviations, []);
+});
+
 test('a failing close review costs ONE fix round: fix -> RE-GATE -> the SAME role re-judges its own findings', async () => {
-  const { result, dispatches, kernelCmds } = await runLoop([row('T1')], {
+  const { result, dispatches, kernelCmds } = await runLoop([row('T1'), row('T2')], {
     lensResult: (type, label) =>
       (label === 'M1 milestone review' ? { verdict: 'fail', findings: [mustFix('seam between T1 and its caller')] } : undefined),
   });
@@ -656,7 +718,7 @@ test('a close whose required verdicts are already recorded PASSING is skipped', 
 });
 
 test('the LATEST verdict decides, and a recorded FAIL does not count as a close', async () => {
-  const { dispatches } = await runLoop([row('T1', { status: 'done' })], {
+  const { dispatches } = await runLoop([row('T1', { status: 'done' }), row('T2', { status: 'done' })], {
     args: {
       reviews: [
         rec('code-reviewer', 'pass', 'milestone:M1'),
@@ -672,13 +734,13 @@ test('the LATEST verdict decides, and a recorded FAIL does not count as a close'
 test('on standard, a recorded code-reviewer pass WITHOUT the product review is not a closed milestone', async () => {
   // The subtle half of the resume rule: the profile decides how many verdicts a close owes, and
   // half a close reads as a close unless the required set is checked.
-  const standard = await runLoop([row('T1', { status: 'done' })], {
+  const standard = await runLoop([row('T1', { status: 'done' }), row('T2', { status: 'done' })], {
     args: { profile: 'standard', reviews: [rec('code-reviewer', 'pass', 'milestone:M1')] },
   });
   assert.deepEqual(flow(standard.dispatches), ['M1 squash', 'M1 boundary gate', 'M1 milestone review', 'M1 product review']);
 
   // …and on express the product review is not owed, so the same record IS a closed milestone.
-  const express = await runLoop([row('T1', { status: 'done' })], {
+  const express = await runLoop([row('T1', { status: 'done' }), row('T2', { status: 'done' })], {
     args: { profile: 'express', reviews: [rec('code-reviewer', 'pass', 'milestone:M1')] },
   });
   assert.deepEqual(express.dispatches, []);
@@ -718,7 +780,7 @@ test('a milestone with a notes.visual task dispatches the visual reviewer at its
 });
 
 test('a visual reviewer that returns nothing fails closed, costs the fix round, and re-judges its own absence', async () => {
-  const { result, dispatches, kernelCmds } = await runLoop([row('T1', { notes: { visual: true } })], {
+  const { result, dispatches, kernelCmds } = await runLoop([row('T1', { notes: { visual: true } }), row('T2')], {
     lensResult: (type, label) => (label === 'M1 visual review' ? null : undefined),
   });
   assert.deepEqual(flow(dispatches).filter((l) => /^M1 /.test(l)), [
@@ -805,14 +867,14 @@ test('a close with NO fix round dispatches no re-certification', async () => {
 });
 
 test('RESUME parity: a flagged milestone with only code+product recorded passing is NOT closed', async () => {
-  const twoOfThree = await runLoop([row('T1', { status: 'done', notes: { visual: true } })], {
+  const twoOfThree = await runLoop([row('T1', { status: 'done', notes: { visual: true } }), row('T2', { status: 'done' })], {
     args: { reviews: [rec('code-reviewer', 'pass', 'milestone:M1'), rec('product-reviewer', 'pass', 'milestone:M1')] },
   });
   assert.deepEqual(flow(twoOfThree.dispatches), [
     'M1 squash', 'M1 boundary gate', 'M1 milestone review', 'M1 product review', 'M1 visual review',
   ], 'two verdicts recorded when three are owed is an OPEN close — skipping here is the false-"closed" hole');
 
-  const allThree = await runLoop([row('T1', { status: 'done', notes: { visual: true } })], {
+  const allThree = await runLoop([row('T1', { status: 'done', notes: { visual: true } }), row('T2', { status: 'done' })], {
     args: {
       reviews: [
         rec('code-reviewer', 'pass', 'milestone:M1'),
@@ -826,7 +888,7 @@ test('RESUME parity: a flagged milestone with only code+product recorded passing
 });
 
 test('args.reviews ABSENT is treated as nothing recorded, and the return says so', async () => {
-  const { result, dispatches } = await runLoop([row('T1', { status: 'done' })]);
+  const { result, dispatches } = await runLoop([row('T1', { status: 'done' }), row('T2', { status: 'done' })]);
   assert.equal(result.reviewsProvided, false, 'the session must be able to see that the loop was told nothing');
   assert.deepEqual(flow(dispatches), ['M1 squash', 'M1 boundary gate', 'M1 milestone review', 'M1 product review'],
     'over-closing is safe; skipping a close on absent evidence is not');
@@ -881,7 +943,9 @@ test('the product review runs PER MILESTONE, and only on the profiles that requi
   assert.deepEqual(flow(standard.dispatches).filter((l) => /codex review/.test(l)), [],
     'standard closes without the codex lens');
   assert.equal(verdictsFor(standard.kernelCmds, 'codex-consult', "milestone:'M1'"), 0);
-  assert.deepEqual(flow(express.dispatches).filter((l) => /codex review/.test(l)), []);
+  // …and EXPRESS closes with it too, for the opposite reason full does: it reviews no task at
+  // all, so the close is the only place codex ever reads this code.
+  assert.deepEqual(flow(express.dispatches).filter((l) => /codex review/.test(l)), ['M1 codex review']);
 
   // The product reviewer grades the SPEC'S ACCEPTANCE ROWS for what this milestone delivers —
   // otherwise it re-reviews the code and the milestone has no product evidence at all.
@@ -891,6 +955,8 @@ test('the product review runs PER MILESTONE, and only on the profiles that requi
   assert.match(prompt, /Over-delivery is a finding/);
   const milestoneReview = standard.dispatches.find((d) => d.label === 'M1 milestone review').prompt;
   assert.match(milestoneReview, /MILESTONE MODE/, 'the code review is over the assembled diff, not one task');
+  assert.match(milestoneReview, /per-task reviews already happened/,
+    'and on a profile that reviewed every task, re-reading them is the waste the milestone mode exists to avoid');
 });
 
 test('codex unavailable at a FULL close DEGRADES on record — the close lands, no verdict, no fix round', async () => {
@@ -914,8 +980,84 @@ test('codex unavailable at a FULL close DEGRADES on record — the close lands, 
   assert.equal(verdictsFor(kernelCmds, 'product-reviewer', "milestone:'M1'"), 1);
 });
 
+test('EXPRESS reviews no task at all: no lens, no task-scope verdict, verified receipt straight to done', async () => {
+  // The whole bargain. `PROFILE_REVIEW_ROLES.express` is `[]`, `task-done` wants a receipt and
+  // never a review, and finalize refuses a task-scope verdict as sign-off — so the two lenses this
+  // profile used to spend per task were read by nothing. Removed, not relocated: no verdict is
+  // recorded at task scope either, because a task verdict re-used at milestone scope is forged
+  // evidence.
+  const { result, dispatches, kernelCmds } = await runLoop([row('T1'), row('T2')], { args: { profile: 'express' } });
+  assert.deepEqual(flow(dispatches).filter((l) => /^T1 review:/.test(l)), [], 'no task-scope lens on express');
+  assert.deepEqual(flow(dispatches).filter((l) => /^T1 re-review:/.test(l)), [], 'and nothing to re-review');
+  assert.deepEqual(flow(dispatches).filter((l) => /^T1 /.test(l)), ['T1 build'], 'build, and that is the whole task');
+  assert.deepEqual(kernelCmds.filter((c) => /^state review-record/.test(c) && /--subject task:/.test(c)), [],
+    'a verdict for a review that did not happen would be forged evidence');
+  assert.ok(kernelCmds.includes("state task-done 'T1'"), 'the verified receipt goes straight to task-done');
+  assert.deepEqual(result.built, ['T1', 'T2']);
+  assert.deepEqual(result.failed, []);
+  assert.deepEqual(result.degraded, [], 'no task review ran, so nothing about it was degraded');
+  assert.deepEqual(result.singleLens, [], 'and one lens by design is a fact about a review that happened');
+  assert.deepEqual(result.tiersIgnored, []);
+});
+
+test('a TIERED express task still builds at sonnet — the tier prices the build, not just the review', async () => {
+  // The tier read sits OUTSIDE the express guard on purpose: it buys build cheapness on every
+  // profile, and only the review it also buys is gone here.
+  const { dispatches } = await runLoop([row('T1', { notes: { risk: 'low' } })], { args: { profile: 'express' } });
+  assert.equal(dispatches.find((d) => d.label === 'T1 build').opts.model, 'sonnet');
+});
+
+test('an EXPRESS close spends the whole code judgement: code review plus the advisory codex lens, no product review', async () => {
+  const { result, dispatches, kernelCmds } = await runLoop([row('T1')], { args: { profile: 'express' } });
+  assert.deepEqual(flow(dispatches).filter((l) => /^M1 /.test(l)),
+    ['M1 boundary gate', 'M1 milestone review', 'M1 codex review'],
+    'one task means no squash; product review is still not owed on this profile');
+  assert.equal(result.milestones[0].outcome, 'closed');
+  assert.equal(verdictsFor(kernelCmds, 'code-reviewer', "milestone:'M1'"), 1);
+  assert.equal(verdictsFor(kernelCmds, 'codex-consult', "milestone:'M1'"), 1);
+  assert.equal(verdictsFor(kernelCmds, 'product-reviewer', "milestone:'M1'"), 0);
+  const code = dispatches.find((d) => d.label === 'M1 milestone review').prompt;
+  assert.doesNotMatch(code, /per-task reviews already happened/,
+    'the code lens is told the same truth as the codex one — nothing reviewed these tasks before it');
+  assert.match(code, /NO per-task review/, 'so it reviews them in full, then judges the seams');
+  const codex = dispatches.find((d) => d.label === 'M1 codex review').prompt;
+  assert.match(codex, /MILESTONE scope/);
+  assert.match(codex, /ADVISORY second lens/, 'the prompt says absence degrades — honesty costs nothing');
+  assert.doesNotMatch(codex, /per-task consults already happened/,
+    'on express they never happened, and a lens told they did reads a narrower diff than it should');
+  assert.match(codex, /NO per-task consult/, 'it is told the opposite, in as many words');
+});
+
+test('codex unavailable at an EXPRESS close DEGRADES on record — the close lands, no verdict, no fix round', async () => {
+  // Byte for byte the full-profile contract above: express buys no exemption from it, and buys no
+  // failure from it either. The absent CLI is a fact about a machine.
+  const { result, dispatches, kernelCmds, logs } = await runLoop([row('T1')], {
+    args: { profile: 'express' },
+    lensResult: (type, label) =>
+      (label === 'M1 codex review' ? { verdict: 'pass', findings: [], available: false } : undefined),
+  });
+  assert.equal(result.milestones[0].outcome, 'closed', 'a missing consult lens never fails the close');
+  assert.equal(verdictsFor(kernelCmds, 'codex-consult', "milestone:'M1'"), 0);
+  assert.deepEqual(result.milestones[0].close.degraded, ['codex-consult'],
+    'the degradation is durable in the close report, for the review artifact and the pre-merge human');
+  assert.ok(!dispatches.some((d) => d.label === 'M1 close fix'), 'no fix round on a clean, degraded close');
+  assert.ok(logs.some((l) => /DEGRADED close/.test(l)));
+  assert.equal(verdictsFor(kernelCmds, 'code-reviewer', "milestone:'M1'"), 1);
+});
+
+test('a blocking codex finding at an EXPRESS close costs the one fix round and can fail the close', async () => {
+  const { result, dispatches } = await runLoop([row('T1')], {
+    args: { profile: 'express' },
+    lensResult: (type, label) =>
+      (/codex/.test(label) ? { verdict: 'fail', available: true, findings: [mustFix('the seams do not meet')] } : undefined),
+  });
+  assert.ok(dispatches.some((d) => d.label === 'M1 close fix'), 'the advisory lens still buys the close its fix round');
+  assert.ok(dispatches.some((d) => d.label === 'M1 re-review:codex-consult'), 'and re-review belongs to the lens that failed');
+  assert.equal(result.milestones[0].outcome, 'close-failed', 'sustained, it fails the close');
+});
+
 test('RESUME parity on FULL: code+product recorded passing IS a closed milestone — codex is advisory, never owed', async () => {
-  const recorded = await runLoop([row('T1', { status: 'done' })], {
+  const recorded = await runLoop([row('T1', { status: 'done' }), row('T2', { status: 'done' })], {
     args: {
       profile: 'full',
       reviews: [rec('code-reviewer', 'pass', 'milestone:M1'), rec('product-reviewer', 'pass', 'milestone:M1')],
@@ -926,7 +1068,7 @@ test('RESUME parity on FULL: code+product recorded passing IS a closed milestone
   assert.deepEqual(recorded.result.milestones.map((mm) => mm.outcome), ['close-already-recorded']);
 
   // …and a fresh full close still dispatches it: advisory means not-required, not not-run.
-  const fresh = await runLoop([row('T1', { status: 'done' })], { args: { profile: 'full' } });
+  const fresh = await runLoop([row('T1', { status: 'done' }), row('T2', { status: 'done' })], { args: { profile: 'full' } });
   assert.deepEqual(flow(fresh.dispatches), [
     'M1 squash', 'M1 boundary gate', 'M1 milestone review', 'M1 product review', 'M1 codex review',
   ]);
@@ -1219,7 +1361,7 @@ const isPinned = (d) => d.agentType === 'legion:kernel-op'
   || d.label === 'M1 squash' || /boundary gate/.test(d.label);
 
 test('builder and reviewer dispatches default to opus; kernel-op, squash and boundary gate are pinned to haiku/low; args.model overrides everything else', async () => {
-  const { dispatches } = await runLoop([row('T1')], {
+  const { dispatches } = await runLoop([row('T1'), row('T2')], {
     lensResult: (type, label) =>
       (label === 'T1 review:code-reviewer' ? { verdict: 'fail', findings: [mustFix('one round')] } : undefined),
   });
@@ -1240,7 +1382,7 @@ test('builder and reviewer dispatches default to opus; kernel-op, squash and bou
   assert.deepEqual([...new Set(dispatches.filter((d) => d.opts.model).map((d) => d.agentType))].sort(),
     ['legion:builder', 'legion:code-reviewer', 'legion:codex-consult', 'legion:kernel-op', 'legion:product-reviewer']);
 
-  const override = await runLoop([row('T1')], { args: { model: 'sonnet' } });
+  const override = await runLoop([row('T1'), row('T2')], { args: { model: 'sonnet' } });
   assert.ok(override.dispatches.some(isPinned), 'the pinned dispatches run under an override too');
   for (const d of override.dispatches) {
     if (isPinned(d)) {

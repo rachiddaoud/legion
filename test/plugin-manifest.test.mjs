@@ -1069,6 +1069,23 @@ test('the build stage routes design signals through the PLAN stage, never task-a
     'and the stage-completion gate refuses to close over an unrouted signal');
 });
 
+test('the EXPRESS bargain is stated at the build stage, not left to be discovered', () => {
+  // Express stopped reviewing tasks, so the close is the only code judgement there is. That is a
+  // trade the operator has to make knowingly at classification time — the tokens below are what a
+  // session reads before it picks the profile, and their silent loss turns the trade into a
+  // surprise found at the pre-merge gate.
+  const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
+  const s = stageSection(body, 'build — by default, the shipped workflow');
+  const i = s.indexOf('THE EXPRESS BARGAIN');
+  assert.ok(i >= 0, 'the build stage must state the express bargain');
+  const bargain = s.slice(i, s.indexOf('\n\n', i));
+  assert.match(bargain, /judgement/, 'the close is the whole of it, not a thinner slice of a per-task review');
+  assert.match(bargain, /~3 tasks/, 'with the size past which the trade stops holding');
+  assert.match(bargain, /misclassified/, 'and what a milestone past it means — a profile to escalate, not a milestone to stretch');
+  assert.match(bargain, /escalate-profile/, 'named as the op that acts on it');
+  assert.match(bargain, /omission/, 'the empty evidence fields are by profile, and the artifact must say which');
+});
+
 test('lessons.md is wired: intake and the architect read it, the session writes it', () => {
   const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
   const intake = stageSection(body, 'intake');
