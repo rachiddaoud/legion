@@ -267,6 +267,74 @@ test('a PARSEABLE but wrong-shape projects.json is corrupt too, not silence', ()
   }
 });
 
+// --- SessionStart: merged-sweep (the second, ASYNCHRONOUS entry) ------------------------------
+// This hook is the only thing in legion that notices a merge, and it is the only hook whose
+// message reaches BOTH audiences: on exit 2 the harness shows the manifest's `rewakeSummary` to
+// the operator and hands `${rewakeMessage} ${stderr || stdout}` to the model. So the contract
+// under test is exactly three-valued — silent, silent, or exit 2 with the finding ON STDERR — and
+// the two silences matter more than the finding: this fires at the top of every session.
+
+/** A `gh` that answers one payload, in front of whatever the host PATH has. The sweep must be
+ * driven through a forge CLI it can actually spawn, and the host's real `gh` must never be it. */
+function withGh(s, stdout, code = 0) {
+  const dir = join(s.base, 'forgebin');
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, 'gh');
+  writeFileSync(p, `#!/bin/sh\ncat <<'JSON'\n${stdout}\nJSON\nexit ${code}\n`);
+  chmodSync(p, 0o755);
+  return { ...s.env, PATH: `${dir}:${s.env.PATH ?? ''}` };
+}
+
+/** The finalize record plus the forge's answer, both hand-written: this suite runs no forge CLI
+ * for real (test/cli/feature-merged.test.mjs is where that write is earned) and the sweep reads
+ * `mr` to decide what to ASK about. */
+function recordMr(s, head) {
+  const p = join(s.dossier, 'feature.json');
+  const f = JSON.parse(readFileSync(p, 'utf8'));
+  f.revision += 1;
+  f.mr = { iid: 7, url: 'https://github.invalid/acme/x/pull/7', targetBranch: f.baseBranch, headSha: head, at: NOW[1], forge: 'github' };
+  writeFileSync(p, `${JSON.stringify(f, null, 2)}\n`);
+}
+
+test('merged-sweep is SILENT outside a registered legion project — most sessions are not one', () => {
+  const s = scenario();
+  const r = fire(s, 'merged-sweep', { session_id: 'sess-x', cwd: s.base, source: 'startup' });
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, '');
+});
+
+test('merged-sweep is SILENT when nothing is merged — no noise at the top of a session', () => {
+  const s = scenario();
+  const head = gitc(s.worktree, 'rev-parse', 'HEAD');
+  recordMr(s, head);
+  const env = withGh(s, JSON.stringify({ state: 'OPEN', headRefOid: head }));
+  const r = fire(s, 'merged-sweep', { session_id: 'sess-x', cwd: s.repo, source: 'startup' }, env);
+  assert.equal(r.status, 0);
+  assert.equal(r.stdout, '');
+  assert.equal(r.stderr, '');
+});
+
+test('a MERGED pull request exits 2 with the finding on stderr — the rewake channel', () => {
+  const s = scenario();
+  const head = gitc(s.worktree, 'rev-parse', 'HEAD');
+  recordMr(s, head);
+  const env = withGh(s, JSON.stringify({ state: 'MERGED', headRefOid: head }));
+
+  // From the MAIN ROOT, which is the whole point of this hook: after finalize nobody opens a
+  // session in the feature worktree again, so a sweep bound to the feature would fire exactly
+  // where it is useless.
+  const r = fire(s, 'merged-sweep', { session_id: 'sess-x', cwd: s.repo, source: 'startup' }, env);
+  assert.equal(r.status, 2, `${r.stdout}${r.stderr}`);
+  assert.match(r.stderr, /^f1: #7 merged at /m);
+  assert.match(r.stderr, /legion feature clean f1/);
+  // stdout stays free for the harness's own JSON; the build composes the model's message from
+  // `stderr || stdout` and would silently prefer an empty stderr over a full stdout.
+  assert.equal(r.stdout, '');
+  // The hook itself writes nothing — the kernel does, through the binary.
+  assert.equal(featureJson(s).mr.merged.headSha, head);
+});
+
 // --- SubagentStop ---------------------------------------------------------------------------
 
 test('SubagentStop BLOCKS the builder with exit 2 when the started task has no receipt', () => {

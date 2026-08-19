@@ -115,7 +115,9 @@ resolves which feature you mean from that worktree.
 read-only, so it resolves by *repository* rather than by the checkout you stand in, and works from
 **any checkout of that repository** — this worktree, another feature's worktree, or the main repo
 root. It reports the whole project either way, and the answer does not depend on where you asked.
-Use it on resume; you do not need to read the manifests by hand.
+Use it on resume; you do not need to read the manifests by hand. `legion feature merged` resolves
+the same way, for the same reason: it is the background merge sweep and it fires wherever the
+session opened.
 
 The exception stops there. The **write-path** lifecycle commands — `legion feature start`,
 `legion feature abandon`, `legion feature clean` — resolve by the checkout you stand in and

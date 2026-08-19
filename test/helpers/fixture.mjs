@@ -149,7 +149,10 @@ export function fixture({
   }
 
   // Loud, non-succeeding shims: an accidental remote/agent call must be visible, never real.
-  for (const name of ['glab', 'claude']) {
+  // `gh` joined the list on 2026-08-19: the second forge arrived in the kernel on 2026-08-15 but
+  // not here, so a sandbox that shimmed only glab would let a test reach the OPERATOR'S REAL gh —
+  // silently passing on a machine that has it while proving something else entirely.
+  for (const name of ['glab', 'gh', 'claude']) {
     const p = join(fakeBin, name);
     writeFileSync(p, `#!/bin/sh\necho "legion3 acceptance fixture: the real ${name} must never be invoked from this suite (hermetic: no network, no agents)" >&2\nexit 1\n`);
     chmodSync(p, 0o755);

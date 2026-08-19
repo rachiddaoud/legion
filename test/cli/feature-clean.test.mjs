@@ -21,13 +21,18 @@
 // simulated by writing refs/remotes/origin/feat/<name> with `update-ref`. That is precisely what
 // `--not --remotes` reads, so the containment guard is exercised for real; a push (even to a local
 // bare repo) would be a remote write inside a test whose subject is "never write to the remote".
+//
+// THE MERGE CERTIFICATE (2026-08-19) is the one way past the containment guard, and the recorder
+// is why it was built the way it was: `clean` reads `mr.merged` out of feature.json and NEVER
+// asks a forge, so every certificate case below runs under the same assertLocalOnly() as the
+// rest. A design that had `clean` call `gh pr view` instead would fail this file on sight.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { fixture, NOW_ARGS } from '../helpers/fixture.mjs';
+import { fixture, NOW, NOW_ARGS } from '../helpers/fixture.mjs';
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const BIN = join(ROOT, 'bin', 'legion.mjs');
@@ -221,6 +226,171 @@ test('clean removes worktree AND branch once the commits are contained in a remo
   h.assertUnmoved(snap, 'second clean');
   dossierIntact(h, 'second clean');
   assertLocalOnly(rec2.log, 'idempotent clean');
+  h.cleanup();
+});
+
+// --- the merge certificate: the ONE way past the containment guard, and it is still local ------
+// THE CASE IT EXISTS FOR is squash (or rebase) merge followed by a prune. The forge writes new
+// commits, so this branch's own are in no remote ref; the moment `git fetch --prune` drops
+// refs/remotes/origin/feat/f1 the containment count goes positive and `clean` retains the
+// worktree FOREVER. `legion feature merged` is what asks the forge and records `mr.merged`; these
+// cases start from that record and ask what `clean` does with it — including, in every one of
+// them, that it still never invokes a forge CLI (assertLocalOnly is applied unchanged).
+
+/** The state after a SQUASH merge that the operator has since pruned: the branch was pushed, the
+ * forge merged it under a new commit, deleted the source branch, and a local fetch --prune
+ * removed the tracking ref. Purely local, no network — `update-ref -d` is what a prune leaves. */
+function squashMergedAndPruned(h) {
+  const head = h.commit('the delivered work');
+  markPushed(h, 'feat/f1');
+  gitAt(h, h.repoRoot, 'update-ref', '-d', 'refs/remotes/origin/feat/f1');
+  h.writeFeature((f) => ({ ...f, revision: f.revision + 1, status: 'delivered', closedAt: NOW }));
+  return head;
+}
+
+/** What `legion feature merged` writes after the forge told it the MR is merged. Written by hand
+ * here for the reason recordMr is: this suite never runs a forge CLI, and `clean` reads nothing
+ * else about the merge. test/cli/feature-merged.test.mjs is where the WRITE is earned for real. */
+function recordMerged(h, headSha, mergedHead = headSha) {
+  h.recordMr(headSha);
+  h.writeFeature((f) => ({
+    ...f, revision: f.revision + 1, mr: { ...f.mr, merged: { at: NOW, headSha: mergedHead } },
+  }));
+}
+
+test('a squashed, pruned merge is RETAINED without a certificate and CLEANED with one', () => {
+  const h = fixture();
+  const head = squashMergedAndPruned(h);
+
+  // Without the certificate this is indistinguishable from work that exists nowhere else, and
+  // retaining is the correct answer — that is the pre-existing behaviour, re-pinned here so the
+  // certificate can be shown to be what changes it.
+  const rec = recorder(h);
+  const r = cleanRun(h, rec, 'clean', h.feature);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /worktree RETAINED \(1 unpushed commit\(s\)\)/);
+  assert.ok(existsSync(h.worktree));
+  assertLocalOnly(rec.log, 'squash+prune without a certificate');
+
+  recordMerged(h, head);
+  const rec2 = recorder(h);
+  const r2 = cleanRun(h, rec2, 'clean', h.feature);
+  assert.equal(r2.code, 0, `${r2.stdout}${r2.stderr}`);
+  assert.match(r2.stdout, /worktree removed/);
+  assert.match(r2.stdout, /branch feat\/f1 deleted/);
+  assert.ok(!existsSync(h.worktree), 'the worktree must be gone');
+  assert.ok(!branchExists(h, 'feat/f1'), 'and the branch with it');
+  dossierIntact(h, 'certified clean');
+  // THE POINT OF THE WHOLE FILE, applied to the new path: the certificate reached `clean` through
+  // the MANIFEST, not through a socket. No glab, no gh, no fetch.
+  assertLocalOnly(rec2.log, 'certified clean');
+  h.cleanup();
+});
+
+test('a certificate for a head the finalize record does not name proves nothing', () => {
+  const h = fixture();
+  const head = squashMergedAndPruned(h);
+  // The forge merged something OTHER than what finalize pushed and recorded — a colleague's
+  // fixup commit on the MR is exactly this shape. The tree that would be deleted here was never
+  // the tree that was merged.
+  recordMerged(h, head, '0'.repeat(40));
+
+  const rec = recorder(h);
+  const r = cleanRun(h, rec, 'clean', h.feature);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /worktree RETAINED \(1 unpushed commit\(s\)\)/);
+  assert.ok(existsSync(h.worktree));
+  assertLocalOnly(rec.log, 'mismatched certificate');
+  h.cleanup();
+});
+
+test('a commit made AFTER the merge moves the tip and the certificate stops applying', () => {
+  const h = fixture();
+  const head = squashMergedAndPruned(h);
+  recordMerged(h, head);
+  // Work committed after the merge exists nowhere but this machine, and the certificate says
+  // nothing about it. The tip no longer equals the merged head, so the guard fires again.
+  h.commit('typed after the merge');
+
+  const rec = recorder(h);
+  const r = cleanRun(h, rec, 'clean', h.feature);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /worktree RETAINED \(2 unpushed commit\(s\)\)/);
+  assert.ok(existsSync(h.worktree));
+  assertLocalOnly(rec.log, 'certificate overtaken by a later commit');
+  h.cleanup();
+});
+
+test('a valid certificate never makes a DIRTY worktree removable', () => {
+  const h = fixture();
+  const head = squashMergedAndPruned(h);
+  recordMerged(h, head);
+  writeFileSync(join(h.worktree, 'src', 'index.mjs'), 'export const answer = 2; // uncommitted\n');
+
+  const rec = recorder(h);
+  const r = cleanRun(h, rec, 'clean', h.feature);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /worktree RETAINED \(uncommitted changes/);
+  assert.ok(existsSync(h.worktree), 'uncommitted work is in no pull request');
+  assertLocalOnly(rec.log, 'dirty tree with a certificate');
+  h.cleanup();
+});
+
+test('a DETACHED HEAD carrying local work is retained, certificate or not — the loss case', () => {
+  // MEASURED, not reasoned: with the checkout detached and a commit made there, `worktreeDirt`
+  // reads CLEAN (it compares the tree against the worktree's OWN HEAD) and the containment
+  // formula reads CONTAINED (it asks about the branch ref, which is somewhere else entirely).
+  // `git worktree remove` then deletes .git/worktrees/<id>/ and the per-checkout HEAD reflog with
+  // it: the commit is afterwards reachable from no ref and present in no reflog. Unrecoverable.
+  const h = fixture();
+  const head = squashMergedAndPruned(h);
+  recordMerged(h, head); // a VALID certificate — the branch really was merged
+  gitAt(h, h.worktree, 'checkout', '--detach');
+  writeFileSync(join(h.worktree, 'src', 'index.mjs'), 'export const answer = 3; // typed while detached\n');
+  gitAt(h, h.worktree, 'add', '-A');
+  gitAt(h, h.worktree, 'commit', '-m', 'work only this checkout has ever seen');
+  const orphan = gitAt(h, h.worktree, 'rev-parse', 'HEAD');
+
+  const rec = recorder(h);
+  const r = cleanRun(h, rec, 'clean', h.feature);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /worktree RETAINED \(the checkout is on 'HEAD', not feat\/f1/);
+  assert.ok(existsSync(h.worktree), 'the checkout holding the only copy must survive');
+  assert.equal(gitAt(h, h.worktree, 'rev-parse', 'HEAD'), orphan, 'and still hold it');
+  assertLocalOnly(rec.log, 'detached HEAD');
+  h.cleanup();
+});
+
+test('a checkout parked on ANOTHER branch is retained too — it is not this feature to delete', () => {
+  const h = fixture();
+  const head = squashMergedAndPruned(h);
+  recordMerged(h, head);
+  gitAt(h, h.worktree, 'checkout', '-b', 'side');
+
+  const rec = recorder(h);
+  const r = cleanRun(h, rec, 'clean', h.feature);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /worktree RETAINED \(the checkout is on 'side', not feat\/f1/);
+  assert.ok(existsSync(h.worktree));
+  assertLocalOnly(rec.log, 'foreign branch');
+  h.cleanup();
+});
+
+test('a certificate carrying no head at all proves nothing', () => {
+  const h = fixture();
+  squashMergedAndPruned(h);
+  const head = h.head();
+  h.recordMr(head);
+  // The shape a hand-edited manifest (or a future writer with a bug) could leave behind. It must
+  // read as ABSENT evidence, never as a wildcard.
+  h.writeFeature((f) => ({ ...f, revision: f.revision + 1, mr: { ...f.mr, merged: { at: NOW, headSha: null } } }));
+
+  const rec = recorder(h);
+  const r = cleanRun(h, rec, 'clean', h.feature);
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /worktree RETAINED \(1 unpushed commit\(s\)\)/);
+  assert.ok(existsSync(h.worktree));
+  assertLocalOnly(rec.log, 'headless certificate');
   h.cleanup();
 });
 

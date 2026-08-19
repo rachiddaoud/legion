@@ -10,8 +10,15 @@
 //   - THAT THE HOOKS ACTUALLY FIRE. Nothing here starts a Claude Code session. The manifest
 //     shape and matchers were read out of the installed 2.1.219 build, but the only proof is
 //     a live run: `claude --debug` in a feature worktree should log
-//     `Matched 1 unique hooks for query "resume"` on start and
+//     `Matched 1 unique hooks for query "resume"` on start, `Matched 2 unique hooks` for
+//     "startup" (the stage injector AND the merged sweep), and
 //     `Matched 1 unique hooks for query "legion:builder"` when a builder subagent stops.
+//   - THAT AN `asyncRewake` HOOK ACTUALLY BACKGROUNDS AND REWAKES. The field was read out of
+//     2.1.235 (present back to 2.1.226, the oldest build still installed; 2.1.219 is gone from
+//     disk and could not be checked), and the backgrounding branch is the shared executor's —
+//     but only a live run shows the session opening without waiting and the summary arriving
+//     afterwards. A build that does not know the key strips it and the sweep runs synchronously,
+//     which is why hooks.json still declares 2.1.219 and scopes the async claim in its own text.
 //     Verify once per Claude Code upgrade; a hook that silently never fires is the worst
 //     outcome in this task and no unit test can see it.
 //   - THAT A PLUGIN AGENT'S RUNTIME agent_type IS LITERALLY `legion:builder`. Derived from
@@ -196,8 +203,9 @@ test('hooks/hooks.json matches the 2.1.219 plugin hook shape — exactly three e
   // layer cannot come back casually either.
   assert.ok(!('PreToolUse' in manifest.hooks), 'the Bash remote-write guard was removed — server-only');
   // SubagentStop carries TWO matcher entries — the builder verifier and the reviewer minter —
-  // every other event exactly one. Asserted per event so a third cannot arrive unread.
-  const ENTRY_COUNT = { Notification: 1, SessionStart: 1, SubagentStop: 2 };
+  // and SessionStart two since 2026-08-19: the SYNCHRONOUS stage injector and the ASYNCHRONOUS
+  // merged sweep. Asserted per event so a third cannot arrive unread.
+  const ENTRY_COUNT = { Notification: 1, SessionStart: 2, SubagentStop: 2 };
   for (const [event, entries] of Object.entries(manifest.hooks)) {
     assert.ok(Array.isArray(entries) && entries.length === ENTRY_COUNT[event],
       `${event}: expected ${ENTRY_COUNT[event]} matcher entr${ENTRY_COUNT[event] === 1 ? 'y' : 'ies'}`);
@@ -211,13 +219,33 @@ test('hooks/hooks.json matches the 2.1.219 plugin hook shape — exactly three e
         // args PRESENT is what selects the exec form. Its absence would route the command
         // through a shell, where ${CLAUDE_PLUGIN_ROOT} expansion meets a parser.
         assert.ok(Array.isArray(h.args) && h.args.length === 1, `${event}: exec-form args`);
-        const extra = Object.keys(h).filter((k) => !['type', 'command', 'args', 'timeout', 'statusMessage'].includes(k));
+        // The async trio is allowed but NEVER assumed: only the sweep may carry it, and the
+        // assertions below pin which entry does. A hook that quietly gained `async` would stop
+        // being able to inject context, which is the whole job of the synchronous one.
+        const ALLOWED = ['type', 'command', 'args', 'timeout', 'statusMessage', 'asyncRewake', 'rewakeSummary', 'rewakeMessage'];
+        const extra = Object.keys(h).filter((k) => !ALLOWED.includes(k));
         assert.deepEqual(extra, [], `${event}: unexpected hook keys ${extra.join(',')}`);
       }
     }
   }
   // The matchers are compared against source / agent_type / notification_type respectively.
   assert.equal(manifest.hooks.SessionStart[0].matcher, 'startup|resume|clear|compact');
+  // THE TWO SessionStart ENTRIES ARE OPPOSITES AND MUST STAY THAT WAY. [0] injects the stage and
+  // records the session id, so it MUST run synchronously: an async hook's output cannot become
+  // additionalContext before the first turn. [1] asks the forge, so it MUST NOT — a network
+  // round-trip on the critical path of every session opening is exactly what asyncRewake avoids.
+  const [sync, sweep] = manifest.hooks.SessionStart.map((e) => e.hooks[0]);
+  for (const k of ['async', 'asyncRewake']) {
+    assert.ok(!(k in sync), `the stage injector must stay synchronous (${k} present)`);
+  }
+  assert.equal(sweep.asyncRewake, true, 'the merged sweep must be asyncRewake');
+  // `startup` ALONE: re-asking the forge on every /clear and every compaction would be a network
+  // call per compaction, and a merge does not happen during one.
+  assert.equal(manifest.hooks.SessionStart[1].matcher, 'startup');
+  // Both rewake strings are load-bearing, one per audience: the summary is the operator's single
+  // terminal line, the message is the prefix the model receives before the hook's stderr.
+  assert.ok(typeof sweep.rewakeSummary === 'string' && sweep.rewakeSummary.length > 0, 'rewakeSummary');
+  assert.ok(typeof sweep.rewakeMessage === 'string' && sweep.rewakeMessage.length > 0, 'rewakeMessage');
   const builderMatcher = new RegExp(manifest.hooks.SubagentStop[0].matcher);
   assert.match(manifest.hooks.SubagentStop[0].matcher, /builder/);
   assert.ok(builderMatcher.test('legion:builder'),
@@ -284,7 +312,7 @@ test('every hook command resolves to a real executable and every hook script par
       }
     }
   }
-  assert.equal(scripts.length, 4); // SessionStart, SubagentStop ×2 (builder verifier + reviewer minter), Notification
+  assert.equal(scripts.length, 5); // SessionStart ×2 (stage injector + merged sweep), SubagentStop ×2 (builder verifier + reviewer minter), Notification
   for (const abs of [...scripts, join(ROOT, 'hooks', '_common.mjs')]) {
     const r = spawnSync(process.execPath, ['--check', abs], { encoding: 'utf8' });
     assert.equal(r.status, 0, `node --check ${abs}: ${r.stderr}`);
@@ -573,7 +601,7 @@ test('every kernel command a component names is one the router actually dispatch
     // shipped component named `legion feature clean` until T22's SKILL.md worktree paragraph did.
     // Widened here to match the surface the router actually dispatches; a set NARROWER than the
     // router rejects true prose and teaches the next author to delete a correct sentence.
-    feature: new Set(['start', 'status', 'abandon', 'clean']),
+    feature: new Set(['start', 'status', 'abandon', 'clean', 'merged']),
     plan: new Set(['check']),
     project: new Set(['init']),
   };
