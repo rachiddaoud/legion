@@ -588,7 +588,7 @@ build stage is not over, whatever the task statuses say on their own.
 ### review
 
 **The milestone-scope work already happened, inside the build loop**: each milestone was
-squashed, boundary-gated, and reviewed by the
+squashed — unless it held a single task, which has nothing to squash — boundary-gated, and reviewed by the
 code-reviewer, — on standard and full — the product reviewer, and — where the approved plan
 flags the milestone's tasks `notes.visual` — the visual reviewer, with every verdict recorded at
 `--subject milestone:<id>` before the next milestone built. What is left here is what is genuinely

@@ -1555,8 +1555,9 @@ async function closeMilestone(group) {
       [
         `MILESTONE ${m} CLOSE FIX ROUND, in worktree ${worktree}.`,
         `The milestone's close review failed. Address EXACTLY these findings and nothing else,`,
-        `as one commit on top of the squashed milestone commit — never by amending or rebasing it`,
-        `(the reviewers judged that commit and the boundary gate certified its tree).`,
+        `as one commit on top of ${group.tasks.length !== 1 ? 'the squashed milestone commit' : "this milestone's single task commit"} —`,
+        `never by amending or rebasing it (the reviewers judged that commit and the boundary gate`,
+        `certified its tree).`,
         `The approved, hash-locked plan is at ${planPath}; the dossier is ${dossier}.`,
         `Tasks in this milestone: ${ids.join(', ')}.`,
         '',
@@ -1765,5 +1766,5 @@ return {
     ? 'Surface each question to the human. A blocked entry carrying kind:"design", and any non-empty designSignals, is a PLAN problem — the skill routes it through the plan stage (architect revision, re-import, critic, human re-approval), never through task-answer. Ordinary questions: record the answer with the task-answer typed op, then re-run this workflow — only the blocked task retries, and its milestone closes when the milestone is whole.'
     : failed.length || milestoneReports.some(r => r.outcome === 'close-failed')
       ? 'Fail closed: a task or a milestone close did not complete, and every later milestone was left untouched. Read the findings; a thin or wrong task bounces UP to the architect and plan re-approval, never sideways into a re-plan here. Re-run after the fix — closed milestones skip.' + signalsClause
-      : 'Every milestone is closed: squashed, boundary-gated, and reviewed at milestone scope with the verdicts recorded. Return to the skill for the FEATURE-level review stage — the review artifact (degraded ids, by-design single-lens ids, residuals, adjudications, squash deviations) and stage completion.' + signalsClause,
+      : 'Every milestone is closed: squashed where it held more than one task, boundary-gated, and reviewed at milestone scope with the verdicts recorded. Return to the skill for the FEATURE-level review stage — the review artifact (degraded ids, by-design single-lens ids, residuals, adjudications, squash deviations) and stage completion.' + signalsClause,
 }
