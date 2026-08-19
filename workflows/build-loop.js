@@ -556,6 +556,12 @@ const REVIEW_SCHEMA = {
       },
     },
     available: { type: 'boolean', description: 'codex lens only: false when the codex CLI is absent' },
+    unavailable: {
+      type: 'string',
+      enum: ['cli-missing', 'not-authenticated', 'quota', 'network', 'timeout', 'other'],
+      description: 'codex lens only, with available:false: WHICH absence, off the fixed table in agents/codex-consult.md. The loop latches the lens off for the rest of the run on a durable cause and pays for another dispatch on a transient one — so this is a lookup, never a guess',
+    },
+    reason: { type: 'string', description: "codex lens only, with available:false: codex's own error message, verbatim — what makes the degradation quotable in the review artifact" },
   },
 }
 
@@ -828,6 +834,19 @@ const blockedTasks = []
 const failed = []
 const deferred = []
 const degraded = []
+// THE CODEX LATCH. A dispatch that reports the lens dead still COSTS a dispatch — measured at
+// 26 415 tokens for one quota answer, because every turn of a subagent re-bills its context and
+// there is no cheap way to abandon one. The loop used to have no memory of that answer: a
+// ten-task feature paid ten times for it. So the first DURABLE absence latches the lens off for
+// the rest of the run — no second dispatch, and every review from here still returned as
+// `degraded`, which is the half that must not be bought away.
+// Durable is a closed list, and the two exclusions are deliberate, both toward not silently
+// losing a lens: `other` (unknown cause) does NOT latch — pay rather than skip — and a transient
+// cause never latches however often it repeats (no consecutive-failure counter). A result with no
+// `unavailable` field at all — an older plugin build of the agent — latches nothing and behaves
+// exactly as it did before this existed.
+let codexOff = null
+const CODEX_DURABLE = ['cli-missing', 'not-authenticated', 'quota']
 // BY-DESIGN SINGLE LENS, KEPT APART FROM `degraded` ON PURPOSE. A task reviewed by one
 // lens because its architect-assigned tier says so, and a task reviewed by one lens because the
 // codex CLI was missing, look identical in tasks.json — and the pre-merge human must be able to
@@ -842,6 +861,20 @@ const squashDeviations = []
 const milestoneReports = []
 const blockedIds = new Set()
 let stopped = null // set when a milestone close fails: later milestones are untouched
+
+/** Latch the codex lens off when THIS result says its absence is durable. Called with every codex
+ * result the loop sees — task review and milestone close alike — and idempotent: the first
+ * durable absence wins, so `after` names the subject that actually paid for the discovery and the
+ * log line is written once, not once per later task.
+ * `reason` is the CLASSIFIED cause (the enum), `detail` codex's own message — the review artifact
+ * quotes the second and decides on the first. */
+function latchCodexOff(res, after) {
+  if (codexOff || !res || res.available !== false) return
+  if (!CODEX_DURABLE.includes(res.unavailable)) return
+  codexOff = { after, reason: res.unavailable, detail: res.reason || '' }
+  log(`codex lens LATCHED OFF after ${after} — ${res.unavailable}${res.reason ? `: ${res.reason}` : ''}. ` +
+    `Not dispatched again this run; every review from here is DEGRADED and returned as such.`)
+}
 
 for (const group of groups) {
   const mPhase = group.id
@@ -976,6 +1009,10 @@ for (const group of groups) {
     const claudePrompt = dim => (dim ? `${reviewPrompt}\n\n${dimensionMandate(dim)}` : reviewPrompt)
     let claudeResults = []
     let codexLens = null
+    // Read BEFORE the dispatch, because THIS task's own result may set the latch below: it is what
+    // tells "never dispatched, the lens was already dark" from "dispatched and came back dead" —
+    // the same degradation either way, but only one of them was paid for here.
+    const codexLatched = !!codexOff
     if (dual) {
       const lenses = await parallel([
         ...claudeDims.map(dim => () => agent(claudePrompt(dim), {
@@ -985,24 +1022,31 @@ for (const group of groups) {
           model: MODEL,
           schema: REVIEW_SCHEMA,
         })),
-        () => agent(reviewPrompt, {
+        // THE LATCHED LENS IS NOT DISPATCHED AT ALL (see codexOff): a subagent bills its context on
+        // every turn, so the only dispatch that costs nothing is the one that never happens.
+        ...(codexLatched ? [] : [() => agent(reviewPrompt, {
           agentType: 'legion:codex-consult',
           label: `${task.id} review:codex-consult`,
           phase: mPhase,
           model: 'haiku',
           schema: REVIEW_SCHEMA,
-        }),
+        })]),
       ])
       claudeResults = lenses.slice(0, claudeDims.length)
-      codexLens = lenses[claudeDims.length]
+      codexLens = lenses[claudeDims.length] || null
       if (FULL) log(`${task.id}: ${DIMENSIONS.length} dimension lenses (${DIMENSIONS.map(d => d.key).join(', ')}) — the full profile's task review`)
       if (!codexLens || codexLens.available === false) {
         // Returned, not just logged. `tasks.reviews` will hold ONE verdict for this task and no
         // record of why — from the pre-merge gate, "codex was unavailable" and "codex was never
         // dispatched" look identical, and the human deciding on that evidence should be told which.
+        // THE LATCH BUYS THE DISPATCH AWAY, NEVER THE DEGRADATION: skipping the thunk leaves
+        // `codexLens` falsy, which lands here exactly as an unavailable lens does.
         degraded.push(task.id)
-        log(`${task.id}: DEGRADED review — codex lens unavailable; Claude lens only (this is not a second pass)`)
+        log(`${task.id}: DEGRADED review — codex lens ` +
+          (codexLatched ? `LATCHED OFF since ${codexOff.after} (${codexOff.reason})` : 'unavailable') +
+          `; Claude lens only (this is not a second pass)`)
       }
+      latchCodexOff(codexLens, task.id)
     } else {
       const opts = {
         agentType: 'legion:code-reviewer',
@@ -1401,13 +1445,26 @@ async function closeMilestone(group) {
   // The ADVISORY consult lens (full only; operator ruling 2026-07-31: a second lens, never the
   // unique one). Dispatched and recorded when it runs; null / available:false degrades on record
   // — never a verdict, never a failed close, never counted by the resume predicate.
+  // `closeDegraded` is declared HERE, above the dispatch loop that normally fills it, because THE
+  // LATCH DEGRADES WITHOUT A DISPATCH: a role never pushed into `roles` has no `results[i]` to
+  // reach that loop, and a close that skipped its second lens silently would read as a full-profile
+  // close that got one. At task scope the same skip degrades for free (the falsy `codexLens`
+  // branch); here it has to be pushed by hand, and that asymmetry is the whole risk in the latch.
+  const closeDegraded = []
   if (PROFILE === 'full') {
-    roles.push({
-      role: 'codex-consult',
-      agentType: 'legion:codex-consult',
-      label: `${m} codex review`,
-      prompt: closeReviewPrompt(group, 'codex-consult', ids),
-    })
+    if (codexOff) {
+      closeDegraded.push('codex-consult')
+      log(`milestone ${m}: DEGRADED close — the advisory codex lens is LATCHED OFF since ` +
+        `${codexOff.after} (${codexOff.reason}); not dispatched, no verdict recorded, the close ` +
+        `continues on the required lenses (this is not a second pass)`)
+    } else {
+      roles.push({
+        role: 'codex-consult',
+        agentType: 'legion:codex-consult',
+        label: `${m} codex review`,
+        prompt: closeReviewPrompt(group, 'codex-consult', ids),
+      })
+    }
   }
   const results = await parallel(roles.map(r => () => agent(r.prompt, {
     agentType: r.agentType,
@@ -1426,7 +1483,6 @@ async function closeMilestone(group) {
   // not happen is forged evidence), the degradation logged and returned in the close report, and
   // the close continues on the lenses that exist. Any OTHER role returning available:false is
   // still coerced to a failing review: nothing but the consult contract may return it.
-  const closeDegraded = []
   const runs = []
   roles.forEach((r, i) => {
     const raw = results[i]
@@ -1434,6 +1490,7 @@ async function closeMilestone(group) {
       closeDegraded.push(r.role)
       log(`milestone ${m}: DEGRADED close — the advisory codex lens is unavailable; ` +
         `no verdict recorded, the close continues on the required lenses (this is not a second pass)`)
+      latchCodexOff(raw, m)
       return
     }
     const result = !raw
@@ -1645,6 +1702,10 @@ return {
   failed,
   deferred,
   degraded,
+  // null, or {after, reason, detail} — the subject that discovered the durable absence, the
+  // classified cause and codex's own message. `degraded` says WHICH reviews lost the lens; this
+  // says when it went dark for good and why, which is the half the review artifact can quote.
+  codexOff,
   singleLens,
   tiersIgnored,
   milestones: milestoneReports,
