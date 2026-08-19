@@ -411,7 +411,9 @@ done-tasks-skip filter reads them, so a re-run in any session retries only outst
   have told the loop a close happened that did not.
 - **`model`** (optional) rides verbatim on every builder, closer and reviewer dispatch, in place
   of the loop's default of `opus`. It never reaches the mechanical dispatches: kernel-op, the
-  milestone squash and the boundary gate are pinned to `haiku` whatever you pass. With no
+  milestone squash and the boundary gate are pinned to `haiku` whatever you pass — and neither is
+  the **codex lens**, pinned to `haiku` at every scope because its invocation is pinned too and
+  the reviewing in that dispatch is codex's, not the dispatching model's. With no
   override, a task the approved plan tiers `low` or `trivial` builds — and fix-round rebuilds —
   at `sonnet`. **`squash: false`** (optional) turns off the per-milestone squash default —
   see review step 1 before you use it.

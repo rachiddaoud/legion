@@ -207,6 +207,11 @@ if (!dossier || !worktree || !planPath || !allTasks) {
 //   value passes through verbatim. kernel-op, the milestone squash and the boundary gate are
 //   PINNED to haiku at low effort and unreachable from this arg: one command on a pinned prompt,
 //   an exit code reported verbatim and a checked schema gain nothing from a stronger model.
+//   THE CODEX LENS IS PINNED TO HAIKU TOO, and equally unreachable — agents/codex-consult.md
+//   pins its invocation, so the dispatch runs one fixed command and maps codex's own JSON onto
+//   the finding shape: the reviewing is CODEX's, and the tier a caller pays for buys none of it.
+//   Its EFFORT stays default, unlike the three above — those report an exit code, this one
+//   carries every finding across verbatim, and fidelity per finding is the whole contract.
 // squash: the DEFAULT IS TO SQUASH. Only an
 //   explicit `false` skips it, and the skip is returned as a DEVIATION for the session to record
 //   in the review artifact with its reason — the loop does not know the reason and never invents
@@ -222,6 +227,10 @@ if (!dossier || !worktree || !planPath || !allTasks) {
 //   and the only way this loop can know a milestone's close already happened in an earlier run.
 //   Absent ⇒ treated as NOTHING recorded (every close runs), and said so in the return.
 const MODEL = (ARGS.model === undefined || ARGS.model === null) ? 'opus' : ARGS.model
+/** The model for a dispatch whose agentType is only known at runtime — the lens re-review, the
+ * close roles and their re-certification all dispatch a role variable. The codex lens is pinned
+ * (see OPTIONAL ARGS); everything else rides MODEL. */
+const modelFor = (agentType) => (agentType === 'legion:codex-consult' ? 'haiku' : MODEL)
 const SQUASH = ARGS.squash !== false
 const PROFILE_GIVEN = typeof ARGS.profile === 'string' && ARGS.profile.length > 0
 const KNOWN_PROFILES = ['express', 'standard', 'full']
@@ -980,7 +989,7 @@ for (const group of groups) {
           agentType: 'legion:codex-consult',
           label: `${task.id} review:codex-consult`,
           phase: mPhase,
-          model: MODEL,
+          model: 'haiku',
           schema: REVIEW_SCHEMA,
         }),
       ])
@@ -1121,7 +1130,7 @@ for (const group of groups) {
           agentType: lens.agentType,
           label: `${task.id} re-review:${lens.label}`,
           phase: mPhase,
-          model: MODEL,
+          model: modelFor(lens.agentType),
           schema: REVIEW_SCHEMA,
         }
         if (tier === 'trivial') reOpts.effort = 'low'
@@ -1404,7 +1413,7 @@ async function closeMilestone(group) {
     agentType: r.agentType,
     label: r.label,
     phase: m,
-    model: MODEL,
+    model: modelFor(r.agentType),
     schema: REVIEW_SCHEMA,
   })))
 
@@ -1501,7 +1510,7 @@ async function closeMilestone(group) {
         `addressed and review only the diff since your verdict; an unaddressed finding keeps the ` +
         `verdict fail. Do not open new lines of review.\n` +
         `${own || '(you raised no blocking finding and still returned fail — say now what would clear it, or pass)'}`,
-        { agentType: run.agentType, label: `${m} re-review:${run.role}`, phase: m, model: MODEL, schema: REVIEW_SCHEMA },
+        { agentType: run.agentType, label: `${m} re-review:${run.role}`, phase: m, model: modelFor(run.agentType), schema: REVIEW_SCHEMA },
       )
       if (!reReview || reReview.available === false) {
         // The role that rejected this milestone never re-judged its own findings, and no other
@@ -1530,7 +1539,7 @@ async function closeMilestone(group) {
     for (const run of runs.filter(r => !failing.includes(r))) {
       const reCert = await agent(
         `${closeReviewPrompt(group, run.role, ids)}\n${RECERTIFY_MANDATE}`,
-        { agentType: run.agentType, label: `${m} re-certify:${run.role}`, phase: m, model: MODEL, schema: REVIEW_SCHEMA },
+        { agentType: run.agentType, label: `${m} re-certify:${run.role}`, phase: m, model: modelFor(run.agentType), schema: REVIEW_SCHEMA },
       )
       if (!reCert || reCert.available === false) {
         // The advisory consult lens degrades here exactly as at round 1 (operator ruling

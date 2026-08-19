@@ -1208,17 +1208,22 @@ test('an absent, unknown or malformed risk tier falls through to the DUAL-lens p
   }
 });
 
-// --- T28: OPUS BY DEFAULT (S-009), EXCEPT THE THREE MECHANICAL DISPATCHES ---------------------
+// --- T28: OPUS BY DEFAULT (S-009), EXCEPT THE MECHANICAL DISPATCHES ---------------------------
 // kernel-op, the milestone squash and the boundary gate each run ONE command (or one pinned
 // prompt) and report an exit code verbatim, so they are pinned to haiku at low effort and a
-// caller's `model` must not reach them.
+// caller's `model` must not reach them. The CODEX LENS is pinned to haiku on the same ground —
+// agents/codex-consult.md pins its invocation, so the dispatch runs one fixed command and maps
+// codex's JSON onto the finding shape — but NOT to low effort: it carries every finding across
+// verbatim, and fidelity per finding is what that dispatch is for.
 
 /** The three pinned dispatches, told apart the way the harness sees them: kernel-op by agentType,
  * the other two by label (both are builder-type agents). */
 const isPinned = (d) => d.agentType === 'legion:kernel-op'
   || d.label === 'M1 squash' || /boundary gate/.test(d.label);
+/** The codex lens: pinned model, default effort. */
+const isCodex = (d) => d.agentType === 'legion:codex-consult';
 
-test('builder and reviewer dispatches default to opus; kernel-op, squash and boundary gate are pinned to haiku/low; args.model overrides everything else', async () => {
+test('builder and reviewer dispatches default to opus; kernel-op, squash and boundary gate are pinned to haiku/low, the codex lens to haiku; args.model overrides everything else', async () => {
   const { dispatches } = await runLoop([row('T1')], {
     lensResult: (type, label) =>
       (label === 'T1 review:code-reviewer' ? { verdict: 'fail', findings: [mustFix('one round')] } : undefined),
@@ -1231,6 +1236,9 @@ test('builder and reviewer dispatches default to opus; kernel-op, squash and bou
     if (isPinned(d)) {
       assert.equal(d.opts.model, 'haiku', `${d.label}: a one-command dispatch is pinned to haiku`);
       assert.equal(d.opts.effort, 'low', `${d.label}: pinned at low effort`);
+    } else if (isCodex(d)) {
+      assert.equal(d.opts.model, 'haiku', `${d.label}: the codex lens is pinned — codex does the reviewing`);
+      assert.equal('effort' in d.opts, false, `${d.label}: pinned model, but never a lowered effort`);
     } else {
       assert.equal(d.opts.model, 'opus', `${d.label} must default to opus`);
     }
@@ -1246,10 +1254,41 @@ test('builder and reviewer dispatches default to opus; kernel-op, squash and bou
     if (isPinned(d)) {
       assert.equal(d.opts.model, 'haiku', `${d.label}: args.model must not reach a pinned dispatch`);
       assert.equal(d.opts.effort, 'low', `${d.label}: args.model must not raise its effort either`);
+    } else if (isCodex(d)) {
+      assert.equal(d.opts.model, 'haiku', `${d.label}: args.model must not reach the codex lens either`);
     } else {
       assert.equal(d.opts.model, 'sonnet', `${d.label}: args.model must pass through verbatim`);
     }
   }
+
+  // EVERY codex dispatch SITE, not just the happy-path one. Three of the five carry a DYNAMIC
+  // agentType (`lens.agentType`, `r.agentType`, `run.agentType`), so a site left on MODEL is
+  // invisible to a run where codex simply passes — which is exactly how the task RE-REVIEW site
+  // was missed when this pin was first written. These two runs walk the fix rounds that reach them.
+  const seen = new Set();
+  const codexRun = async (opts) => {
+    const { dispatches: ds } = await runLoop([row('T1')], opts);
+    for (const d of ds.filter(isCodex)) {
+      seen.add(d.label.replace(/^\w+ /, ''));
+      assert.equal(d.opts.model, 'haiku', `${d.label}: pinned at EVERY codex dispatch site`);
+    }
+  };
+  // Task scope: a codex fail sends the fix back to codex — `lens.agentType`, args.model raised.
+  await codexRun({
+    args: { model: 'sonnet' },
+    lensResult: (type, label) =>
+      (label === 'T1 review:codex-consult' ? { verdict: 'fail', available: true, findings: [mustFix('codex saw it')] } : undefined),
+  });
+  // Close scope on FULL: the advisory lens at close (`r.agentType`), and its delta re-certification
+  // after the required lens's fix round (`run.agentType`).
+  await codexRun({
+    args: { profile: 'full', model: 'sonnet' },
+    lensResult: (type, label) =>
+      (label === 'M1 milestone review' ? { verdict: 'fail', findings: [mustFix('seam finding')] } : undefined),
+  });
+  assert.deepEqual([...seen].sort(),
+    ['codex review', 're-certify:codex-consult', 're-review:codex-consult', 'review:codex-consult'],
+    'the four codex labels these runs must have reached — a site added later and left on MODEL fails here');
 });
 
 /** One dispatch's model, by the label the harness recorded it under. */
