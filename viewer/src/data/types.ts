@@ -88,6 +88,12 @@ export interface MrRecord {
   /** which forge opened it — decides `#42` (github) vs `!42` (gitlab). Absent on records
    * written before 2026-08-15, which are GitLab merge requests by construction. */
   forge?: 'gitlab' | 'github' | null;
+  /** THE MERGE CERTIFICATE, written by `legion feature merged` from what the forge answered —
+   * absent until something asked, which is the ordinary state of an open MR. `headSha` is the
+   * head the forge reported as merged; `legion feature clean` compares it to this record's own
+   * `headSha` and to the local branch tip before it will delete a worktree its containment
+   * formula would otherwise retain. */
+  merged?: { at: string | null; headSha: string | null } | null;
 }
 
 /** The forge's own notation for a merge/pull request id. */

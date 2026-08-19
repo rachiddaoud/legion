@@ -206,13 +206,20 @@ import { removePrePushStub, removalReportLine } from '../kernel/githooks.mjs';
 import { updateJsonCas } from '../kernel/casfile.mjs';
 import { readJson, writeJson } from '../kernel/fsatomic.mjs';
 import { ensureDir, featureDir, featuresDir, projectsIndexPath, safeSegment } from '../kernel/paths.mjs';
+// The forge identity table and its builder — the SAME base doctor's FORGE_PROBES and finalize's
+// FORGE_OPS are built on, so a third site cannot drift on which CLI a forge speaks (kernel/
+// forge.mjs FORGE_IDENTITY). DEFAULT_FORGE is what an `mr` record with no `forge` marker means.
+import { DEFAULT_FORGE, forgeTable } from '../kernel/forge.mjs';
+// THE non-git process seam (no shell, git redirection vars purged) — shared with `legion doctor`
+// and `legion finalize` so every forge-CLI caller in the tree spawns identically.
+import { runCapture } from '../kernel/runner.mjs';
 // cleanHint is the KERNEL's (kernel/state.mjs, beside `close`, which prints the same hint): one
 // definition, so `close` and `abandon` can never advertise two different cleanups.
 // approvalValid is the KERNEL's too, and imported rather than re-derived for the reason its own
 // docblock gives: the recorder and every verifier must recompute the subject byte-identically.
 // `feature start` is a verifier here — it asks whether the PRIMARY's intake approval still holds
 // before it will link a secondary that would complete intake by reference to it.
-import { UNCLASSIFIED_PROFILE, approvalValid, cleanHint, commandPolicyPin, sha256 } from '../kernel/state.mjs';
+import { UNCLASSIFIED_PROFILE, approvalValid, bumpWrite, cleanHint, commandPolicyPin, sha256 } from '../kernel/state.mjs';
 // THE shared ticket-ref validator — the same one `legion state ticket-record` uses (kernel/
 // ticket.mjs). Two copies would drift, and the drift would be a flag accepting what the op
 // refuses (or the reverse) on ONE manifest field.
@@ -224,9 +231,19 @@ const USAGE =
   'legion feature start <name> --base <branch> [--add-repo <path>]... [--initiative <id>] [--ticket <ref>] [--launch=interactive|background|remote] [--repair] [--now <iso>] [--org <org>]\n' +
   '       legion feature status [<name>] [--org <org>]\n' +
   '       legion feature abandon <name> [--org <org>]\n' +
-  '       legion feature clean <name> [--org <org>]   (closed features only; local only)';
+  '       legion feature clean <name> [--org <org>]   (closed features only; local only)\n' +
+  '       legion feature merged [--org <org>]         (asks the forge which recorded MR/PRs are merged)';
 
 const LAUNCH_MODES = ['interactive', 'background', 'remote'];
+
+/** One `view` per recorded MR/PR, run from a background SessionStart hook. Short on purpose:
+ * a hung forge CLI here costs nothing (the sweep is a convenience and its silence is its
+ * failure mode), where a generous timeout would keep a detached process alive for minutes. */
+const MERGE_PROBE_TIMEOUT_MS = 20_000;
+/** …and the budget for the WHOLE sweep, which is the number that actually matters: probes run in
+ * sequence, and hooks/hooks.json allows the background sweep 60s before the harness kills it —
+ * a kill reports nothing at all, which is worse than a partial answer. Comfortably under it. */
+const MERGE_SWEEP_BUDGET_MS = 45_000;
 
 /** Resolve the registered project for cwd's repo. Refuses without `legion project init`.
  * EXPORTED for `legion doctor`, which needs project.json's protectedBranches + remoteUrl to
@@ -250,7 +267,17 @@ const LAUNCH_MODES = ['interactive', 'background', 'remote'];
  *       `legion feature status` — read-only, and the first command a resumed session runs;
  *         under the default mode it answered "is not a registered project" from the worktree,
  *         exactly where it is most needed (test/acceptance/M0-FIXTURE-LEDGER.md row 5).
- *     Adding a WRITE path to this list would delete the guard the default mode exists to be.
+ *       `legion feature merged` — the SessionStart sweep runs in the session's cwd like the
+ *         other two, and a sweep that refused from inside a worktree would refuse in half the
+ *         places it fires. IT IS THE ONE CALLER THAT WRITES, and the exemption is stated rather
+ *         than glossed: what it writes is a MANIFEST FIELD (`mr.merged`), never git state, and
+ *         mainWorktreeRoot() resolves the SAME project from the main root and from every linked
+ *         worktree — so the write set is identical in both modes and the mode cannot steer it
+ *         anywhere. The guard exists against DESTROYING GIT STATE under the caller's own feet
+ *         (`feature abandon f1` typed inside f1's checkout) and against creating worktrees off
+ *         another feature's checkout; neither is reachable from a manifest write.
+ *     Adding a caller that MUTATES GIT under this mode would delete the guard the default mode
+ *     exists to be; that list is still empty and must stay so.
  * Either way the root is DERIVED here through the hardened seam — no caller supplies it. */
 export function resolveProject(flags, { fromAnyWorktree = false } = {}) {
   const idxPath = projectsIndexPath();
@@ -1126,6 +1153,156 @@ function status(flags, positional) {
   return 0;
 }
 
+// --- `legion feature merged` — THE ONE READER OF THE FORGE OUTSIDE finalize/doctor -----------
+// WHY IT EXISTS. `legion finalize` opens the MR/PR and records it; after that nothing in legion
+// ever learns that a human merged it, so `close delivered` is never run, `clean` refuses forever
+// (closed features only) and the worktree lives on. There is no push channel that could tell us:
+// a webhook or a CI job runs ON THE FORGE and the worktree is on this machine. So the merge is
+// PULLED, by this command, at the one moment an operator is demonstrably back in the repository
+// — the SessionStart sweep in hooks/merged-sweep.mjs, which does nothing but run this and report.
+//
+// WHAT IT IS AND IS NOT. It READS the forge (one `view` per recorded MR/PR) and RECORDS what the
+// server answered. It NEVER writes to a remote — `legion finalize` remains the only path that
+// does (finalize.mjs header), and this file's own `clean` recorder test pins that cleanup never
+// grew a second one. A read is not a write, and `legion doctor` already reads the same CLIs.
+//
+// WHY IT RECORDS RATHER THAN JUST PRINTING, and why that record is not an attestation:
+// `clean` is the command that DESTROYS a worktree, and its containment guard is local by
+// construction (test/cli/feature-clean.test.mjs mounts a `glab` shim and FAILS THE TEST if
+// cleanup ever invokes it — the header there says why). So the forge fact has to reach `clean`
+// through the manifest, not through a socket. It is still DERIVED, never supplied: no flag here
+// says "it is merged", the only way to write `mr.merged` is for this command to ask the server
+// and be told. That is finalize's shape exactly — read back what the remote returned, validate
+// it, record only that — and it is why `merged.headSha` is stored beside the verdict: a verdict
+// without the head it was earned at certifies nothing about the tree that would be deleted.
+//
+// SILENCE IS THE DEFAULT AND THE FAILURE MODE. Nothing merged, no MR recorded, no CLI on PATH,
+// not authenticated, no network, a forge that answered garbage: exit 0, print nothing. This
+// command's whole consumer is a background convenience hook, and a convenience that turns a
+// laptop on a train into a wall of errors is worse than one that stays quiet. What it must never
+// do is print "merged" when it does not know — that would delete a worktree.
+
+/** Everything that DIFFERS between the two forges for ONE question — "was this MR/PR merged, and
+ * at which head?" — merged over kernel/forge.mjs's FORGE_IDENTITY like doctor's FORGE_PROBES and
+ * finalize's FORGE_OPS. A THIRD table rather than a shared one on purpose: each site declares
+ * only what is its own, and this site's own is two fields.
+ * THE HEAD IS PART OF THE ANSWER, not a nicety. GitHub returns `headRefOid`, GitLab `sha`; a
+ * payload carrying neither yields null, which mergedProbe treats as UNKNOWN and drops. */
+const FORGE_MERGE = forgeTable({
+  gitlab: {
+    viewState: (iid) => ['mr', 'view', String(iid), '--output', 'json'],
+    mergedFrom: (doc) => ({ merged: doc?.state === 'merged', headSha: doc?.sha ?? null }),
+  },
+  github: {
+    viewState: (iid) => ['pr', 'view', String(iid), '--json', 'state,headRefOid'],
+    mergedFrom: (doc) => ({ merged: doc?.state === 'MERGED', headSha: doc?.headRefOid ?? null }),
+  },
+}, 'FORGE_MERGE');
+
+/** Ask the forge about ONE recorded MR/PR. Returns {merged, headSha} or null for "cannot tell".
+ * NULL COVERS EVERY UNHAPPY PATH DELIBERATELY (CLI absent, unauthenticated, offline, timeout,
+ * unparseable payload, a payload with no head): the caller drops the feature and says nothing.
+ * cwd is the MAIN REPO ROOT, never the worktree — `clean` may already have removed the latter,
+ * and both CLIs resolve their project from the git remote of their cwd either way. */
+function mergedProbe(forge, iid, cwd) {
+  const ops = FORGE_MERGE[forge];
+  const r = runCapture(ops.cli, ops.viewState(iid), { cwd, timeoutMs: MERGE_PROBE_TIMEOUT_MS });
+  if (!r.ok) return null;
+  let doc;
+  try { doc = JSON.parse(r.stdout); } catch { return null; }
+  const v = ops.mergedFrom(doc);
+  if (typeof v.headSha !== 'string' || v.headSha === '') return null;
+  return { merged: v.merged === true, headSha: v.headSha };
+}
+
+/** `legion feature merged` — sweep THIS project's features for a recorded MR/PR the forge now
+ * reports as merged, record the verdict, and name the ONE command each one unblocks.
+ * READ-ONLY toward git and toward the remote; the only mutation is `mr.merged` in feature.json.
+ * NO INJECTION SEAM, deliberately: both forges are driven in the tests by a `gh`/`glab` shim
+ * PREPENDED to the fixture's PATH, which exercises kernel/runner.mjs's spawn — argv, cwd and
+ * purged environment included — where a fake `run` would have replaced exactly the seam whose
+ * behaviour is worth proving. */
+function merged(flags) {
+  const now = flags.now ?? new Date().toISOString();
+  if (Number.isNaN(Date.parse(now))) throw new Error(`invalid --now '${flags.now}' — must be a parseable timestamp`);
+  // {fromAnyWorktree} for the reason `feature status` uses it: the sweep runs in whatever cwd the
+  // session opened in, which is a linked worktree as often as the main root. This is the one
+  // caller of that mode that WRITES, and resolveProject's docblock now names it and says why a
+  // manifest write is not the write the default mode guards against.
+  const { entry, repoRoot } = resolveProject(flags, { fromAnyWorktree: true });
+  const { org, name: project } = entry;
+
+  const dir = featuresDir(org, project);
+  const names = existsSync(dir)
+    ? readdirSync(dir).filter((n) => existsSync(join(dir, n, 'feature.json'))).sort()
+    : [];
+
+  // ONE WALL-CLOCK BUDGET FOR THE WHOLE SWEEP, not one per probe. The per-probe timeout bounds a
+  // single hung CLI; N of them in sequence blow past the hook's own timeout (hooks/hooks.json
+  // gives the sweep 60s), and a hook the harness kills reports NOTHING — silently, at every
+  // session, on exactly the offline laptop this command is supposed to cost nothing. So the loop
+  // stops asking when the budget is spent and reports what it already learned.
+  const deadline = Date.now() + MERGE_SWEEP_BUDGET_MS;
+
+  for (const n of names) {
+    const path = join(dir, n, 'feature.json');
+    let f;
+    try { f = readJson(path); } catch { continue; } // a corrupt manifest is loud elsewhere, not here
+    // NOTHING TO ASK ABOUT: no MR recorded (finalize never ran), or the local cleanup already
+    // happened — a feature whose worktree AND branch are both gone has nothing left to unblock.
+    if (!f.mr || typeof f.mr.iid === 'undefined') continue;
+    if (!existsSync(f.worktree) && !branchPresent(f, repoRoot)) continue;
+
+    // THE RECORD'S OWN MARKER, never the project's current `forge`: a record written before the
+    // marker existed (2026-08-15) is a GitLab MR by construction (the same default every other
+    // reader of this field applies), and a project that switched forges must not be asked about
+    // an old MR through the new CLI.
+    const recordForge = f.mr.forge ?? DEFAULT_FORGE;
+    const ref = `${recordForge === 'github' ? '#' : '!'}${f.mr.iid}`;
+
+    // A SETTLED CERTIFICATE IS NOT RE-ASKED. Once the record carries the forge's verdict for this
+    // head, another round-trip teaches nothing — and a merged feature whose worktree is dirty (so
+    // correctly un-cleanable) would otherwise buy a network call at every session opening for as
+    // long as it exists. The operator is still TOLD, from the record: the sweep's whole purpose is
+    // to keep saying so until the cleanup is done.
+    const settled = f.mr.merged;
+    let head = settled && settled.headSha ? settled.headSha : null;
+    if (head === null) {
+      if (Date.now() > deadline) break;
+      const probe = mergedProbe(recordForge, f.mr.iid, repoRoot);
+      if (probe === null || !probe.merged) continue;
+      head = probe.headSha;
+      // RECORD ONLY WHAT THE SERVER SAID. The re-read is finalize's: this loop holds network I/O,
+      // so the manifest may have moved under us — and a manifest that moved is one to skip, never
+      // one to overwrite.
+      let fresh;
+      try { fresh = readJson(path); } catch { continue; }
+      if (fresh.revision !== f.revision) continue;
+      bumpWrite(path, { ...fresh, mr: { ...fresh.mr, merged: { at: now, headSha: head } } }, now);
+    }
+
+    // WHEN THE MERGED HEAD IS NOT THE ONE finalize RECORDED, the cleanup this line would otherwise
+    // advertise cannot happen: mergeCertified refuses that certificate and `clean` retains. Saying
+    // "merged, go clean it" there would send the reader straight into a refusal, so the line says
+    // what is true and names the command that actually fixes it.
+    if (head !== f.mr.headSha) {
+      process.stdout.write(
+        `${n}: ${ref} merged at ${head.slice(0, 12)}, but finalize recorded ${String(f.mr.headSha).slice(0, 12)} — `
+        + `the local cleanup cannot be certified; re-run legion finalize from ${f.worktree}\n`);
+      continue;
+    }
+
+    // THE LINE NAMES THE NEXT COMMAND, and which one depends on where the feature stopped. A
+    // still-active feature has a lifecycle to close first; a closed one only has local cleanup
+    // left. Naming the wrong one sends the reader into a refusal.
+    const next = f.status === 'delivered' || f.status === 'abandoned'
+      ? `legion feature clean ${n}`
+      : `legion state close delivered  (from ${f.worktree}), then legion feature clean ${n}`;
+    process.stdout.write(`${n}: ${ref} merged at ${head.slice(0, 12)} — ${next}\n`);
+  }
+  return 0;
+}
+
 // --- the guarded local removal, defined ONCE and shared by `abandon` and `clean` -------------
 // Two commands destroy local git state and they must agree, byte for byte, about when that is
 // safe: a second copy of "is it clean / is it pushed" is a second place for the answer to drift
@@ -1143,6 +1320,37 @@ function status(flags, positional) {
  * and retain. `Number('') === 0` is exactly the fail-OPEN this guards against. */
 function unpushedCount(f, cwd) {
   return Number(git(['rev-list', '--count', `${f.baseSha}..${f.branch}`, '--not', '--remotes'], cwd));
+}
+
+/** THE MERGE CERTIFICATE — the ONE way containment can be proven when the local formula above
+ * cannot see it, and it is still read entirely from LOCAL state.
+ * WHY IT IS NEEDED. `--not --remotes` reads local remote-tracking refs and never fetches, so a
+ * SQUASHED or REBASED merge is invisible to it: the forge writes new commits, this branch's own
+ * are in no remote ref, and the moment `git fetch --prune` drops refs/remotes/<remote>/feat/<name>
+ * the count goes positive and `clean` retains the worktree FOREVER. unpushedCount's docblock
+ * already names that case and calls it the correct direction to be wrong in — it is, absent any
+ * other evidence. This is the other evidence.
+ * WHAT IT PROVES, exactly, and why the three clauses are all load-bearing:
+ *   - `mr.merged` exists at all ⇒ `legion feature merged` ASKED THE FORGE and was told the MR/PR
+ *     is merged. It is a server fact recorded by the command that made the call — no flag writes
+ *     it, and nothing here trusts a caller (the self-attestation rule);
+ *   - `mr.merged.headSha === mr.headSha` ⇒ the head the forge merged is the head `legion finalize`
+ *     pushed and recorded. A PR that moved on after finalize (a colleague's fixup commit) fails
+ *     here rather than certifying a tree nobody verified;
+ *   - the LOCAL tip of feat/<name> equals that same sha ⇒ everything between baseSha and the tip
+ *     is inside what was merged, whatever strategy the forge used. A commit made locally AFTER
+ *     the merge moves the tip and the certificate fails — which is exactly right: that commit
+ *     exists nowhere else and is what the guard is for.
+ * THE DIRTY-TREE CHECK IS NOT COVERED BY IT and must stay unconditional: uncommitted work is in
+ * no pull request at all.
+ * NO NETWORK, NO FETCH: three field reads and one `rev-parse`. `clean` must never talk to a
+ * forge — test/cli/feature-clean.test.mjs mounts a `glab` shim and fails if it ever does. */
+function mergeCertified(f, cwd) {
+  const m = f.mr?.merged;
+  if (!m || typeof m.headSha !== 'string' || m.headSha === '') return false;
+  if (m.headSha !== f.mr.headSha) return false;
+  const tip = gitTry(['rev-parse', '--verify', `refs/heads/${f.branch}`], cwd);
+  return tip === m.headSha;
 }
 
 /** Why the worktree must be RETAINED, or null when removing it destroys nothing.
@@ -1164,9 +1372,27 @@ function worktreeBlocker(f) {
     if (!d.clean) {
       return `uncommitted changes (${d.paths.slice(0, 5).join(', ') || 'derived tree differs from HEAD'})`;
     }
+    // WHAT THE CHECKOUT IS ACTUALLY ON, and it is not a formality — it is the gap through which
+    // this guard loses work. Every other probe here asks about `feat/<name>`; this function
+    // deletes a DIRECTORY, and nothing tied the two together. A worktree parked on a detached
+    // HEAD carrying a local commit reads CLEAN (worktreeDirt compares against the worktree's own
+    // HEAD tree, kernel/git.mjs header F) and CONTAINED (the containment formula asks about the
+    // branch ref, which is elsewhere) — and `git worktree remove` then takes
+    // .git/worktrees/<id>/ with it, INCLUDING that checkout's HEAD reflog. Measured: the commit
+    // is afterwards reachable from no ref and present in no reflog. Unrecoverable.
+    // A detached HEAD reads 'HEAD' from --abbrev-ref, which is exactly how `legion finalize`
+    // refuses one (cli/finalize.mjs C1); any other branch name is a checkout this feature does
+    // not own. Both mean POSSIBLE WORK, which is the doubt this function retains on.
+    const on = gitTry(['rev-parse', '--abbrev-ref', 'HEAD'], f.worktree);
+    if (on !== f.branch) {
+      return `the checkout is on '${on ?? 'an unreadable HEAD'}', not ${f.branch} — commits made there would be lost with it`;
+    }
     const unpushed = unpushedCount(f, f.worktree);
     if (!Number.isInteger(unpushed)) return 'cannot count unpushed commits (git answered no number)';
-    if (unpushed > 0) return `${unpushed} unpushed commit(s)`;
+    // The certificate is consulted ONLY when the local formula would retain — it can unblock a
+    // squashed merge, it can never make a dirty tree removable, and it is never a shortcut past
+    // a check that already passed.
+    if (unpushed > 0 && !mergeCertified(f, f.worktree)) return `${unpushed} unpushed commit(s)`;
     return null;
   } catch (err) {
     return `cannot verify worktree state (${err.message})`;
@@ -1187,7 +1413,11 @@ function branchBlocker(f, cwd) {
   try {
     const unpushed = unpushedCount(f, cwd);
     if (!Number.isInteger(unpushed)) return 'cannot count unpushed commits (git answered no number)';
-    if (unpushed > 0) return `${unpushed} commit(s) reachable from neither ${f.baseBranch}@${f.baseSha.slice(0, 12)} nor any remote-tracking ref`;
+    // Same certificate, same rule as the worktree guard — the two must agree byte for byte about
+    // when deletion is safe, which is why this function and that one share both formulas.
+    if (unpushed > 0 && !mergeCertified(f, cwd)) {
+      return `${unpushed} commit(s) reachable from neither ${f.baseBranch}@${f.baseSha.slice(0, 12)} nor any remote-tracking ref`;
+    }
     return null;
   } catch (err) {
     return `cannot verify branch containment (${err.message})`;
@@ -1349,5 +1579,6 @@ export async function run(argv) {
   if (sub === 'status' && positional.length <= 2) return status(flags, positional);
   if (sub === 'abandon' && positional.length === 2) return abandon(flags, positional);
   if (sub === 'clean' && positional.length === 2) return clean(flags, positional);
+  if (sub === 'merged' && positional.length === 1) return merged(flags);
   throw new Error(`unknown or malformed subcommand '${positional.join(' ')}'. usage:\n${USAGE}`);
 }

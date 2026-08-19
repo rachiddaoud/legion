@@ -650,8 +650,11 @@ function loadTasks(dossier) {
 }
 
 /** Write `doc` back with revision+1 and updatedAt=now. The op's SINGLE manifest write.
- * EXPORTED for `legion finalize` (src/cli/finalize.mjs) — the one writer of feature.json
- * outside this module. It obeys the same rule every op here does: ONE manifest per command,
+ * EXPORTED for the TWO writers of feature.json outside this module, and there are exactly two
+ * because each records a fact this kernel cannot derive and a server can: `legion finalize`
+ * (src/cli/finalize.mjs) writes the MR/PR it read back, and `legion feature merged`
+ * (src/cli/feature.mjs) writes the merge verdict it was told. Both call the forge themselves —
+ * neither takes the fact from a caller. It obeys the same rule every op here does: ONE manifest per command,
  * revision+1, atomic rename. Exported rather than reimplemented so the revision discipline
  * has exactly one definition. */
 export function bumpWrite(path, doc, now) {

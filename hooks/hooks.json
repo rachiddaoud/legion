@@ -1,5 +1,5 @@
 {
-  "description": "legion hooks — VALIDATED AGAINST CLAUDE CODE 2.1.219 (binary ~/.local/share/claude/versions/2.1.219). Shape: plugin hooks live at hooks/hooks.json (auto-discovered; plugin.json declares no `hooks` path, because declaring one DISABLES the default folder) in the wrapper form {description?, hooks:{Event:[{matcher?, hooks:[...]}]}}. EXEC FORM, not shell: `args` is present on every entry, and per that build's own schema text 'When present, `command` is resolved as an executable and spawned directly with these arguments - no shell. Path placeholders like ${CLAUDE_PLUGIN_ROOT} are substituted per-element as plain strings'. MATCHERS, per the dispatcher's event->field switch: SessionStart matches `source`, SubagentStop matches `agent_type`, Notification matches `notification_type`; a matcher of ^[a-zA-Z0-9_|]+$ is split on | and compared as EXACT STRINGS, anything else is compiled as a RegExp. EXACTLY THREE EVENTS, and NO GLOBAL Stop HOOK (PLAN-V3 §Gates: it would interfere with the approval and orchestration stages — that rule stands unchanged). A PreToolUse entry (T26's Bash remote-write guard) existed until 2026-08-07 and was REMOVED together with the pre-push git hook, by owner decision: server-side branch protection (verified by `legion doctor`) is the only remote-write barrier, and a developer is free to push and open MRs by hand — `legion finalize` remains the intended path for feature branches, not an enforced one.",
+  "description": "legion hooks — VALIDATED AGAINST CLAUDE CODE 2.1.219 (binary ~/.local/share/claude/versions/2.1.219). Shape: plugin hooks live at hooks/hooks.json (auto-discovered; plugin.json declares no `hooks` path, because declaring one DISABLES the default folder) in the wrapper form {description?, hooks:{Event:[{matcher?, hooks:[...]}]}}. EXEC FORM, not shell: `args` is present on every entry, and per that build's own schema text 'When present, `command` is resolved as an executable and spawned directly with these arguments - no shell. Path placeholders like ${CLAUDE_PLUGIN_ROOT} are substituted per-element as plain strings'. MATCHERS, per the dispatcher's event->field switch: SessionStart matches `source`, SubagentStop matches `agent_type`, Notification matches `notification_type`; a matcher of ^[a-zA-Z0-9_|]+$ is split on | and compared as EXACT STRINGS, anything else is compiled as a RegExp. EXACTLY THREE EVENTS, and NO GLOBAL Stop HOOK (PLAN-V3 §Gates: it would interfere with the approval and orchestration stages — that rule stands unchanged). A PreToolUse entry (T26's Bash remote-write guard) existed until 2026-08-07 and was REMOVED together with the pre-push git hook, by owner decision: server-side branch protection (verified by `legion doctor`) is the only remote-write barrier, and a developer is free to push and open MRs by hand — `legion finalize` remains the intended path for feature branches, not an enforced one. SESSIONSTART CARRIES TWO ENTRIES SINCE 2026-08-19 and they are opposites by design: session-start.mjs is SYNCHRONOUS (it records the session id and injects the stage, both of which must be true before the first turn), merged-sweep.mjs is ASYNCHRONOUS. The second declares `asyncRewake`, whose schema text is 'If true, hook runs in background and wakes the model on exit code 2 (blocking error). Implies async.' — backgrounding is decided in the SHARED hook executor (`e.async || e.asyncRewake`), not per event, so it applies here;  without it a forge round-trip would sit on the critical path of every session opening (the build times SessionStart as `hooks_init_ms`). On exit 2 the build composes `${rewakeMessage} ${stderr || stdout}` for the MODEL and shows `rewakeSummary` to the OPERATOR, which is why that hook writes its finding to stderr. Its matcher is `startup` ALONE: a merge does not happen during a /clear or a compaction, and re-asking the forge on each one would be a network call per compaction. THE ASYNC FIELDS ARE A SCOPED CLAIM, and the scope is stated because this file's headline version is 2.1.219 and they were NOT read out of it: `async`, `asyncRewake`, `rewakeSummary` and `rewakeMessage` were read out of 2.1.235 and are present in every build still installed here, back to 2.1.226; 2.1.219 is gone from disk and the fields could not be checked against it. THE FALLBACK IS BENIGN and is why this ships anyway: the hook-command schema is a plain object schema (no strict mode), so a build that does not know these keys STRIPS them rather than rejecting the manifest — the sweep then runs SYNCHRONOUSLY, costing a forge round-trip at session start, and every other hook here is unaffected. Nothing silently stops working; the worst case is the latency asyncRewake exists to remove.",
   "hooks": {
     "SessionStart": [
       {
@@ -11,6 +11,21 @@
             "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs"],
             "timeout": 30,
             "statusMessage": "legion: resuming feature state"
+          }
+        ]
+      },
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/merged-sweep.mjs"],
+            "timeout": 60,
+            "statusMessage": "legion: checking merged pull requests",
+            "asyncRewake": true,
+            "rewakeSummary": "legion: a merged feature can be cleaned up",
+            "rewakeMessage": "legion \u2014 the forge reports these features' MR/PR as MERGED. Offer the operator the cleanup command each line names; run nothing without their word:"
           }
         ]
       }
