@@ -1664,3 +1664,141 @@ test('designSignals stays empty on single-SUBJECT recurrence, and is [] not abse
   );
   assert.deepEqual(done.result.designSignals, [], 'the early return carries the empty list');
 });
+
+// --- A builder may CONTEST a finding, and the lens that raised it adjudicates -----------------
+// The exchange is prompt-borne both ways — the offer rides the fix brief, the contest rides back
+// on the re-review of the ONE lens whose finding it names — so it is asserted here, by reading the
+// prompts the fakes captured, exactly as RR1 and the mutation sweep already are.
+
+/** A builder return that contests findings by title, on top of the ordinary built payload. */
+const contesting = (...contested) =>
+  ({ status: 'built', commit: 'c'.repeat(40), receipt: true, summary: 's', files: [], contested });
+const contest = (finding) =>
+  ({ finding, reason: 'the guard is unreachable', evidence: 'src/x.mjs:1 has no caller' });
+
+test('both fix briefs offer the contest, its evidence bar, and the rule that everything else is still fixed', async () => {
+  const { dispatches } = await runLoop([row('T1'), row('T2')], {
+    lensResult: (type, label) => {
+      if (label === 'T1 review:code-reviewer') return { verdict: 'fail', findings: [mustFix('task finding')] };
+      if (label === 'M1 milestone review') return { verdict: 'fail', findings: [mustFix('close finding')] };
+      return undefined;
+    },
+  });
+  for (const label of ['T1 fix', 'M1 close fix']) {
+    const brief = dispatches.find((d) => d.label === label);
+    assert.ok(brief, `${label} was not dispatched`);
+    assert.match(brief.prompt, /YOU MAY CONTEST A FINDING INSTEAD OF IMPLEMENTING IT/, `${label} carries the offer`);
+    assert.match(brief.prompt, /Fix every finding you do not contest/, `${label} keeps every other finding owed`);
+    assert.match(brief.prompt, /"evidence"/, `${label} states what a contest must carry`);
+    assert.match(brief.prompt, /is NOT a contest/, `${label} states what does not count as one`);
+  }
+});
+
+test('a contest reaches the re-review of the lens that RAISED the finding, verbatim — and no other lens', async () => {
+  const { result, dispatches } = await runLoop([row('T1')], {
+    builderResult: () => contesting(contest('codex saw it')),
+    lensResult: (type, label) => {
+      if (label === 'T1 review:code-reviewer') return { verdict: 'fail', findings: [mustFix('claude finding')] };
+      if (label === 'T1 review:codex-consult') return { verdict: 'fail', available: true, findings: [mustFix('codex saw it')] };
+      return undefined;
+    },
+  });
+  const byType = Object.fromEntries(reReviews(dispatches).map((d) => [d.agentType, d.prompt]));
+  const codex = byType['legion:codex-consult'];
+  assert.match(codex, /C1 contests: codex saw it/, 'the lens that raised it is told which of its findings is contested');
+  assert.match(codex, /reason: the guard is unreachable/, 'with the claim verbatim');
+  assert.match(codex, /evidence: src\/x\.mjs:1 has no caller/, 'and the evidence verbatim');
+  assert.match(codex, /SUSTAIN[\s\S]*WITHDRAW/, 'and both outcomes it may return');
+  assert.match(codex, /keeps the verdict fail unless you withdraw it below/,
+    'the checklist rule carries its exception where it is stated, above the contest it points at');
+  const claude = byType['legion:code-reviewer'];
+  assert.match(claude, /keeps the verdict fail\. Do not open/,
+    'a lens with nothing contested is offered no withdrawal that is not below it');
+  assert.doesNotMatch(claude, /contests/, 'a lens handed another lens’s contest would judge a finding it never raised');
+  assert.doesNotMatch(claude, /the guard is unreachable/);
+  assert.doesNotMatch(claude, /has no caller/);
+  assert.deepEqual(result.built, ['T1'], 'both re-reviews cleared their own lists');
+});
+
+test('a SUSTAINED contest keeps the task failing; a WITHDRAWN one comes back as a note and the task lands', async () => {
+  const adjudicated = (reReview) => runLoop([row('T1')], {
+    builderResult: () => contesting(contest('claude finding')),
+    lensResult: (type, label) => {
+      if (label === 'T1 review:code-reviewer') return { verdict: 'fail', findings: [mustFix('claude finding')] };
+      if (label === 'T1 re-review:code-reviewer') return reReview;
+      return undefined;
+    },
+  });
+  const sustained = await adjudicated({
+    verdict: 'fail',
+    findings: [{ tier: 'block', title: 'claude finding', where: 'src/x.mjs:1', issue: 'the caller the contest calls dead is src/y.mjs:4' }],
+  });
+  assert.deepEqual(sustained.result.built, [], 'a sustained finding stands, and the builder did not implement it');
+  assert.deepEqual(sustained.result.failed.map((f) => f.stage), ['review']);
+  assert.deepEqual(sustained.result.failed[0].findings.map((f) => f.title), ['claude finding']);
+  const withdrawn = await adjudicated({
+    verdict: 'pass',
+    findings: [{ tier: 'note', title: 'claude finding', where: 'src/x.mjs:1', issue: 'withdrawn: the guard is indeed unreachable' }],
+  });
+  assert.deepEqual(withdrawn.result.built, ['T1'], 'a withdrawal is a note, and a note costs no round and fails nothing');
+  assert.deepEqual(withdrawn.result.failed, []);
+});
+
+test('a contest buys NO dispatch and NO round — the flow is the uncontested flow, op for op', async () => {
+  const round = (builderResult) => runLoop([row('T1')], {
+    builderResult,
+    lensResult: (type, label) =>
+      (label === 'T1 review:code-reviewer' ? { verdict: 'fail', findings: [mustFix('claude finding')] } : undefined),
+  });
+  const plain = await round(undefined);
+  const contested = await round(() => contesting(contest('claude finding')));
+  assert.deepEqual(flow(contested.dispatches), flow(plain.dispatches), 'the contest rides the re-review that already runs');
+  assert.equal(contested.dispatches.length, plain.dispatches.length,
+    'kernel ops counted too — a contest records nothing extra either');
+  assert.deepEqual(contested.result.built, ['T1']);
+});
+
+test('a contest never empties unconfirmedBy — the lens that vanished still fails the task it rejected', async () => {
+  // The escape-hatch guard: contesting everything and then losing the lens must not read as a pass.
+  const { result, dispatches } = await runLoop([row('T1')], {
+    builderResult: () => contesting(contest('codex saw it')),
+    lensResult: (type, label) => {
+      if (label === 'T1 review:codex-consult') return { verdict: 'fail', available: true, findings: [mustFix('codex saw it')] };
+      if (label === 'T1 re-review:codex-consult') return { verdict: 'pass', findings: [], available: false };
+      return undefined;
+    },
+  });
+  assert.deepEqual(result.built, []);
+  assert.deepEqual(result.failed[0].unconfirmedBy, ['codex-consult'],
+    'the contest was put to the lens that raised it; the lens simply never answered');
+  assert.match(dispatches.find((d) => d.label === 'T1 re-review:codex-consult').prompt, /C1 contests: codex saw it/);
+});
+
+test('a contest with no evidence, or naming a finding nobody raised, is not a contest', async () => {
+  const { result, dispatches } = await runLoop([row('T1')], {
+    builderResult: () => contesting({ finding: 'claude finding', reason: 'I disagree' }, contest('a finding nobody raised')),
+    lensResult: (type, label) =>
+      (label === 'T1 review:code-reviewer' ? { verdict: 'fail', findings: [mustFix('claude finding')] } : undefined),
+  });
+  const re = dispatches.find((d) => d.label === 'T1 re-review:code-reviewer').prompt;
+  assert.match(re, /no reason or no evidence, which is not a contest — claude finding/,
+    'the lens is told the finding stands, rather than left to wonder why it was not fixed');
+  assert.doesNotMatch(re, /C1 contests:/, 'nothing was validly contested, so there is nothing to adjudicate');
+  assert.doesNotMatch(re, /a finding nobody raised/, 'an unmatchable title reaches no lens at all');
+  assert.deepEqual(result.built, ['T1'], 'the re-review still runs and still decides');
+});
+
+test('a close-scope contest rides the close re-review of the role that raised the finding', async () => {
+  const { result, dispatches } = await runLoop([row('T1'), row('T2')], {
+    closeFixResult: () => ({ status: 'built', commit: 'e'.repeat(40), summary: 's', files: [], contested: [contest('close finding')] }),
+    lensResult: (type, label) =>
+      (label === 'M1 milestone review' ? { verdict: 'fail', findings: [mustFix('close finding')] } : undefined),
+  });
+  const re = dispatches.find((d) => d.label === 'M1 re-review:code-reviewer').prompt;
+  assert.match(re, /C1 contests: close finding/);
+  assert.match(re, /evidence: src\/x\.mjs:1 has no caller/);
+  assert.match(re, /keeps the verdict fail unless you withdraw it below/, 'close scope states the same exception');
+  const reCert = dispatches.find((d) => d.label === 'M1 re-certify:product-reviewer').prompt;
+  assert.doesNotMatch(reCert, /contests/, 'the role that passed never raised the finding and adjudicates nothing');
+  assert.equal(result.milestones[0].outcome, 'closed');
+});

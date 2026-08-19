@@ -525,6 +525,19 @@ const BUILDER_SCHEMA = {
     receipt: { type: 'boolean', description: 'True only if `legion gate run --task <id>` exited 0 for you' },
     summary: { type: 'string', description: 'What changed, in two lines, for the reviewer' },
     files: { type: 'array', items: { type: 'string' }, description: 'Repo-relative paths you touched' },
+    contested: {
+      type: 'array',
+      description: 'Fix rounds only: findings judged technically wrong and deliberately not implemented. Absent or [] on every ordinary return',
+      items: {
+        type: 'object',
+        required: ['finding', 'reason', 'evidence'],
+        properties: {
+          finding: { type: 'string', description: "The finding's title, VERBATIM from the brief, so the lens that raised it can match its own" },
+          reason: { type: 'string', description: 'Why it is wrong — one claim, not a preference' },
+          evidence: { type: 'string', description: 'file:line, a measurement, or the rule that says otherwise' },
+        },
+      },
+    },
   },
 }
 
@@ -785,6 +798,55 @@ const RECERTIFY_MANDATE =
   `pass unless the fix broke something YOU certify; a regression in your domain is a fail ` +
   `carrying the finding that proves it.`
 
+/** The contest offer both fix briefs carry, task scope and close scope. A fix round used to be
+ * unconditional — "address EXACTLY these findings and nothing else" — so a finding that was simply
+ * wrong got implemented: the builder had no channel to say so, and the round it would have spent
+ * arguing is the only round it gets. The offer is bounded so it cannot become an escape hatch out
+ * of work: a claim without evidence is not a contest, every finding left uncontested is still
+ * fixed, and the lens that raised the finding is the one that adjudicates it — inside the
+ * re-review already scheduled, so the whole exchange buys no dispatch and no extra round. */
+const CONTEST_OFFER = [
+  'YOU MAY CONTEST A FINDING INSTEAD OF IMPLEMENTING IT — with evidence, never as a preference.',
+  'Fix every finding you do not contest; one you neither fix nor contest is simply left unfixed.',
+  'For a finding you judge TECHNICALLY WRONG, leave the code alone and return it in `contested`:',
+  '[{ "finding": "<its title above, VERBATIM>", "reason": "<one claim: why it is wrong>",',
+  '   "evidence": "<file:line, a measurement, or the rule that says otherwise>" }]',
+  'The lens that raised it adjudicates it inside the re-review that already runs: it sustains the',
+  'finding, and the verdict stays fail, or it withdraws it as a note carrying why it withdrew it.',
+  'An entry with no reason or no evidence, or whose title matches no finding of the lens that',
+  'raised it, is NOT a contest: that finding stands, unfixed and unargued.',
+].join('\n')
+
+/** The other half of the offer, carried back to ONE lens at its re-review: the contests of its own
+ * findings, verbatim, and nothing else. Routing is by finding TITLE — the title is what the builder
+ * was handed to copy — and per lens for the reason the re-review checklist itself is per lens: a
+ * lens handed another's contest would adjudicate a finding it never raised and cannot judge, so an
+ * entry naming no finding of `own` reaches it in no form at all. A malformed entry is refused out
+ * loud rather than dropped, or the lens meets an unfixed finding and no reason it stayed.
+ * `adjudicable` rides with the text so the checklist above it states its withdrawal exception only
+ * where one is actually offered. */
+function contestBlock(contested, own) {
+  const titles = new Set(own.map(f => f.title))
+  const mine = (Array.isArray(contested) ? contested : []).filter(c => c && titles.has(c.finding))
+  const valid = mine.filter(c => c.reason && c.evidence)
+  const refused = mine.filter(c => !c.reason || !c.evidence).map(c => c.finding)
+  const lines = []
+  if (valid.length > 0) {
+    lines.push(
+      'THE BUILDER CONTESTS THESE FINDINGS OF YOURS and did not implement them. Adjudicate each on ' +
+      'its claim: SUSTAIN it — return it at its blocking tier, the verdict stays fail — or WITHDRAW ' +
+      'it, returning it as tier `note` carrying why you withdrew it. Everything else you raised was ' +
+      'fixed and is judged as usual.',
+      ...valid.map((c, i) => `C${i + 1} contests: ${c.finding}\n  reason: ${c.reason}\n  evidence: ${c.evidence}`),
+    )
+  }
+  if (refused.length > 0) {
+    lines.push(`Returned as contested with no reason or no evidence, which is not a contest — ` +
+      `${refused.join('; ')} — stands unchanged and unfixed; judge it as you raised it.`)
+  }
+  return { adjudicable: valid.length > 0, text: lines.length > 0 ? `\n${lines.join('\n')}` : '' }
+}
+
 /** Compose a task's brief in plain JS. Deliberately not an agent's job: the brief is the one
  * place where the approved plan meets the builder, and a model composing it is a paraphrase
  * step with no approval behind it. Recorded Q&A is folded in here — that is what makes a
@@ -808,7 +870,7 @@ function brief(task, feedback) {
       : 'This task declares no validate command — say so in your summary; the gate will run tiers only.',
     '',
     answers ? `RECORDED ANSWERS — these are settled decisions. Build within them; do not ask again.\n${answers}` : null,
-    feedback ? `FIX ROUND — address EXACTLY these findings and nothing else:\n${feedback}` : null,
+    feedback ? `FIX ROUND — address EXACTLY these findings and nothing else:\n${feedback}\n\n${CONTEST_OFFER}` : null,
     '',
     MUTATION_SWEEP,
     '',
@@ -1146,12 +1208,15 @@ for (const group of groups) {
             schema: REVIEW_SCHEMA,
           }
           if (tier === 'trivial') reOpts.effort = 'low'
+          const contests = contestBlock(fix.contested, lensBlocking(lens))
           const reReview = await agent(
             `${reviewPrompt}\nRE-REVIEW after one fix round. The findings below are YOUR OWN, verbatim, ` +
             `from your verdict on this task — they are the checklist and the whole of it. Verify each is ` +
             `addressed and review only the diff since your verdict; an unaddressed finding keeps the ` +
-            `verdict fail. Do not open new lines of review.\n` +
-            `${own || '(you raised no blocking finding and still returned fail — say now what would clear it, or pass)'}`,
+            `verdict fail${contests.adjudicable ? ' unless you withdraw it below' : ''}. Do not open new ` +
+            `lines of review.\n` +
+            `${own || '(you raised no blocking finding and still returned fail — say now what would clear it, or pass)'}` +
+            contests.text,
             reOpts,
           )
           // A lens that has become unavailable cannot confirm its own fix, and the OTHER lens must not
@@ -1497,6 +1562,8 @@ async function closeMilestone(group) {
         '',
         feedback || '(the reviewers raised no blocking finding and still failed — read their verdicts and stop if nothing is actionable)',
         '',
+        CONTEST_OFFER,
+        '',
         MUTATION_SWEEP,
         '',
         'Do NOT push, do NOT touch a remote, do NOT record any state. Commit, then stop: the closer',
@@ -1528,13 +1595,16 @@ async function closeMilestone(group) {
     const stillFailing = []
     for (const run of failing) {
       const own = renderFindings(runBlocking(run))
+      const contests = contestBlock(fixRes.contested, runBlocking(run))
       const reReview = await agent(
         `${closeReviewPrompt(group, run.role, ids)}\n` +
         `RE-REVIEW after one fix round. The findings below are YOUR OWN, verbatim, from your ` +
         `verdict on this milestone — they are the checklist and the whole of it. Verify each is ` +
         `addressed and review only the diff since your verdict; an unaddressed finding keeps the ` +
-        `verdict fail. Do not open new lines of review.\n` +
-        `${own || '(you raised no blocking finding and still returned fail — say now what would clear it, or pass)'}`,
+        `verdict fail${contests.adjudicable ? ' unless you withdraw it below' : ''}. Do not open new ` +
+        `lines of review.\n` +
+        `${own || '(you raised no blocking finding and still returned fail — say now what would clear it, or pass)'}` +
+        contests.text,
         { agentType: run.agentType, label: `${m} re-review:${run.role}`, phase: m, model: MODEL, schema: REVIEW_SCHEMA },
       )
       if (!reReview || reReview.available === false) {

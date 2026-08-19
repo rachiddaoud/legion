@@ -31,12 +31,21 @@ report; you never edit the plan, the task tree, or any manifest.
   reviewed, then thrown away.
 - **Over-engineering** — speculative abstraction, premature generality, new modules where reuse
   exists.
+- **Remedy cost** — new verification machinery (a harness, a fixture family, a convention every
+  task must follow, a rule imposed on the diff) is a structuring choice like any other: it owes a
+  `D<n>` block, it is weighed against the blast radius of what it certifies, and it must survive
+  the deletion probe. Apparatus bought to certify what the existing reviews already judge, or
+  bought for a change whose blast radius is one file, is a finding.
 - **Dependencies & risky reinvention** — both directions: a new dependency the digest does not
   name or that buys only marginal savings over existing code, *and* a task that hand-rolls a
   subtle standard capability (cryptography, schema validation, date arithmetic, parsing,
   protocols) where an installed or small well-supported library fits. Either way the finding
   names the concrete alternative, never a generic preference.
 - **Over-simplification** — missing tasks, ignored edge and error states, missed contract steps.
+- **Placeholders, contradictions and ambiguities** — `TBD`, `TODO`, "etc.", "as appropriate",
+  "handle errors appropriately", a step naming a file or symbol that does not exist, two sections
+  stating opposite things, an acceptance row admitting two readings. Every finding here names the
+  instance and cites its line; a preference about wording is not one of these.
 - **Scope consistency** — the plan matches the spec's scope and out-of-scope: nothing extra,
   nothing dropped.
 - **Dependency ordering** — `depends_on` is correct; cross-layer order is contract-first.

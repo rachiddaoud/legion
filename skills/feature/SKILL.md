@@ -314,7 +314,12 @@ nothing more. Everything in this section applies to a mini-spec unchanged.
    re-presented to the human, never silently swapped under an old yes. Declined: nothing is
    written. The mock is a dossier draft like `visual/` and `specs/`, never `artifact-record`ed;
    the viewer surfaces `mockups/*.html` as draft rows on its own.
-4. `legion state artifact-record spec <path>`, present the digest, get an explicit yes, then
+4. **Sweep the spec before presenting it**, exactly as the plan critic sweeps the plan: no
+   placeholder (`TBD`, `TODO`, "etc.", "as appropriate", "handle errors appropriately"), no step
+   naming a file or symbol that does not exist, no two rules stating opposite things, no
+   acceptance row admitting two readings. Cite the line and resolve it in the spec — a digest
+   presented over a gap asks the human to approve a decision nobody made.
+5. `legion state artifact-record spec <path>`, present the digest, get an explicit yes, then
    `legion state decision-record spec`, `legion state stage-complete spec`,
    `legion state stage-enter plan`.
 

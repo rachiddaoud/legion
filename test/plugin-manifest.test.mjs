@@ -411,6 +411,16 @@ test('the design-concern channels stay DATA — schema-borne, aggregated, never 
   assert.match(code, /designSignals/, 'the aggregation must reach the return value');
 });
 
+test('the contest channel is schema-borne too, or the fix briefs offer a field the runtime drops', () => {
+  // Exactly the reason `kind` is pinned above: an undeclared property is stripped from the
+  // builder's return, so a contested finding would arrive as nothing while both fix briefs promise
+  // the channel — and every finding would silently stand as if it had never been contested.
+  const code = codeOnly(read('workflows', 'build-loop.js'));
+  assert.match(code, /contested:\s*\{\s*\n\s*type:\s*'array'/, 'BUILDER_SCHEMA declares contested');
+  assert.match(code, /required:\s*\['finding',\s*'reason',\s*'evidence'\]/,
+    'and a contest arrives with its title, its claim and its evidence or it is not one');
+});
+
 test('build-loop dispatch: ids are validated to the KERNEL segment shape and quoted at the shell seam — no raw interpolation (T14/R4)', () => {
   const src = read('workflows', 'build-loop.js');
   const code = codeOnly(src);
@@ -1101,4 +1111,94 @@ test('lessons.md is wired: intake and the architect read it, the session writes 
     'the S-002 quality bar survives verbatim — without it the file silts up and stops being read');
   assert.match(lessons, /scope it holds under/,
     'decisions land WITH their scope — an unscoped lesson is the cv-mf transfer error waiting to recur');
+});
+
+/** The `## <heading>` section of an agent contract, up to the next `## `. Scoped rather than
+ * grepped whole: the vocabulary below is ordinary review English that a matcher would find
+ * somewhere in these files with the section itself deleted. */
+function agentSection(body, heading, what) {
+  const start = body.indexOf(`\n## ${heading}`);
+  assert.ok(start >= 0, `${what} has no '## ${heading}' section`);
+  const rest = body.slice(start + 1);
+  const end = rest.indexOf('\n## ', 1);
+  return end < 0 ? rest : rest.slice(0, end);
+}
+
+test('a contested finding is adjudicated by the lens that raised it — in both lens contracts, and in the builder’s', () => {
+  // The lens that raised a finding is the only one that may withdraw it, and a withdrawal is a
+  // `note` carrying why — the shape REVIEW_SCHEMA already has, so the whole rule lives in prose
+  // and nothing but this pins it.
+  for (const file of ['code-reviewer.md', 'codex-consult.md']) {
+    const s = agentSection(read('agents', file), 'Adjudicate a contested finding', file);
+    assert.match(s, /sustain/i, `${file}: the finding may stand`);
+    assert.match(s, /withdraw/i, `${file}: or be withdrawn`);
+    assert.match(s, /`note`/, `${file}: a withdrawal is a note, so it rides to the human instead of vanishing`);
+    assert.match(s, /evidence/, `${file}: what a contest is judged on`);
+  }
+  // The loop records the codex verdict on its own and re-reviews it with codex, so the claim that
+  // the Claude lens filters it describes a workflow that does not exist.
+  assert.doesNotMatch(read('agents', 'codex-consult.md'), /adjudicates every finding/,
+    'no lens adjudicates another lens’s findings — codex re-reviews its own');
+  const builder = agentSection(read('agents', 'builder.md'), 'Contesting a finding', 'builder.md');
+  assert.match(builder, /`contested`/, 'the builder is told the channel');
+  assert.match(builder, /evidence/, 'and the bar a contest must clear');
+  assert.match(builder, /no extra round/, 'and that contesting buys nothing back');
+});
+
+/** A single top-level `- **Name** — …` check bullet, up to the next one. */
+function checkBullet(body, name, what) {
+  const start = body.indexOf(`- **${name}**`);
+  assert.ok(start >= 0, `${what} has no '${name}' check bullet`);
+  const end = body.indexOf('\n- **', start + 1);
+  return end < 0 ? body.slice(start) : body.slice(start, end);
+}
+
+test('a red gate is diagnosed to its cause, and never masked', () => {
+  // Scoped to the section: `root cause` and `kind: "design"` both already matched builder.md
+  // before this protocol existed, so a whole-file matcher would grade nothing.
+  const body = read('agents', 'builder.md');
+  const s = agentSection(body, 'Root-cause protocol', 'builder.md');
+  assert.match(s, /reproduce/i, 'the failure is reproduced before anything is edited');
+  assert.match(s, /hypothes/i, 'a hypothesis is stated');
+  assert.match(s, /locate/i, 'and the deciding line located — the edit comes last');
+  assert.match(s, /catch/, 'a widened catch is refused');
+  assert.match(s, /assertion/, 'so is weakening or skipping the assertion that went red');
+  assert.match(s, /retry/, 'so is a retry around the failing step');
+  assert.match(s, /special-cas/i, 'so is special-casing the failing input');
+  assert.match(s, /kind: "design"/, 'a cause outside the task routes to the existing design block');
+  assert.ok(body.indexOf('Root-cause protocol') < body.indexOf('\n## Root-cause protocol'),
+    'the fix-forward rule points at the protocol — a section nothing references is a section nobody reads');
+});
+
+test('the plan critic sweeps placeholders and prices the remedy a finding asks for', () => {
+  const critic = read('agents', 'plan-critic.md');
+  const sweep = checkBullet(critic, 'Placeholders, contradictions and ambiguities', 'plan-critic.md');
+  assert.match(sweep, /placeholder/i, 'the sweep exists as a check of its own');
+  assert.match(sweep, /line/, 'and every finding cites the line — an instance, never a preference');
+
+  const remedy = checkBullet(critic, 'Remedy cost', 'plan-critic.md');
+  assert.match(remedy, /machinery/, 'new verification machinery is weighed, not waved through');
+  assert.match(remedy, /deletion/, 'against the same probe every structuring choice answers');
+  // Never the per-row witness a task already owes — that would fight architect.md's mandate.
+  assert.doesNotMatch(remedy, /grader/, 'the remedy-cost bullet does not target the notes.grader witness');
+});
+
+test('the architect prices verification machinery as a structuring choice, grader mandate intact', () => {
+  const architect = read('agents', 'architect.md');
+  const trigger = architect.slice(architect.indexOf('3. **Declare structuring decisions'),
+    architect.indexOf('4. **Decompose'));
+  assert.ok(trigger.length > 0, 'architect.md must keep its structuring-decision trigger');
+  assert.match(trigger, /verification\s+machinery/,
+    'the trigger names it — a bare `machinery` matches this file twice with the rule deleted');
+  assert.match(architect, /notes\.grader/,
+    'and the per-row witness mandate it must not contradict is still there');
+});
+
+test('the spec stage sweeps the spec before its digest is presented for approval', () => {
+  const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
+  const spec = stageSection(body, 'spec');
+  const iSweep = spec.search(/placeholder/i);
+  assert.ok(iSweep >= 0, 'the spec stage runs the same sweep the critic runs over the plan');
+  assert.ok(iSweep < spec.indexOf('present the digest'),
+    'and runs it BEFORE the yes — a gap approved is a decision nobody made');
 });
