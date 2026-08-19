@@ -101,8 +101,12 @@ async function runLoop(tasks, { builderResult, lensResult, squashResult, gateRes
     if (agentType === 'legion:code-reviewer' || agentType === 'legion:consult' || agentType === 'legion:product-reviewer' || agentType === 'legion:visual-reviewer') {
       const scripted = lensResult?.(agentType, label);
       if (scripted !== undefined) return scripted;
+      // `backend` rides on every consult return (agents/consult.md's contract: it names WHICH
+      // second opinion ran). It is provenance for the review artifact and NOTHING in this loop
+      // reads it — which is exactly what the default carrying it here proves: every assertion in
+      // this file must hold with the field present.
       return agentType === 'legion:consult'
-        ? { verdict: 'pass', findings: [], available: true }
+        ? { verdict: 'pass', findings: [], available: true, backend: 'codex' }
         : { verdict: 'pass', findings: [] };
     }
     throw new Error(`unexpected agentType ${agentType}`);
@@ -326,7 +330,7 @@ const consultDispatched = (dispatches) => dispatches.filter((d) => d.agentType =
 /** A consult return that says the lens is gone, with the cause it classified (agents/consult.md
  * step 3). `verdict: 'pass'` on purpose: available:false is not a verdict, and a case that carried
  * its fail in `findings` would prove nothing about the latch. */
-const consultGone = (unavailable, reason) => ({ verdict: 'pass', findings: [], available: false, ...(unavailable ? { unavailable } : {}), ...(reason ? { reason } : {}) });
+const consultGone = (unavailable, reason) => ({ verdict: 'pass', findings: [], available: false, backend: 'codex', ...(unavailable ? { unavailable } : {}), ...(reason ? { reason } : {}) });
 
 test('a DURABLE consult absence LATCHES the lens off — the next task pays no dispatch and is still degraded', async () => {
   // T1 discovers a spent quota, which lasts days. T2 must not re-ask (that is the whole change),
@@ -346,6 +350,30 @@ test('a DURABLE consult absence LATCHES the lens off — the next task pays no d
   assert.ok(logs.some((l) => /T2: DEGRADED review — consult lens LATCHED OFF since T1 \(quota\)/.test(l)),
     'and T2\'s degradation says latched, not unavailable — nothing was dispatched to be unavailable');
   assert.deepEqual(result.built, ['T1', 'T2'], 'a missing second lens never fails a task, latched or not');
+});
+
+test('a MISCONFIGURED backend latches too — a broken config does not repair itself between tasks', async () => {
+  // The mirror of the quota case, and the reason `misconfigured` is durable rather than `other`:
+  // an unknown backend name, a missing base URL / token env var / model, or a Claude model on an
+  // API backend is a fact about `pluginConfigs.legion.options`, and no later task in this run
+  // changes it. On `other` the latch would not bite and a ten-task feature would pay ten ~26k-token
+  // dispatches to be told the same configuration mistake ten times.
+  const { result, dispatches, logs } = await runLoop([row('T1'), row('T2')], {
+    lensResult: (type, label) =>
+      (label === 'T1 review:consult'
+        ? consultGone('misconfigured', "backend 'gemeni' is not one of codex|gemini|openai|google|xai|deepseek|mistral|api")
+        : undefined),
+  });
+  assert.deepEqual(consultDispatched(dispatches), ['T1 review:consult'],
+    'one dispatch bought the answer; the config cannot change under a running loop');
+  assert.deepEqual(result.degraded, ['T1', 'T2'], 'both tasks got one lens, and both are reported as such');
+  assert.deepEqual(result.consultOff, {
+    after: 'T1',
+    reason: 'misconfigured',
+    detail: "backend 'gemeni' is not one of codex|gemini|openai|google|xai|deepseek|mistral|api",
+  }, 'the artifact quotes the misconfiguration verbatim — that is what the operator acts on');
+  assert.ok(logs.some((l) => /consult lens LATCHED OFF after T1 — misconfigured/.test(l)));
+  assert.deepEqual(result.built, ['T1', 'T2'], 'a broken consult config never fails a task');
 });
 
 test('a TRANSIENT consult absence does NOT latch — the next task still pays for its second lens', async () => {

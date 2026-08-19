@@ -575,10 +575,15 @@ const REVIEW_SCHEMA = {
     available: { type: 'boolean', description: 'consult lens only: false when the configured consult backend is absent or misconfigured' },
     unavailable: {
       type: 'string',
-      enum: ['cli-missing', 'not-authenticated', 'quota', 'network', 'timeout', 'other'],
+      enum: ['cli-missing', 'not-authenticated', 'quota', 'network', 'timeout', 'misconfigured', 'other'],
       description: 'consult lens only, with available:false: WHICH absence, off the fixed table in agents/consult.md. The loop latches the lens off for the rest of the run on a durable cause and pays for another dispatch on a transient one — so this is a lookup, never a guess',
     },
     reason: { type: 'string', description: "consult lens only, with available:false: the backend's own error message, verbatim — what makes the degradation quotable in the review artifact" },
+    // consult lens only: WHICH backend actually ran (codex, gemini, a named provider, api). Same
+    // discipline as `available` and `reason` — NO predicate in this loop reads it. It exists so the
+    // review artifact and the pre-merge human can say which second opinion they got, or did not
+    // get, instead of inferring it from a config they cannot see from the dossier.
+    backend: { type: 'string', description: 'consult lens only: the backend that ran (or was configured, when available:false) — provenance for the review artifact, read by no predicate' },
   },
 }
 
@@ -902,7 +907,12 @@ const deferred = []
 const degraded = []
 // THE CONSULT LATCH — one durable absence, one dispatch. Rationale in latchConsultOff below.
 let consultOff = null
-const CONSULT_DURABLE = ['cli-missing', 'not-authenticated', 'quota']
+// `misconfigured` is DURABLE for the same reason the other three are: a backend name nobody
+// recognises, a missing base URL or token env var, or a Claude model on an API backend is a fact
+// about the plugin's user config, and no later task in this run will change it. Left on `other` it
+// would not latch, and a ten-task feature would pay ten ~26k-token dispatches to be told the same
+// configuration mistake ten times.
+const CONSULT_DURABLE = ['cli-missing', 'not-authenticated', 'quota', 'misconfigured']
 // BY-DESIGN SINGLE LENS, KEPT APART FROM `degraded` ON PURPOSE. A task reviewed by one
 // lens because its architect-assigned tier says so, and a task reviewed by one lens because the
 // consult backend was missing, look identical in tasks.json — and the pre-merge human must be able to

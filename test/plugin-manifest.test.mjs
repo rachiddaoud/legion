@@ -126,6 +126,85 @@ test('the manifest declares the consult backend userConfig — four string keys,
     'the field takes the env var NAME, never the token — say so where the operator types it');
 });
 
+test('the consult agent reads its config from user_config and pins ONE recipe per backend', () => {
+  // The agent is where the whole backend feature lives — the loop gained no argument and the
+  // kernel gained nothing at all. So these pins are what stands between "configurable" and a lens
+  // that improvises: the placeholders that carry the config in, the three pinned invocations, the
+  // provider table, and the refusals.
+  const consult = read('agents', 'consult.md');
+
+  // 1. The config actually reaches the agent. `${user_config.<key>}` is substituted into a plugin
+  //    agent's body when it is loaded — MEASURED on Claude Code 2.1.236, at both the Agent-tool and
+  //    the Workflow-tool dispatch path. Lose a placeholder and that key is silently unreadable.
+  for (const key of ['consult_backend', 'consult_model', 'consult_base_url', 'consult_token_env']) {
+    assert.ok(consult.includes(`\${user_config.${key}}`), `the agent must carry the ${key} placeholder`);
+  }
+  // MEASURED on the same build: an option the operator never set is left as the LITERAL
+  // placeholder — the manifest `default` is NOT substituted in its place. An agent that took the
+  // literal at face value would send `${user_config.consult_model}` to a provider as a model name.
+  assert.match(consult, /NOT CONFIGURED/,
+    'the agent must read an unsubstituted placeholder as "unset", not as a value');
+  // MEASURED, and the reason this step exists at all: a haiku dispatch with `consult_backend`
+  // configured to `gemini` opened by probing `codex` — "the default unconfigured backend" — because
+  // codex led the probe list and the routing table sat in an earlier section. Routing must come
+  // FIRST and must be spoken aloud, or the lens silently answers with a provider nobody chose.
+  assert.match(consult, /RESOLVE YOUR BACKEND FIRST/,
+    'backend routing precedes the probe, or a familiar CLI wins over the configured one');
+  assert.ok(consult.indexOf('RESOLVE YOUR BACKEND FIRST') < consult.indexOf('command -v codex'),
+    'and it precedes it IN THE FILE — the ordering is the mechanism, not the wording');
+
+  // 2. Three recipes, each probed for and each pinned. A lens that falls back from one backend to
+  //    another returns a second opinion whose provenance nobody chose.
+  assert.match(consult, /command -v codex/, 'codex recipe: the probe');
+  assert.match(consult, /codex exec review --commit <SHA> --json -o/, 'codex recipe: the pinned command, unchanged');
+  assert.match(consult, /-m, --model <MODEL>/, 'codex recipe: the measured flag the optional model rides on');
+  assert.match(consult, /command -v gemini/, 'gemini recipe: the probe');
+  assert.match(consult, /gemini -p -/, 'gemini recipe: the diff arrives on stdin');
+  assert.match(consult, /--yolo/,
+    'gemini recipe: the PROHIBITION on --yolo must stay written — this lens is read-only and the loop fails a dirty worktree');
+  assert.match(consult, /Never `--yolo`/, 'and it must read as a prohibition, not as part of an invocation');
+  assert.match(consult, /chat\/completions/, 'api recipe: the OpenAI-compatible endpoint path');
+  assert.match(consult, /json_schema/, 'api recipe: the answer shape is demanded, not hoped for');
+  assert.match(consult, /perl -e 'alarm 900; exec @ARGV'/, 'the CLI recipes keep the perl bound — `timeout` is absent on macOS');
+  assert.match(consult, /--max-time 900/, 'and curl owns its own bound, since curl is the process there');
+
+  // 3. The provider table is a table of PROVIDERS. Losing a row silently turns a named backend
+  //    into a misconfiguration for an operator who spelled it exactly as the manifest told them.
+  for (const host of ['api.openai.com', 'generativelanguage.googleapis.com', 'api.x.ai', 'api.deepseek.com', 'api.mistral.ai']) {
+    assert.ok(consult.includes(host), `the provider table must resolve ${host}`);
+  }
+  const backends = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
+    .userConfig.consult_backend.description.match(/[a-z]+/g);
+  for (const b of ['codex', 'gemini', 'openai', 'google', 'xai', 'deepseek', 'mistral', 'api']) {
+    assert.ok(backends.includes(b), `the manifest description must offer ${b}`);
+    assert.ok(consult.includes(`\`${b}\``), `and the agent must route ${b} to a recipe`);
+  }
+
+  // 4. The refusals. An unknown backend, a missing field and a Claude model are all the same
+  //    outcome — a lens that says so rather than one that quietly reviews with something else.
+  assert.match(consult, /misconfigured/, 'the fourth durable cause the agent may report');
+  assert.match(consult, /\/claude\/i/, 'the independence guard: a Claude model on an API backend is not a second opinion');
+
+  // 5. The token. legion stores the env var NAME; the value never enters a message, a log, `raw`
+  //    or `reason`, which is the only reason it is safe to configure this from a plugin dialog.
+  assert.match(consult, /never put it — or any part of it — into `raw`, `reason`, a finding or a log line/,
+    'the token discipline must be stated where the recipe that uses it is written');
+});
+
+test('the consult schema carries `backend` and `misconfigured`, and the latch treats a broken config as durable', () => {
+  // Same argument as `category` and `kind` above: an undeclared property is dropped by the
+  // runtime, so `backend` exists as evidence only because REVIEW_SCHEMA lists it — and an
+  // `unavailable` value missing from the enum arrives as nothing, which reads to the latch exactly
+  // like a lens that never classified its absence.
+  const code = codeOnly(read('workflows', 'build-loop.js'));
+  assert.match(code, /backend:\s*\{\s*type:\s*'string'/,
+    'REVIEW_SCHEMA carries backend — without it the review artifact cannot name which second opinion ran');
+  assert.match(code, /enum: \['cli-missing', 'not-authenticated', 'quota', 'network', 'timeout', 'misconfigured', 'other'\]/,
+    'the unavailable enum carries misconfigured — a broken consult config is an absence like any other');
+  assert.match(code, /CONSULT_DURABLE = \['cli-missing', 'not-authenticated', 'quota', 'misconfigured'\]/,
+    'and it LATCHES: the plugin config cannot change under a running loop, so re-asking only re-bills');
+});
+
 test('.claude-plugin/ contains only the two manifests — components never nest inside it', () => {
   // Assert against git's index, not the working directory — Finder's .DS_Store (and any
   // other untracked junk) must not flake the invariant, while an accidentally COMMITTED
