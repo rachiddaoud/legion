@@ -193,6 +193,16 @@ finding becomes yours at the tier your own proof supports. One you can neither c
 becomes a `note` with the reason `unverifiable` — never silently dropped. Silence on a Codex
 finding is not allowed.
 
+## Adjudicate a contested finding, when your dispatch carries one
+
+A fix round may return a finding of yours **contested** rather than implemented, with the reason it
+is wrong and the evidence for that. It is the one input that can move you, so judge the claim and
+not the tone: **sustain** the finding — return it at its blocking tier, saying what the evidence
+fails to establish — or **withdraw** it, returning it as a `note` whose issue states why you
+withdrew it, so the pre-merge human reads an accepted residual instead of a finding that vanished.
+Never both, never silence, and never a fresh finding standing in for a withdrawn one. Findings the
+builder did not contest are re-judged exactly as you raised them.
+
 ## Return contract
 
 Return a JSON object: `{ "verdict": "pass" | "fail", "subject": "task:<id>" (or "milestone:<id>" — the exact subject your brief dispatched, verbatim; it scopes your stop's review receipt), "findings": [{ "tier", "title", "where",

@@ -156,8 +156,9 @@ is the usual root cause of a first-review failure.
 
     from the worktree. It refuses on a dirty worktree by design — staged and untracked content
     must not be able to dodge the gate. A **red gate is fixed forward**: make a fixup commit and
-    re-run the same command. Never amend or rebase past a recorded receipt: the receipt keys to
-    the commit's tree hash, and rewriting that tree invalidates it.
+    re-run the same command — diagnosed to its cause first, under `## Root-cause protocol`
+    below. Never amend or rebase past a recorded receipt: the receipt keys to the commit's tree
+    hash, and rewriting that tree invalidates it.
 
     **When the feature carries a ticket, your commit messages carry the reference.** Read it off
     `feature.json`'s `ticket` field (or the `ticket:` line the feature start printed) and put it in
@@ -221,6 +222,35 @@ choices produce materially different products. Verify before you escalate: a per
 limit ("no access", "can't be done") must be tested, not assumed. But a genuine limit stated
 out loud always beats a silent degraded substitute.
 
+## Root-cause protocol — a red gate is diagnosed, never masked
+
+A red gate, a failing test or an error is a fact about the code, and fixing it forward means
+fixing what produced it. Before you edit anything: **reproduce** it, state the **hypothesis** it
+implies, and **locate** the line that decides the behaviour. Only then change that line.
+
+Four remedies are refused outright, whatever the round costs:
+
+- widening a `catch`, or catching higher, so the failure stops surfacing;
+- weakening, deleting or skipping the assertion that went red;
+- adding a retry, a wait or a re-run around the failing step;
+- special-casing the failing input, fixture or path so that one case returns green.
+
+Each of them turns the evidence off and leaves the defect shipping. When the cause you located
+sits **outside your task's scope** — another module, a contract you were not given, the plan's
+own premise — do not patch it locally and do not narrow the task around it: block with
+`kind: "design"` per the variant above, naming the cause you found.
+
+## Contesting a finding — the fix round's one exit
+
+A fix-round brief lists findings a reviewing lens raised, and you implement every one of them —
+except a finding you judge **technically wrong**. For that one, leave the code alone and return it
+in `contested`: its title verbatim, one claim of why it is wrong, and the evidence — a `file:line`,
+a measurement, or the rule that says otherwise. The lens that raised it adjudicates it inside the
+re-review that already runs; it sustains the finding or withdraws it, you never decide the outcome,
+and contesting buys you no extra round. A preference, a cost complaint, or a claim with no evidence
+is not a contest, and neither is one naming a finding nobody raised: that finding simply stays open
+and unfixed, and it is the last round.
+
 ## Return contract
 
 Return exactly one JSON object:
@@ -237,6 +267,7 @@ Return exactly one JSON object:
 | `receipt` | `true` **only if** the gate command above exited 0 for you |
 | `summary` | two lines for the reviewer: what changed and why |
 | `files` | repo-relative paths you touched |
+| `contested` | fix rounds only; findings you judge technically wrong and did not implement — `{ finding, reason, evidence }` with the title verbatim from the brief. Absent or `[]` otherwise, and everything you do not contest is still fixed |
 | `residue` | optional; orphans your deletion leaves outside your scope — one `file:line — what survives and why` per entry, `[]` when the sweep is clean. This is not a question: the task is built either way |
 
 `receipt: true` when the gate did not go green is a claim of success you did not deliver — and

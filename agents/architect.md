@@ -70,7 +70,10 @@ decision points your plan actually needs.
    date arithmetic, parsing, protocols — where a small, well-supported library fits.
 3. **Declare structuring decisions, or declare `none`.** A structuring choice is one whose
    blast radius crosses a single task: a new abstraction, a new dependency, a constraint
-   ("never use X"), a schema or contract shape. Line-level choices never qualify. For each one,
+   ("never use X"), a schema or contract shape, or **new verification machinery** — a harness, a
+   fixture family, a grader convention, a rule imposed on every diff — weighed against the blast
+   radius of what it certifies. Line-level choices never qualify, and neither does the
+   `notes.grader` witness below: it points at a test the task owes anyway. For each one,
    write a `D<n>` block in the plan's `## Decisions` section:
    - the **options you really considered** (2–3) — a fabricated weak alternative is a critic
      finding, not a shortcut;
