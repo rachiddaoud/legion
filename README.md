@@ -107,7 +107,7 @@ Legion drives features through a small typed kernel across seven stages. High-le
 ```mermaid
 flowchart TD
     I[intake<br/><i>interview + repo read</i>]
-    S[spec<br/><i>rules, states, acceptance</i>]
+    S[spec<br/><i>what was understood, rules, acceptance</i>]
     P[plan<br/><i>plan.md + tasks</i>]
     B[build<br/><i>milestone by milestone</i>]
     R[review<br/><i>feature-level settlement</i>]

@@ -29,11 +29,13 @@ review still has to look at. **Never silently substitute code-reading for artifa
 
 - Every relevant **acceptance row** is satisfied by the change — **and gradable by a single
   observation you actually made**. Name, per row, the one thing you looked at that would have
-  flipped had the row not held. Three shapes have no observation of that kind, and each is a
+  flipped had the row not held. Four shapes have no observation of that kind, and each is a
   `must-fix` **on the spec**, not on the diff: a row **no artifact of this repository can
   settle** (an operator gesture, the other half of a cross-repo initiative); a row that holds
   only by **composing two tests that never meet**; a row whose terms are **defined nowhere** ("a
-  valid startDate"). Say which of the three it is, and what would make it gradable.
+  valid startDate"); a row that is **a command over the source tree** (`grep`, `typecheck`)
+  rather than an observation of the product — a gate check, not an acceptance. Say which of
+  the four it is, and what would make it gradable.
 - **Loading, empty and error states** behave as specified.
 - User-facing behaviour matches the spec's process, business rules and statuses.
 - **Nothing out-of-scope crept in** — check delivered behaviour against the spec's out-of-scope

@@ -1443,3 +1443,115 @@ test('the spec stage sweeps the spec before its digest is presented for approval
   assert.ok(iSweep < spec.indexOf('present the digest'),
     'and runs it BEFORE the yes — a gap approved is a decision nobody made');
 });
+
+test('the spec is the human-readable reformulation, and the architect and critic contest it — and the critic adjudicates every D<n>', () => {
+  // Every rule here is prose the agents read as behaviour, so every matcher is scoped to the
+  // section that owns the rule: `concerns`, `overturns` and `Assumptions` are ordinary words a
+  // whole-file grep would find somewhere with the rule itself deleted.
+  const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
+  const at = (section, needle, what) => {
+    const i = typeof needle === 'string' ? section.indexOf(needle) : section.search(needle);
+    assert.ok(i >= 0, `${what} is missing (${needle})`);
+    return i;
+  };
+
+  // --- the spec stage: register, checklist, assumptions, observable acceptance ---
+  const spec = stageSection(body, 'spec');
+  assert.match(spec, /reformulation of the need/, 'the spec is what the session understood, written for the human');
+  assert.match(spec, /It says WHAT; every HOW\s+belongs to the plan/, 'WHAT/HOW boundary stated once, here');
+  const iRegister = at(spec, 'Register rule', 'spec stage: the register rule');
+  const register = spec.slice(iRegister, spec.indexOf('\n   - **', iRegister + 1));
+  assert.match(register, /no internal identifier/i, 'no file, component, column, migration or library name in the spec');
+  assert.match(register, /repo-brief\.md/, 'and the technical read has a named home the architect reads');
+  assert.match(spec, /checklist, not a template/i, 'sections exist only when there is something to say');
+  const iAssumptions = at(spec, '## Assumptions', 'spec stage: the `## Assumptions` section');
+  const iSweep = at(spec, 'Sweep the spec', 'spec stage: the sweep');
+  assert.ok(iAssumptions < iSweep, 'assumptions are defined in the contract before the sweep checks for them');
+  assert.match(spec.slice(iSweep), /## Assumptions` section that is present and not empty/,
+    'the sweep refuses a spec with no assumptions — an empty list means the session filled gaps silently');
+  assert.match(spec, /observations the human can make on the product/, 'acceptance rows are observed on the product');
+  assert.match(spec.slice(iSweep), /could not observe/, 'and the sweep catches a row the human could not observe');
+  assert.match(spec, /source tree/, 'a command over the tree is a gate check, not an acceptance row');
+  assert.doesNotMatch(spec, /process, statuses, loading\/empty\/error behaviour, \*\*acceptance rows\*\*/,
+    'the old developer-facing content list is gone — the contract replaced it, not joined it');
+
+  // --- the express mini-spec carries the same assumptions section ---
+  const intake = stageSection(body, 'intake');
+  const iMini = at(intake, 'canonical mini-spec format', 'intake stage: the mini-spec format');
+  const iMiniAssumptions = at(intake, '## Assumptions', 'intake stage: assumptions in the mini-spec');
+  const iYes = at(intake, 'yes covers both', 'intake stage: the fused yes');
+  assert.ok(iMini < iMiniAssumptions && iMiniAssumptions < iYes,
+    'the mini-spec format names `## Assumptions` — express does not skip the section that catches misunderstandings');
+  assert.match(intake.slice(iMini, iYes), /register rule applies unchanged/, 'and the register rule binds the mini-spec too');
+
+  // --- the plan stage: concerns go to the human, before any kernel op; overturns adopted or contested ---
+  const plan = stageSection(body, 'plan');
+  const iConcerns = at(plan, 'CONCERNS GO TO THE HUMAN', 'plan stage: the concerns rule');
+  const iImport = at(plan, 'plan check --feature <name> --import', 'plan stage: the import');
+  const iCritic = at(plan, 'legion:plan-critic', 'plan stage: the critic dispatch');
+  assert.ok(iConcerns < iImport && iImport < iCritic, 'concerns are routed before the import and before the critic');
+  assert.match(plan.slice(0, iImport), /repo-brief\.md/, 'the architect dispatch hands over the repo-brief the spec no longer carries');
+  const concerns = plan.slice(iConcerns, iImport);
+  assert.match(concerns, /verbatim/, 'each concern reaches the human verbatim');
+  assert.match(concerns, /[Nn]ever answer one yourself/, 'and the session never settles one itself');
+  assert.match(concerns, /upheld/, 'outcome: the spec was wrong');
+  assert.match(concerns, /overruled/, 'outcome: the spec stands, recorded as a D<n> with the operator’s words');
+  assert.match(concerns, /arbitrat/, 'outcome: a contested overturn is arbitrated by the human');
+  assert.match(concerns, /spec route/, 'an upheld spec concern takes the amendment spec route');
+  const iLoop = at(plan, 'REJECTION LOOP', 'plan stage: the rejection loop');
+  const iApproval = at(plan, 'PLAN APPROVAL', 'plan stage: the approval gate');
+  const loop = plan.slice(iLoop, iApproval);
+  assert.match(loop, /overturns: "D<n>"/, 'the loop knows the overturn field');
+  assert.match(loop, /adopts or contests, never silently\s+ignores/, 'an overturn has exactly two exits');
+  assert.match(loop, /never\s+answer a concern on the human's behalf/, 'the loop’s last fence');
+  assert.match(plan.slice(iApproval), /every concern raised on the way/, 'the human gate shows what was contested');
+  assert.match(plan.slice(iApproval), /overturned/, 'and every pick the critic overturned');
+  const iFence = at(body, 'A design concern is not an amendment', 'amendments: the design-concern fence');
+  assert.match(body.slice(iFence, iFence + 500), /spec concern the human upholds/i,
+    'the fence names the one concern that IS an amendment — the upheld spec concern');
+
+  // --- the architect: WHAT/HOW, contest the spec, adopt-or-contest an overturn ---
+  const architect = read('agents', 'architect.md');
+  assert.match(agentSection(architect, 'Inputs', 'architect.md'), /Every HOW is yours/,
+    'a HOW the spec carries is an option to declare, not a truth to inherit');
+  const archDo = agentSection(architect, 'Do', 'architect.md');
+  assert.match(archDo, /[Cc]ontest the spec/, 'the architect is told to contest a spec the repo refutes');
+  assert.match(archDo, /"concerns"|`concerns`/, 'through the concerns channel');
+  assert.match(archDo, /overturns: "D<n>"/, 'and to handle a critic overturn');
+  assert.match(archDo, /never both, never silence/, 'adopt or contest — the builder’s contested-finding rule, one stage up');
+  const archReturn = agentSection(architect, 'Return contract', 'architect.md');
+  assert.match(archReturn, /"concerns"/, 'the return contract carries concerns');
+  assert.match(archReturn, /"kind": "spec" \| "decision"/, 'with the two kinds');
+  assert.doesNotMatch(archReturn, /resolve>", "openQuestions"/,
+    'the old contract shape (planCheck straight into openQuestions) is gone — concerns sits between them');
+
+  // --- the critic: spec premises, adjudicate the pick, once per D<n> ---
+  const critic = read('agents', 'plan-critic.md');
+  const specPremises = checkBullet(critic, 'Spec premises', 'plan-critic.md');
+  assert.match(specPremises, /`concerns`/, 'a spec premise the code refutes is a concern');
+  assert.match(specPremises, /kind: "spec"/, 'of the spec kind');
+  assert.match(specPremises, /addressee is the \*\*human\*\*/, 'addressed to the human, not the architect');
+  const decisions = checkBullet(critic, 'Decisions — the decision grammar, in BOTH directions.', 'plan-critic.md');
+  const iAdjudicate = at(decisions, 'Adjudicate the pick', 'critic Decisions: the adjudication');
+  assert.ok(iAdjudicate < decisions.indexOf('Presence and linkage'), 'adjudication is the first decision check, before the form checks');
+  for (const criterion of ['blast radius', 'reversibility', 'fit with how the repo already does it', 'migration / model cost', 'refactor-now vs defer']) {
+    assert.ok(decisions.includes(criterion), `named criterion: ${criterion}`);
+  }
+  assert.match(decisions, /two lines of\s+weighing/, 'an overturn carries its weighing');
+  assert.match(decisions, /raised \*\*once\*\* per `D<n>`/, 'and is raised once — the loop has to end');
+  assert.match(decisions, /operator arbitration or overrule is settled/, 'a human-arbitrated block is never re-weighed');
+  const iter = agentSection(critic, 'Iteration ≥ 2', 'plan-critic.md');
+  assert.match(iter, /contested/, 'iteration ≥ 2 knows a contested overturn');
+  assert.match(iter, /do not re-raise it/, 'and leaves it to the human');
+  const criticReturn = agentSection(critic, 'Return contract', 'plan-critic.md');
+  assert.match(criticReturn, /"overturns"/, 'findings carry the overturn field');
+  assert.match(criticReturn, /"concerns"/, 'and the return carries concerns');
+  assert.match(criticReturn, /Any `concerns` entry ⇒ verdict `revise`/, 'a concern is unignorable: the plan cannot pass over it');
+  assert.match(critic, /- overturns: D<n>/, 'the finding block format has the field too');
+
+  // --- the product reviewer: a tree command is the fourth ungradable shape ---
+  const product = read('agents', 'product-reviewer.md');
+  assert.match(product, /Four shapes/, 'four ungradable shapes');
+  assert.match(product, /command over the source tree/, 'the fourth is a command over the tree');
+  assert.doesNotMatch(product, /Three shapes/, 'the old count is gone');
+});
