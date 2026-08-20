@@ -32,24 +32,16 @@ an unsubstituted backend as `codex`, and every other unsubstituted field as empt
 | empty, unset, or `codex` | **codex** (step 3a) |
 | `gemini` | **gemini** (step 3b) |
 | `agy` | **agy** (step 3d) — Google's Antigravity CLI |
-| `openai`, `google`, `xai`, `deepseek`, `mistral` | **api** (step 3c) — base URL and token env var off the provider table below, `consult_model` REQUIRED |
-| `api` | **api** (step 3c) — `consult_base_url`, `consult_token_env` and `consult_model` all REQUIRED |
+| `openai`, `google`, `xai`, `deepseek`, `mistral` | **api** (step 3c) — run `legion consult`, which resolves the base URL and the token env var off its own provider table; `consult_model` REQUIRED |
+| `api` | **api** (step 3c) — run `legion consult`; `consult_base_url`, `consult_token_env` and `consult_model` are all REQUIRED |
 | anything else | stop: `available: false`, `unavailable: "misconfigured"`, and a `reason` naming the value you were given and listing the accepted ones |
 
-**Provider table** — the resolved endpoint and token env var per named API backend. It is a table
-of PROVIDERS, not of models: the model is always `consult_model`.
-
-| backend | base URL | token env var |
-| --- | --- | --- |
-| `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
-| `google` | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` |
-| `xai` | `https://api.x.ai/v1` | `XAI_API_KEY` |
-| `deepseek` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
-| `mistral` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
-| `api` | `consult_base_url` (required) | `consult_token_env` (required) |
-
-A non-empty `consult_base_url` or `consult_token_env` **overrides** its column of the table row —
-that is how a named provider reaches a proxy or a differently-named key.
+**The provider table is not yours to hold.** The endpoint and the token env var for each named
+API backend live in `PROVIDERS`, inside `legion consult` — a table of PROVIDERS, not of models,
+since the model is always `consult_model`. A non-empty `consult_base_url` or `consult_token_env`
+still **overrides** its column there, which is how a named provider reaches a proxy or a
+differently-named key. You resolve none of it by hand: you pass the four configured values through
+verbatim (step 3c) and read the answer.
 
 **You run THE ONE recipe your backend names, and no other.** Never mix two, never fall back from
 one to another when the first is missing, and never go hunting for whichever CLI happens to be
@@ -58,13 +50,19 @@ independent review this lens exists to be. An absent backend is an honest `avail
 the caller is built to take that answer.
 
 **Independence guard.** On any API backend, and on `agy` (which serves `claude-…` slugs of its
-own), a `consult_model` matching `/claude/i` is `misconfigured` and you stop. The lens exists to
-be a second, **non-Claude** opinion; a Claude model here buys the same blind spots twice at the
+own), a `consult_model` matching `/claude/i` is `misconfigured` and you stop. The two are not
+enforced the same way: on the api recipe `legion consult` refuses it itself, before it spends a
+request, so there it is knowledge you keep rather than a check you run — and one you cannot defeat
+by forgetting it; on `agy` you are the one running the CLI, so the check is yours. The lens exists
+to be a second, **non-Claude** opinion; a Claude model here buys the same blind spots twice at the
 price of an extra dispatch.
 
-**The token is never yours to read.** `consult_token_env` is the NAME of an environment variable;
-the value lives in the operator's shell and legion neither stores nor transports it. Reference it
-in the curl line as `${THE_NAME}` and let the shell expand it. Never echo it, never print it,
+**The token is never yours to read — and on the api recipe it never can be.**
+`consult_token_env` is the NAME of an environment variable; the value lives in the operator's
+shell and legion neither stores nor transports it. You hand that NAME to `legion consult`, and the
+verb reads the value itself, straight from its own environment into the `Authorization` header of
+one HTTPS request: the value never enters your context, so there is nothing here for you to leak.
+The rule still binds everything you write, on every recipe: never echo it, never print it,
 never put it — or any part of it — into `raw`, `reason`, a finding or a log line.
 
 ## Do
@@ -88,19 +86,11 @@ never put it — or any part of it — into `raw`, `reason`, a finding or a log 
    - **gemini** — `command -v gemini`. Absent ⇒ `unavailable: "cli-missing"`.
    - **agy** — `command -v agy`. Absent ⇒ `unavailable: "cli-missing"`. A `consult_model` matching
      `/claude/i` is `unavailable: "misconfigured"` here too — the independence guard above.
-   - **api** — resolve the base URL and the token env var name off the table above (explicit
-     fields overriding), then require ALL of: a non-empty base URL, a non-empty token env var
-     name, a non-empty `consult_model`, `command -v curl`, and a non-empty token —
-
-     ```bash
-     command -v curl && test -n "${THE_TOKEN_ENV_NAME}" && echo TOKEN-PRESENT
-     ```
-
-     (the NAME substituted textually; the value is never echoed — `test -n` prints nothing).
-     A missing `curl` is `cli-missing`. **Anything missing from the CONFIG — no base URL, no token
-     env var name, no `consult_model`, an env var that is unset or empty, a `/claude/i` model — is
-     `unavailable: "misconfigured"`**, with a `reason` naming which field is missing (never its
-     value).
+   - **api** — **nothing to probe.** `legion consult` (step 3c) performs every check itself —
+     base URL, token env var name, `consult_model`, the independence guard, and whether the
+     environment variable actually holds a token — and answers with a `misconfigured` envelope
+     instead of spending a request. Go straight to 3c; a probe of your own here can only disagree
+     with the one that decides.
 
    Whatever the row, **stop immediately** and return `{"available": false, "verdict": "fail",
    "findings": [], "backend": "<the backend you were configured with>", "unavailable": "<the
@@ -214,55 +204,49 @@ never put it — or any part of it — into `raw`, `reason`, a finding or a log 
 
 ### 3c. Recipe `api`
 
-3. **One HTTP request, from the same pinned question.** Build `$DIR/q.txt` and the 200 KiB diff cap
-   exactly as in 3b — the same text, the same refusal over the cap — then build the payload with
-   `node -e` (never by hand: the diff carries quotes, backslashes and newlines that only a real
-   JSON encoder survives). The payload is a `/chat/completions` body carrying one user message
-   (the question then the diff) plus the codex review schema as a strict `response_format`:
-
-   ```json
-   { "model": "<consult_model>", "messages": [{"role": "user", "content": "<q.txt + diff.txt>"}],
-     "response_format": { "type": "json_schema", "json_schema": { "name": "legion_review",
-       "strict": true, "schema": { "type": "object", "additionalProperties": false,
-         "required": ["findings", "overall_correctness", "overall_explanation"],
-         "properties": {
-           "findings": { "type": "array", "items": { "type": "object", "additionalProperties": false,
-             "required": ["title", "body", "priority", "code_location"],
-             "properties": { "title": {"type": "string"}, "body": {"type": "string"},
-               "priority": {"type": "integer"},
-               "code_location": { "type": "object", "additionalProperties": false,
-                 "required": ["absolute_file_path", "line_range"],
-                 "properties": { "absolute_file_path": {"type": "string"},
-                   "line_range": { "type": "object", "additionalProperties": false,
-                     "required": ["start", "end"],
-                     "properties": {"start": {"type": "integer"}, "end": {"type": "integer"}} } } } } } },
-           "overall_correctness": {"type": "string"},
-           "overall_explanation": {"type": "string"} } } } } }
-   ```
-
-   Then send it — the token appearing ONLY as the shell expansion of its env var name:
+3. **Run `legion consult`. It IS the recipe.** The payload, the endpoint, the `json_object`
+   response format, the 900 s bound, the 200 KiB diff cap, the token and the whole outcome table
+   live inside the verb; none of them are yours to assemble any more:
 
    ```bash
-   curl -sS --max-time 900 -o "$DIR/resp.json" -w '%{http_code}' \
-     -H "Authorization: Bearer ${THE_TOKEN_ENV_NAME}" -H 'Content-Type: application/json' \
-     --data @"$DIR/payload.json" "<baseUrl>/chat/completions" > "$DIR/status.txt" 2> "$DIR/err.txt"
+   DIR="$(mktemp -d)"; cd <the feature worktree>
+   cat > "$DIR/q.txt" <<'LEGION_EOF'
+   <the review question from your dispatch>
+   LEGION_EOF
+   legion consult --backend '<value>' --model '<value>' \
+     --base-url '<value>' --token-env '<value>' \
+     --commit <SHA> --question-file "$DIR/q.txt" > "$DIR/out.json"; echo "EXIT:$?"
    ```
 
-   `curl` is the process here, so it owns the timeout: `--max-time 900`, no perl alarm.
+   - **Pass all four configured values through verbatim and single-quoted**, exactly as the
+     `Configured backend:` line at the top gave them to you — **an unsubstituted
+     `${user_config.…}` included**. The verb reads a placeholder as "not configured" and answers
+     `misconfigured`; the single quotes are what stop bash choking on `${…}`. Omit nothing, invent
+     nothing, and substitute nothing of your own: passing those four strings on is the only
+     judgement left to you here, and it is judgement-free by construction.
+   - **Scope**: `--commit <SHA>` for a task commit, `--base <REF>` for a `<base>..HEAD` milestone
+     range. Exactly one of the two — both, or neither, is a usage error.
+   - `q.txt` holds **only your dispatch's review question**. The reviewer preamble and the JSON
+     schema block are the verb's to compose, and writing your own would give the api recipe a
+     different answer shape from 3b's — one translation table serves both, and it only can while
+     both prompts ask for the same object.
 
-4. **Read the outcome from the status AND curl's exit code.** Extract
-   `choices[0].message.content` with `node -e` and parse it as the codex schema.
+4. **Read `out.json`. It is already the answer** — exactly one JSON object, with the
+   classification already done:
 
-   | signal | `unavailable` |
-   | --- | --- |
-   | HTTP 401 or 403 | `not-authenticated` |
-   | HTTP 429 | `quota` |
-   | curl exit 6, 7 or 35 (DNS, connection refused, TLS) | `network` |
-   | curl exit 28 (`--max-time` fired) | `timeout` |
-   | any other non-200, or a body that will not parse | `other` |
-
-   On any of those: `available: false`, and `reason` = the HTTP status plus a short verbatim
-   extract of the response body — **with no `Authorization` header, no token, and no part of one**.
+   - **EXIT 0, `"available": true`** — `review` is in the same codex schema 3a and 3b produce.
+     Take it through step 5 exactly like any other backend's findings.
+   - **EXIT 0, `"available": false`** — relay its `backend`, `unavailable` and `reason`
+     **verbatim**. They are PRE-CLASSIFIED: do not re-derive the row from the step-6 table for
+     this recipe, and do not paraphrase the reason. The verb read the HTTP status and the failure
+     cause itself; you did not, and a second guess can only be worse than the first reading.
+   - **EXIT 1** — the invocation was wrong (bad flags, a backend that is a CLI recipe, a scope
+     that does not resolve, an unreadable question file), and stdout is EMPTY. Return
+     `available: false`, `unavailable: "other"`, `reason` = the single line the router printed on
+     stderr (it is prefixed `legion consult`). Do not repair the call, and **never retry into a
+     different backend**: a second
+     opinion from a provider the operator did not choose is not the second opinion this lens
+     exists to be.
 
 ### 3d. Recipe `agy`
 
@@ -437,11 +421,11 @@ never put it — or any part of it — into `raw`, `reason`, a finding or a log 
 
    | signal | `unavailable` |
    | --- | --- |
-   | the configured CLI (or `curl`) is not on PATH | `cli-missing` |
+   | the configured CLI is not on PATH (a CLI recipe only — the api recipe spawns nothing) | `cli-missing` |
    | the message names auth — not logged in, unauthorized, invalid API key | `not-authenticated` |
    | the message names a usage/rate limit (it carries a retry date) | `quota` |
    | the message names a connection, DNS or TLS failure | `network` |
-   | the run hit its bound (the perl alarm, curl's `--max-time`, or agy's `--print-timeout` or watchdog) | `timeout` |
+   | the run hit its bound (the perl alarm, agy's `--print-timeout` or watchdog, or `legion consult`'s own 900 s bound) | `timeout` |
    | the backend name is unknown, a required config field is missing or empty, or the model is a Claude one | `misconfigured` |
    | anything else | `other` |
 
@@ -507,5 +491,8 @@ ran.
 - **Leave the worktree exactly as you found it, untracked files included** — the build loop
   re-verifies the task's gate receipt after the fix round, and that check fails closed on a
   dirty tree, so a stray artifact of yours fails a task whose code is fine.
-- Never pass secrets, `.env` contents or credentials into the external backend, and never let the
-  API token out of the one shell expansion that sends it.
+- Never pass secrets, `.env` contents or credentials into the external backend. The API token is
+  not yours to handle at all: on the api recipe you hand `legion consult` the env var NAME and the
+  value never enters your context, and on the CLI recipes the CLI owns its own auth. There is no
+  longer any expansion of it for you to guard — if you find yourself writing one, you have
+  reconstructed the thing the verb exists to remove.

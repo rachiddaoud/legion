@@ -38,6 +38,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STATE_OPS, ARTIFACT_KINDS, REVIEW_RECEIPT_AGENT_ROLES } from '../src/kernel/state.mjs';
+import { DIFF_CAP_BYTES, PROVIDERS, TIMEOUT_MS, composePrompt } from '../src/cli/consult.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -163,10 +164,7 @@ test('the consult agent reads its config from user_config and pins ONE recipe pe
   assert.match(consult, /--yolo/,
     'gemini recipe: the PROHIBITION on --yolo must stay written — this lens is read-only and the loop fails a dirty worktree');
   assert.match(consult, /Never `--yolo`/, 'and it must read as a prohibition, not as part of an invocation');
-  assert.match(consult, /chat\/completions/, 'api recipe: the OpenAI-compatible endpoint path');
-  assert.match(consult, /json_schema/, 'api recipe: the answer shape is demanded, not hoped for');
   assert.match(consult, /perl -e 'alarm 900; exec @ARGV'/, 'the CLI recipes keep the perl bound — `timeout` is absent on macOS');
-  assert.match(consult, /--max-time 900/, 'and curl owns its own bound, since curl is the process there');
   assert.match(consult, /command -v agy/, 'agy recipe: the probe');
 
   // 2b. The agy recipe, SCOPED to its own section. 3d shares 3b's pinned question, its 200 KiB cap
@@ -270,19 +268,34 @@ test('the consult agent reads its config from user_config and pins ONE recipe pe
   assert.ok(iGemini > 0 && iApi > iGemini && iAgy > iApi, 'the recipes must run 3b, 3c, 3d in order');
   assert.equal(heredoc(agy, 'q.txt', '3d'), heredoc(consult.slice(iGemini, iApi), 'q.txt', '3b'),
     'the pinned question must be 3b\'s BYTE FOR BYTE — it defines the priority polarity the shared table reads');
-  const payload = consult.slice(iApi, iAgy).match(/```json\n([\s\S]*?)```/);
-  assert.ok(payload, '3c must carry its payload as a json block');
-  assert.deepEqual(
-    JSON.parse(heredoc(agy, 'schema.json', '3d').replace(/^ {3}/gm, '')),
-    JSON.parse(payload[1].replace(/^ {3}/gm, '')).response_format.json_schema.schema,
-    '3d\'s --json-schema file must BE 3c\'s schema — one shape, or step 5 is translating two',
-  );
+  // 3c's JSON-Schema TWIN IS GONE: the api recipe became a verb and Option A deleted
+  // `json_schema` with it, so there is no sibling left to compare 3d against. The shape is
+  // pinned here as literals instead, and its other surviving copy — SCHEMA_BLOCK in
+  // src/cli/consult.mjs — is pinned in the next test. Two copies, both anchored, neither free to
+  // drift alone; what step 5 translates is still exactly one shape.
+  const agySchema = JSON.parse(heredoc(agy, 'schema.json', '3d').replace(/^ {3}/gm, ''));
+  assert.deepEqual(agySchema.required, ['findings', 'overall_correctness', 'overall_explanation'],
+    '3d\'s schema must demand the codex shape — step 5 translates exactly one');
+  assert.deepEqual(agySchema.properties.findings.items.required,
+    ['title', 'body', 'priority', 'code_location'],
+    'and each finding must carry every field the translation table reads off it');
+  // The api recipe became a VERB on 2026-08-20 (src/cli/consult.mjs). What is pinned in the
+  // PROMPT is now only the line that joins the two; the endpoint, the response format, the bound,
+  // the provider table and the guards are pinned against the MODULE in the next test, by import
+  // rather than by regexing prose.
+  assert.match(consult, /legion consult --backend/, 'api recipe: the pinned invocation, so prompt and verb cannot drift');
+  assert.match(consult, /--question-file/, 'and the flag that carries the dispatch question into it');
+  // Narrowed on 2026-08-20, and the narrowing is the point: a bare /json_schema/ ALSO matches 3d,
+  // where `json_schema` is a key in agy's own success envelope and has nothing to do with the
+  // request format this commit deleted. `response_format` is the fragment that actually
+  // contradicts the verb, and it is absent from this file entirely.
+  assert.doesNotMatch(consult, /response_format|--max-time 900|curl -sS|api\.openai\.com/,
+    'the api recipe left this file ENTIRELY — a surviving fragment is an instruction that contradicts '
+    + 'the verb, and a haiku lens reading both has no way to tell which one is live');
 
-  // 3. The provider table is a table of PROVIDERS. Losing a row silently turns a named backend
-  //    into a misconfiguration for an operator who spelled it exactly as the manifest told them.
-  for (const host of ['api.openai.com', 'generativelanguage.googleapis.com', 'api.x.ai', 'api.deepseek.com', 'api.mistral.ai']) {
-    assert.ok(consult.includes(host), `the provider table must resolve ${host}`);
-  }
+  // 3. Every backend the manifest OFFERS must still route to a recipe here. (The provider table
+  //    itself moved into the verb and is pinned in the next test; what has to stay true of the
+  //    prompt is that no configurable value routes nowhere.)
   const backends = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
     .userConfig.consult_backend.description.match(/[a-z]+/g);
   for (const b of ['codex', 'gemini', 'agy', 'openai', 'google', 'xai', 'deepseek', 'mistral', 'api']) {
@@ -294,12 +307,67 @@ test('the consult agent reads its config from user_config and pins ONE recipe pe
   //    outcome — a lens that says so rather than one that quietly reviews with something else.
   assert.match(consult, /misconfigured/, 'the fourth durable cause the agent may report');
   assert.match(consult, /\/claude\/i/,
-    'the independence guard: a Claude model on an API backend — or on agy, which serves them too — is not a second opinion');
+    'the independence guard, spelled: a Claude model on an API backend — or on agy, which serves them too — is not a second opinion');
+  assert.match(consult, /Independence guard/,
+    'and the lens keeps the KNOWLEDGE of it; on the api recipe the ENFORCEMENT moved into the verb (next test)');
 
   // 5. The token. legion stores the env var NAME; the value never enters a message, a log, `raw`
   //    or `reason`, which is the only reason it is safe to configure this from a plugin dialog.
   assert.match(consult, /never put it — or any part of it — into `raw`, `reason`, a finding or a log line/,
     'the token discipline must be stated where the recipe that uses it is written');
+});
+
+test('`legion consult` carries the api recipe agents/consult.md no longer spells out', () => {
+  // The api recipe stopped being English on 2026-08-20 and became src/cli/consult.mjs. Its pins
+  // moved with it — and moved from REGEXES OVER PROSE to IMPORTS, which is the point of the move:
+  // a table read as data cannot pass a check while meaning something else, and a haiku agent can
+  // no longer half-follow it. What is asserted here is exactly what the prompt used to promise.
+  const src = codeOnly(read('src', 'cli', 'consult.mjs'));
+
+  // The provider table, row by row. Losing a row silently turns a named backend into a
+  // misconfiguration for an operator who spelled it exactly as the manifest told them to.
+  for (const [backend, host] of Object.entries({
+    openai: 'api.openai.com',
+    google: 'generativelanguage.googleapis.com',
+    xai: 'api.x.ai',
+    deepseek: 'api.deepseek.com',
+    mistral: 'api.mistral.ai',
+  })) {
+    assert.ok(PROVIDERS[backend]?.baseUrl?.includes(host), `the provider table must resolve ${backend} to ${host}`);
+    assert.match(PROVIDERS[backend].tokenEnv, /^[A-Z][A-Z0-9_]*$/,
+      `${backend} must name an env VAR — legion stores the name and never the token`);
+  }
+  assert.deepEqual(PROVIDERS.api, { baseUrl: null, tokenEnv: null },
+    'the bring-your-own row carries no defaults, which is what makes both flags required for it');
+  assert.match(src, /chat\/completions/, 'the OpenAI-compatible endpoint path the whole table shares');
+
+  // OPTION A, the operator's decision of 2026-08-20: json_object for EVERY api backend, and
+  // json_schema DELETED rather than relocated, kept behind a flag, or tried first with a
+  // fallback. MEASURED: DeepSeek answers json_schema+strict with HTTP 400 "This response_format
+  // type is unavailable now". The schema has to live in the prompt regardless — so a second,
+  // dialect-sensitive copy in the request buys nothing and can drift from the first.
+  assert.match(src, /response_format: \{ type: 'json_object' \}/,
+    'one response format for every backend — no per-provider capability column, no fallback path');
+  assert.doesNotMatch(src, /json_schema|strict: true/,
+    'json_schema is retired, not relocated: four of five provider rows would be doc-sourced claims no offline suite can check');
+  // MEASURED, and the reason the composed prompt is pinned rather than merely written: DeepSeek
+  // refuses json_object outright with HTTP 400 "Prompt must contain the word 'json' in some form"
+  // when the word is absent, and OpenAI and Mistral document the same precondition. A rewording
+  // that dropped the word would break all three at once, at runtime.
+  assert.match(composePrompt('a question', 'a diff'), /json/i,
+    'the schema block satisfies the json_object precondition BY CONSTRUCTION');
+  // The same schema the codex CLI emits — one translation table in the agent serves all three
+  // recipes only while all three ask for the same object.
+  for (const key of ['findings', 'title', 'body', 'priority', 'code_location', 'overall_correctness']) {
+    assert.ok(composePrompt('q', 'd').includes(key), `the composed prompt must demand ${key}`);
+  }
+
+  assert.equal(TIMEOUT_MS, 900_000, "curl's `--max-time 900`, now the verb's own AbortSignal bound");
+  assert.equal(DIFF_CAP_BYTES, 204800, 'the same 200 KiB cap the gemini recipe enforces with its exit 3 guard');
+  assert.match(src, /\/claude\/i/,
+    'the independence guard is ENFORCED here now — a prompt-level rule is one a haiku dispatch can forget');
+  assert.match(src, /\$\\\{user_config\\\./,
+    'and so is placeholder rejection: an option the operator never set arrives as its literal ${user_config.…}');
 });
 
 test('the consult schema carries `backend` and `misconfigured`, and the latch treats a broken config as durable', () => {
