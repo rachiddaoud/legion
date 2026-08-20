@@ -363,7 +363,7 @@ test('a MISCONFIGURED backend latches too — a broken config does not repair it
   const { result, dispatches, logs } = await runLoop([row('T1'), row('T2')], {
     lensResult: (type, label) =>
       (label === 'T1 review:consult'
-        ? { ...consultGone('misconfigured', "backend 'gemeni' is not one of codex|gemini|openai|google|xai|deepseek|mistral|api"), backend: 'gemeni' }
+        ? { ...consultGone('misconfigured', "backend 'gemeni' is not one of codex|agy|openai|google|xai|deepseek|mistral|api"), backend: 'gemeni' }
         : undefined),
   });
   assert.deepEqual(consultDispatched(dispatches), ['T1 review:consult'],
@@ -372,7 +372,7 @@ test('a MISCONFIGURED backend latches too — a broken config does not repair it
   assert.deepEqual(result.consultOff, {
     after: 'T1',
     reason: 'misconfigured',
-    detail: "backend 'gemeni' is not one of codex|gemini|openai|google|xai|deepseek|mistral|api",
+    detail: "backend 'gemeni' is not one of codex|agy|openai|google|xai|deepseek|mistral|api",
     backend: 'gemeni',
   }, 'the artifact quotes the misconfiguration verbatim — that is what the operator acts on');
   assert.equal(result.consultBackend, 'gemeni',

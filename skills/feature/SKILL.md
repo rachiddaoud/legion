@@ -426,7 +426,7 @@ done-tasks-skip filter reads them, so a re-run in any session retries only outst
   see review step 1 before you use it.
 
 **THE CONSULT BACKEND IS PLUGIN CONFIG, NOT A WORKFLOW ARG.** Which external second opinion the
-consult lens buys — `codex` (the default), `gemini`, `agy` (the Antigravity CLI), or an
+consult lens buys — `codex` (the default), `agy` (the Antigravity CLI), or an
 OpenAI-compatible API — is a **global setting on the legion plugin**, so it is the same on every
 feature in every repository and no argument here can move it. Set it from `/plugin` → legion →
 configure, or by editing `pluginConfigs.legion.options` in **`~/.claude/settings.json`** (user
@@ -656,7 +656,7 @@ flags the milestone's tasks `notes.visual` — the visual reviewer, with every v
      one that was attempted and failed — and `consultOff` is what tells the human from which subject
      on, and why. **Name the backend** while you are there: the run's return carries it as
      `consultBackend` (and `consultOff.backend` when it latched), and "no second opinion because
-     gemini is not installed" is a different fact for the human than "no second opinion because the
+     codex is not installed" is a different fact for the human than "no second opinion because the
      API key expired".
      On `express` the TASK half of this entry and the next two read **"not applicable on this
      profile"** — that profile runs no task review, so those fields are empty by profile and not by

@@ -579,7 +579,7 @@ const REVIEW_SCHEMA = {
       description: 'consult lens only, with available:false: WHICH absence, off the fixed table in agents/consult.md. The loop latches the lens off for the rest of the run on a durable cause and pays for another dispatch on a transient one — so this is a lookup, never a guess',
     },
     reason: { type: 'string', description: "consult lens only, with available:false: the backend's own error message, verbatim — what makes the degradation quotable in the review artifact" },
-    // consult lens only: WHICH backend actually ran (codex, gemini, a named provider, api). Same
+    // consult lens only: WHICH backend actually ran (codex, agy, a named provider, api). Same
     // discipline as `available` and `reason` — NO predicate in this loop reads it. It exists so the
     // review artifact and the pre-merge human can say which second opinion they got, or did not
     // get, instead of inferring it from a config they cannot see from the dossier.
