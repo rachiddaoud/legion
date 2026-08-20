@@ -9,13 +9,13 @@
     "consult_backend": {
       "type": "string",
       "title": "Consult backend",
-      "description": "codex | gemini | agy (CLIs — agy is the Antigravity CLI) — openai | google | xai | deepseek | mistral (hosted APIs) — api (custom OpenAI-compatible endpoint)",
+      "description": "codex | agy (CLIs — agy is the Antigravity CLI) — openai | google | xai | deepseek | mistral (hosted APIs) — api (custom OpenAI-compatible endpoint)",
       "default": "codex"
     },
     "consult_model": {
       "type": "string",
       "title": "Consult model",
-      "description": "Model name. Optional for codex/gemini (empty = the CLI's own default) and for agy (empty = a pinned Gemini flash model), REQUIRED for API backends",
+      "description": "Model name. Optional for codex (empty = the CLI's own default) and for agy (empty = a pinned Gemini flash model), REQUIRED for API backends",
       "default": ""
     },
     "consult_base_url": {
