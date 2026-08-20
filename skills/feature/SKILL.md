@@ -426,11 +426,11 @@ done-tasks-skip filter reads them, so a re-run in any session retries only outst
   see review step 1 before you use it.
 
 **THE CONSULT BACKEND IS PLUGIN CONFIG, NOT A WORKFLOW ARG.** Which external second opinion the
-consult lens buys — `codex` (the default), `gemini`, or an OpenAI-compatible API — is a **global
-setting on the legion plugin**, so it is the same on every feature in every repository and no
-argument here can move it. Set it from `/plugin` → legion → configure, or by editing
-`pluginConfigs.legion.options` in **`~/.claude/settings.json`** (user scope only — a project-scope
-copy is ignored by design). The four keys are `consult_backend`, `consult_model`,
+consult lens buys — `codex` (the default), `gemini`, `agy` (the Antigravity CLI), or an
+OpenAI-compatible API — is a **global setting on the legion plugin**, so it is the same on every
+feature in every repository and no argument here can move it. Set it from `/plugin` → legion →
+configure, or by editing `pluginConfigs.legion.options` in **`~/.claude/settings.json`** (user
+scope only — a project-scope copy is ignored by design). The four keys are `consult_backend`, `consult_model`,
 `consult_base_url` and `consult_token_env`. **`consult_token_env` is the NAME of an environment
 variable, never a token**: the value stays in the operator's shell environment and legion never
 stores, transports or prints it. Nothing is required to get the old behaviour — unset means

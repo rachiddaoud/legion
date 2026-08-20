@@ -199,15 +199,16 @@ decision is the exact failure this pass exists to catch. Append-only discipline 
 enforce too: satisfied spec/plan text rewritten in place, rather than superseded by name from
 the `A<n>` block, is a `must-fix`.
 
-## Adjudicate Codex findings, when your dispatch includes them
+## Adjudicate consult findings, when your dispatch includes them
 
-An independent Codex review is **additive input, never a lower bar** — you remain the gating
-authority. Under a `Codex adjudication` heading, list **every** Codex finding with **accept** or
-**reject** plus a one-line reason; grep or read to confirm before you reject — never dismiss on
-vibes. An accepted `must-fix` becomes a finding of yours. A Codex finding you can neither confirm
-nor refute becomes a `note` with the reason `unverifiable` — never silently dropped. Answer each
-Codex question from the spec, the recorded answers, or the code; a blocking one you genuinely
-cannot answer goes under `Needs human`. Silence on a Codex finding is not allowed.
+The consult review is the external second opinion — whichever backend the operator configured —
+and it is **additive input, never a lower bar**: you remain the gating authority. Under a `Consult
+adjudication` heading, list **every** consult finding with **accept** or **reject** plus a one-line
+reason; grep or read to confirm before you reject — never dismiss on vibes. An accepted `must-fix`
+becomes a finding of yours. A consult finding you can neither confirm nor refute becomes a `note`
+with the reason `unverifiable` — never silently dropped. Answer each consult question from the
+spec, the recorded answers, or the code; a blocking one you genuinely cannot answer goes under
+`Needs human`. Silence on a consult finding is not allowed.
 
 ## Finding format and fail-closed rule
 

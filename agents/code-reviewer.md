@@ -185,12 +185,13 @@ queries and calls, files unreachable from any entrypoint. Be aggressive but safe
 a deletion without confirming zero references**, and call out dynamic or reflective usage grep
 can miss.
 
-## Adjudicate Codex findings, when your dispatch includes them
+## Adjudicate consult findings, when your dispatch includes them
 
-Additive input, never a lower bar — you remain the gating authority. List **every** Codex finding
+The consult lens is the external second opinion — whichever backend the operator configured.
+Additive input, never a lower bar: you remain the gating authority. List **every** consult finding
 with **accept** or **reject** and a one-line reason; read the code before rejecting. An accepted
 finding becomes yours at the tier your own proof supports. One you can neither confirm nor refute
-becomes a `note` with the reason `unverifiable` — never silently dropped. Silence on a Codex
+becomes a `note` with the reason `unverifiable` — never silently dropped. Silence on a consult
 finding is not allowed.
 
 ## Adjudicate a contested finding, when your dispatch carries one
