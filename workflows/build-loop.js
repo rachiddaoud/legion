@@ -503,7 +503,7 @@ if (closesPending.length === 0) {
   log('nothing outstanding: every task is done and every milestone close is recorded passing — ' +
     'returning without a single dispatch')
   return {
-    built: [], blocked: [], failed: [], deferred: [], degraded: [], consultOff: null, singleLens: [], tiersIgnored: [],
+    built: [], blocked: [], failed: [], deferred: [], degraded: [], consultOff: null, consultBackend: null, singleLens: [], tiersIgnored: [],
     milestones: groups.map(g => ({ id: g.id, tasks: g.tasks.length, outcome: 'close-already-recorded' })),
     squashDeviations: [], designSignals: [], profile: PROFILE, profileAssumed: !PROFILE_GIVEN, profileCoerced: PROFILE_COERCED,
     reviewsProvided: RECORDED_REVIEWS !== null,
@@ -907,6 +907,11 @@ const deferred = []
 const degraded = []
 // THE CONSULT LATCH — one durable absence, one dispatch. Rationale in latchConsultOff below.
 let consultOff = null
+// The backend the consult lens last reported (config is global: one per run). Captured by
+// latchConsultOff from every consult answer it sees, available or not, and RETURNED — the review
+// artifact is compiled off build-report.jsonl, so provenance that stays inside the lens's own
+// return is provenance the pre-merge human never gets.
+let consultBackend = null
 // `misconfigured` is DURABLE for the same reason the other three are: a backend name nobody
 // recognises, a missing base URL or token env var, or a Claude model on an API backend is a fact
 // about the plugin's user config, and no later task in this run will change it. Left on `other` it
@@ -942,11 +947,14 @@ let stopped = null // set when a milestone close fails: later milestones are unt
  * (no consecutive-failure counter); a result with no `unavailable` at all — an older build of the
  * agent — latches nothing. And it buys the DISPATCH away, never the degradation: every caller
  * still records its own scope's degradation exactly as it does for a lens that came back dead.
- * `reason` is the CLASSIFIED cause (the enum), `detail` the backend's own message. */
+ * `reason` is the CLASSIFIED cause (the enum), `detail` the backend's own message, `backend` which
+ * second opinion died — the artifact and the pre-merge human read provenance off the RETURN, and
+ * the lens's own answer never crosses the workflow boundary any other way. */
 function latchConsultOff(res, after) {
+  if (res && typeof res.backend === 'string' && res.backend) consultBackend = res.backend
   if (consultOff || !res || res.available !== false) return
   if (!CONSULT_DURABLE.includes(res.unavailable)) return
-  consultOff = { after, reason: res.unavailable, detail: res.reason || '' }
+  consultOff = { after, reason: res.unavailable, detail: res.reason || '', backend: res.backend || null }
   log(`consult lens LATCHED OFF after ${after} — ${res.unavailable}${res.reason ? `: ${res.reason}` : ''}. ` +
     `Not dispatched again this run; every review from here is DEGRADED and returned as such.`)
 }
@@ -1591,11 +1599,14 @@ async function closeMilestone(group) {
   const runs = []
   roles.forEach((r, i) => {
     const raw = results[i]
+    // Called with the PASSING answer too: the latch guards make it a no-op, but the backend
+    // capture must see every consult answer — on express this close is the only consult dispatch
+    // of the whole run, and a pass would otherwise leave `consultBackend` null.
+    if (r.role === 'consult') latchConsultOff(raw, m)
     if (r.role === 'consult' && (!raw || raw.available === false)) {
       closeDegraded.push(r.role)
       log(`milestone ${m}: DEGRADED close — the advisory consult lens is unavailable; ` +
         `no verdict recorded, the close continues on the required lenses (this is not a second pass)`)
-      latchConsultOff(raw, m)
       return
     }
     const result = !raw
@@ -1827,9 +1838,12 @@ return {
   failed,
   deferred,
   degraded,
-  // null, or {after, reason, detail}: `degraded` says WHICH reviews lost the lens, this says when
-  // it went dark for good and why — the half the review artifact can quote.
+  // null, or {after, reason, detail, backend}: `degraded` says WHICH reviews lost the lens, this
+  // says when it went dark for good, why, and which backend — the half the review artifact can quote.
   consultOff,
+  // The backend the consult lens last reported this run (null when it never answered): the
+  // artifact names the second opinion's provenance from here, never from the transcript.
+  consultBackend,
   singleLens,
   tiersIgnored,
   milestones: milestoneReports,

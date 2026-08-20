@@ -569,11 +569,13 @@ facts survive to reach it.
   was unavailable" from "it was never dispatched", and the human decides on a review thinner than
   the profile promised without being told. Empty on `express`, which reviews no task — a close
   report carrying `degraded` is the only form this fact takes there. **Which** backend was missing
-  is in the lens's own return: it carries a `backend` field on every answer, available or not.
-- **`consultOff`** — `null`, or `{after, reason, detail}`: the task or milestone that discovered the
-  consult lens was **durably** gone (`cli-missing`, `not-authenticated`, `quota`, `misconfigured`),
-  the classified cause, and the backend's own message. From that subject on the lens was **not
-  dispatched again** — one
+  is in the return too: **`consultBackend`** carries the backend the lens last reported, on every
+  answer, available or not — the lens's own return never reaches `build-report.jsonl`, this field is
+  how its provenance does.
+- **`consultOff`** — `null`, or `{after, reason, detail, backend}`: the task or milestone that
+  discovered the consult lens was **durably** gone (`cli-missing`, `not-authenticated`, `quota`,
+  `misconfigured`), the classified cause, the backend's own message, and which backend it was. From
+  that subject on the lens was **not dispatched again** — one
   dispatch costs ~26k tokens whatever it reports, and the answer was already known. The tasks that
   followed are still listed in `degraded`; this is the one line that says why they stopped costing
   a dispatch. A transient absence (`network`, `timeout`) never latches, so `consultOff` stays `null`
@@ -652,9 +654,10 @@ flags the milestone's tasks `notes.visual` — the visual reviewer, with every v
      can go dark MID-RUN and stay dark: on a durable absence the loop stops dispatching it and
      returns `consultOff`. Every id is still listed — a review nobody bought is exactly as thin as
      one that was attempted and failed — and `consultOff` is what tells the human from which subject
-     on, and why. **Name the backend** while you are there: the lens returns a `backend` field on
-     every answer, and "no second opinion because gemini is not installed" is a different fact for
-     the human than "no second opinion because the API key expired".
+     on, and why. **Name the backend** while you are there: the run's return carries it as
+     `consultBackend` (and `consultOff.backend` when it latched), and "no second opinion because
+     gemini is not installed" is a different fact for the human than "no second opinion because the
+     API key expired".
      On `express` the TASK half of this entry and the next two read **"not applicable on this
      profile"** — that profile runs no task review, so those fields are empty by profile and not by
      omission; a milestone whose close report carries `degraded` is still reported, and on this
@@ -726,8 +729,8 @@ just earned.
 
 1. Present the human gate: the diff, the boundary receipt, every review verdict, the consult
    findings on the express and full profiles — **naming the backend they came from**, which the
-   lens's return states, because "a second model read this" is only evidence once the human knows
-   which one — anything the reviewers marked `unverified`, **every task
+   review artifact records off the run's `consultBackend`, because "a second model read this" is
+   only evidence once the human knows which one — anything the reviewers marked `unverified`, **every task
    the review artifact records as `degraded`** — a task reviewed by one lens because the consult lens was
    unavailable — **every task it records under `singleLens`, with its plan-assigned tier** — one
    lens by design, which is a different thing — **every task under `tiersIgnored`** — the profile

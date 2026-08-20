@@ -344,8 +344,10 @@ test('a DURABLE consult absence LATCHES the lens off — the next task pays no d
     'one dispatch bought the answer; every later one would re-buy it');
   assert.deepEqual(result.degraded, ['T1', 'T2'],
     'a task whose second lens was never dispatched is exactly as thinly reviewed as one whose lens died');
-  assert.deepEqual(result.consultOff, { after: 'T1', reason: 'quota', detail: 'usage limit reached; resets 2026-08-22' },
-    'the return carries WHERE the lens went dark and WHY — the review artifact quotes it');
+  assert.deepEqual(result.consultOff, { after: 'T1', reason: 'quota', detail: 'usage limit reached; resets 2026-08-22', backend: 'codex' },
+    'the return carries WHERE the lens went dark, WHY, and WHICH backend — the review artifact quotes it');
+  assert.equal(result.consultBackend, 'codex',
+    "provenance crosses the workflow boundary: the artifact reads build-report.jsonl, never the lens's transcript");
   assert.ok(logs.some((l) => /consult lens LATCHED OFF after T1 — quota/.test(l)), 'said out loud, once, where it was discovered');
   assert.ok(logs.some((l) => /T2: DEGRADED review — consult lens LATCHED OFF since T1 \(quota\)/.test(l)),
     'and T2\'s degradation says latched, not unavailable — nothing was dispatched to be unavailable');
@@ -361,7 +363,7 @@ test('a MISCONFIGURED backend latches too — a broken config does not repair it
   const { result, dispatches, logs } = await runLoop([row('T1'), row('T2')], {
     lensResult: (type, label) =>
       (label === 'T1 review:consult'
-        ? consultGone('misconfigured', "backend 'gemeni' is not one of codex|gemini|openai|google|xai|deepseek|mistral|api")
+        ? { ...consultGone('misconfigured', "backend 'gemeni' is not one of codex|gemini|openai|google|xai|deepseek|mistral|api"), backend: 'gemeni' }
         : undefined),
   });
   assert.deepEqual(consultDispatched(dispatches), ['T1 review:consult'],
@@ -371,7 +373,10 @@ test('a MISCONFIGURED backend latches too — a broken config does not repair it
     after: 'T1',
     reason: 'misconfigured',
     detail: "backend 'gemeni' is not one of codex|gemini|openai|google|xai|deepseek|mistral|api",
+    backend: 'gemeni',
   }, 'the artifact quotes the misconfiguration verbatim — that is what the operator acts on');
+  assert.equal(result.consultBackend, 'gemeni',
+    'the lens reports the value it was configured with, and the return carries it out verbatim');
   assert.ok(logs.some((l) => /consult lens LATCHED OFF after T1 — misconfigured/.test(l)));
   assert.deepEqual(result.built, ['T1', 'T2'], 'a broken consult config never fails a task');
 });
@@ -432,7 +437,7 @@ test('the close-scope latch SET path: a lens that dies AT the close is never re-
   });
   assert.deepEqual(consultDispatched(dispatches), ['T1 review:consult', 'M1 consult review'],
     'everything M2 would have asked is bought away');
-  assert.deepEqual(result.consultOff, { after: 'M1', reason: 'quota', detail: 'usage limit reached' },
+  assert.deepEqual(result.consultOff, { after: 'M1', reason: 'quota', detail: 'usage limit reached', backend: 'codex' },
     'a milestone id is as legitimate an `after` as a task id');
   assert.deepEqual(result.degraded, ['T2'], "M1's task review had its lens; M2's never got one");
   assert.deepEqual(result.milestones.map((mm) => mm.close.degraded), [['consult'], ['consult']],
@@ -453,7 +458,7 @@ test('a lens that dies BETWEEN rounds latches too — the cause is discovered at
   });
   assert.deepEqual(consultDispatched(dispatches), ['T1 review:consult', 'T1 re-review:consult'],
     'the answer arrived one round late and still costs T2 nothing');
-  assert.deepEqual(result.consultOff, { after: 'T1', reason: 'quota', detail: 'usage limit reached' });
+  assert.deepEqual(result.consultOff, { after: 'T1', reason: 'quota', detail: 'usage limit reached', backend: 'codex' });
   assert.deepEqual(result.failed.map((f) => f.taskId), ['T1'],
     'the finding nobody re-judged still fails T1 closed — the latch changes no verdict, only dispatches');
   assert.deepEqual(result.degraded, ['T1', 'T2']);
@@ -472,7 +477,7 @@ test('the CLOSE-scope between-rounds sites latch too — re-review and re-certif
       return undefined;
     },
   });
-  assert.deepEqual(reReview.result.consultOff, { after: 'M1', reason: 'quota', detail: 'usage limit reached' },
+  assert.deepEqual(reReview.result.consultOff, { after: 'M1', reason: 'quota', detail: 'usage limit reached', backend: 'codex' },
     'the lens died re-judging its own close findings — as durable an answer as any other');
 
   const reCertify = await runLoop([row('T1')], {
@@ -483,7 +488,7 @@ test('the CLOSE-scope between-rounds sites latch too — re-review and re-certif
       return undefined;
     },
   });
-  assert.deepEqual(reCertify.result.consultOff, { after: 'M1', reason: 'cli-missing', detail: 'codex CLI not installed' },
+  assert.deepEqual(reCertify.result.consultOff, { after: 'M1', reason: 'cli-missing', detail: 'codex CLI not installed', backend: 'codex' },
     'and the delta re-certification is the fifth and last site that sees a consult result');
 });
 

@@ -180,7 +180,8 @@ never put it — or any part of it — into `raw`, `reason`, a finding or a log 
    An empty findings array with "patch is correct" is a legitimate answer.
    LEGION_EOF
    git show <SHA> > "$DIR/diff.txt"      # milestone: git diff <BASE>..HEAD, BASE = the range's base
-   test "$(wc -c < "$DIR/diff.txt")" -le 204800 || echo LEGION-DIFF-OVER-CAP
+   test "$(wc -c < "$DIR/diff.txt")" -le 204800 \
+     || { echo "LEGION-DIFF-OVER-CAP $(wc -c < "$DIR/diff.txt") bytes"; exit 3; }
    { cat "$DIR/q.txt"; echo; cat "$DIR/diff.txt"; } \
      | perl -e 'alarm 900; exec @ARGV' gemini -p - \
      > "$DIR/out.txt" 2> "$DIR/err.txt"
@@ -192,8 +193,10 @@ never put it — or any part of it — into `raw`, `reason`, a finding or a log 
      answers. Auto-approved tool calls and loaded extensions are how a reviewer starts editing the
      tree it is judging, and the build loop fails the task whose worktree it finds dirty.
    - **Over the 200 KiB cap ⇒ refuse the whole review** (`available: false`, `unavailable:
-     "other"`, `reason` saying the diff exceeded the cap and by how much). Never truncate: a
-     truncated diff invites a confident "patch is correct" about code nobody read.
+     "other"`, `reason` saying the diff exceeded the cap and by how much). The `exit 3` guard is
+     what enforces it — the run stops before a single byte reaches the backend; the refusal is
+     never left to whoever reads the marker afterwards. Never truncate: a truncated diff invites a
+     confident "patch is correct" about code nobody read.
    - Same `perl -e 'alarm N; exec @ARGV'` bound, for the same reason as codex.
 
 4. **Read the outcome.** The answer is the LAST JSON object in `out.txt`, with any markdown fences
@@ -336,7 +339,8 @@ re-judged exactly as you raised them.
 ```
 
 `verdict` is the backend's, not yours. Any `block` or `must-fix` ⇒ `fail`. `backend` names the
-recipe that actually ran, on every return including an unavailable one — the review artifact and
+CONFIGURED backend you routed — the routing value verbatim, so a named provider like `google`
+stays `google`, never the `api` recipe it rode — on every return including an unavailable one — the review artifact and
 the pre-merge human are entitled to know WHICH second opinion they got, or did not get; it is
 honesty about provenance, and no predicate reads it. `category` is the one field of substance that
 is yours: translator metadata naming the defect class (reuse the same slug for the same root cause)
