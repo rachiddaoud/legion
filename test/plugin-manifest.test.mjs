@@ -65,7 +65,7 @@ function parseFrontmatter(text, what) {
 }
 
 const AGENT_NAMES = [
-  'architect', 'builder', 'code-reviewer', 'codex-consult', 'kernel-op', 'plan-critic', 'product-reviewer',
+  'architect', 'builder', 'code-reviewer', 'consult', 'kernel-op', 'plan-critic', 'product-reviewer',
   'visual-reviewer',
 ];
 const read = (...p) => readFileSync(join(ROOT, ...p), 'utf8');
@@ -82,6 +82,127 @@ test('plugin.json parses and matches the manifest schema shape', () => {
   assert.ok(manifest.description.length > 0, 'description must be non-empty');
   assert.equal(typeof manifest.author?.name, 'string');
   assert.ok(manifest.author.name.length > 0, 'author.name must be non-empty');
+});
+
+test('the manifest declares the consult backend userConfig — four string keys, defaults, no enum, no sensitive', () => {
+  // WHERE THESE VALUES GO AND WHY IT MATTERS: `userConfig` options are stored USER-SCOPE in
+  // ~/.claude/settings.json under `pluginConfigs.<plugin-id>.options` — project scope is ignored
+  // by design — so the consult backend is a GLOBAL choice by construction, which is the operator
+  // ruling this block implements. The values reach agents/consult.md as `${user_config.<key>}`
+  // placeholders substituted when the agent is loaded (MEASURED on Claude Code 2.1.236, at both
+  // the Agent-tool and the Workflow-tool dispatch path).
+  const manifest = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
+  const uc = manifest.userConfig;
+  assert.ok(uc && typeof uc === 'object', 'the consult lens is configured through plugin userConfig');
+  assert.deepEqual(
+    Object.keys(uc).sort(),
+    ['consult_backend', 'consult_base_url', 'consult_model', 'consult_token_env'],
+    'exactly the four keys agents/consult.md reads — a key added here that the agent never reads is dead config',
+  );
+  for (const [key, field] of Object.entries(uc)) {
+    assert.equal(field.type, 'string', `${key}: string is the only type the agent parses`);
+    assert.ok(field.title && field.title.length > 0, `${key}: the config dialog labels the field with this`);
+    assert.ok(field.description && field.description.length > 0, `${key}: the accepted values live here`);
+    assert.equal(typeof field.default, 'string', `${key}: a declared default, so the dialog never starts empty-handed`);
+    // NO `enum` — MEASURED: `claude plugin validate` rejects it (`Unrecognized key: "enum"`), so
+    // there is no select in the config dialog. The accepted values are therefore prose in
+    // `description`, and the STRICT validation lives in the agent, which answers an unknown value
+    // with `available:false` / `unavailable:"misconfigured"`.
+    assert.equal(field.enum, undefined, 'enum is rejected by the plugin validator — the agent validates instead');
+    // NO `sensitive` FIELD, DELIBERATELY. A `sensitive:true` option is stored in the Keychain and
+    // surfaces only as a CLAUDE_PLUGIN_OPTION_* env var for hooks/MCP/LSP — it never reaches the
+    // Bash the consult agent runs, so a token stored there would be unreadable at the one place
+    // that needs it. legion therefore stores no token at all: `consult_token_env` names the env
+    // var, the operator exports the value in their own shell, and legion never holds or prints it.
+    assert.equal(field.sensitive, undefined, 'legion stores no token — it stores the NAME of the env var holding one');
+  }
+  assert.equal(uc.consult_backend.default, 'codex',
+    'an unconfigured legion behaves exactly as it did before this option existed');
+  for (const key of ['consult_model', 'consult_base_url', 'consult_token_env']) {
+    assert.equal(uc[key].default, '', `${key}: empty means "not set", which the agent reads as the backend's own default`);
+  }
+  assert.match(uc.consult_backend.description, /codex/, 'the accepted values are listed for the operator');
+  assert.match(uc.consult_token_env.description, /NAME/,
+    'the field takes the env var NAME, never the token — say so where the operator types it');
+});
+
+test('the consult agent reads its config from user_config and pins ONE recipe per backend', () => {
+  // The agent is where the whole backend feature lives — the loop gained no argument and the
+  // kernel gained nothing at all. So these pins are what stands between "configurable" and a lens
+  // that improvises: the placeholders that carry the config in, the three pinned invocations, the
+  // provider table, and the refusals.
+  const consult = read('agents', 'consult.md');
+
+  // 1. The config actually reaches the agent. `${user_config.<key>}` is substituted into a plugin
+  //    agent's body when it is loaded — MEASURED on Claude Code 2.1.236, at both the Agent-tool and
+  //    the Workflow-tool dispatch path. Lose a placeholder and that key is silently unreadable.
+  for (const key of ['consult_backend', 'consult_model', 'consult_base_url', 'consult_token_env']) {
+    assert.ok(consult.includes(`\${user_config.${key}}`), `the agent must carry the ${key} placeholder`);
+  }
+  // MEASURED on the same build: an option the operator never set is left as the LITERAL
+  // placeholder — the manifest `default` is NOT substituted in its place. An agent that took the
+  // literal at face value would send `${user_config.consult_model}` to a provider as a model name.
+  assert.match(consult, /NOT CONFIGURED/,
+    'the agent must read an unsubstituted placeholder as "unset", not as a value');
+  // MEASURED, and the reason this step exists at all: a haiku dispatch with `consult_backend`
+  // configured to `gemini` opened by probing `codex` — "the default unconfigured backend" — because
+  // codex led the probe list and the routing table sat in an earlier section. Routing must come
+  // FIRST and must be spoken aloud, or the lens silently answers with a provider nobody chose.
+  assert.match(consult, /RESOLVE YOUR BACKEND FIRST/,
+    'backend routing precedes the probe, or a familiar CLI wins over the configured one');
+  assert.ok(consult.indexOf('RESOLVE YOUR BACKEND FIRST') < consult.indexOf('command -v codex'),
+    'and it precedes it IN THE FILE — the ordering is the mechanism, not the wording');
+
+  // 2. Three recipes, each probed for and each pinned. A lens that falls back from one backend to
+  //    another returns a second opinion whose provenance nobody chose.
+  assert.match(consult, /command -v codex/, 'codex recipe: the probe');
+  assert.match(consult, /codex exec review --commit <SHA> --json -o/, 'codex recipe: the pinned command, unchanged');
+  assert.match(consult, /-m, --model <MODEL>/, 'codex recipe: the measured flag the optional model rides on');
+  assert.match(consult, /command -v gemini/, 'gemini recipe: the probe');
+  assert.match(consult, /gemini -p -/, 'gemini recipe: the diff arrives on stdin');
+  assert.match(consult, /--yolo/,
+    'gemini recipe: the PROHIBITION on --yolo must stay written — this lens is read-only and the loop fails a dirty worktree');
+  assert.match(consult, /Never `--yolo`/, 'and it must read as a prohibition, not as part of an invocation');
+  assert.match(consult, /chat\/completions/, 'api recipe: the OpenAI-compatible endpoint path');
+  assert.match(consult, /json_schema/, 'api recipe: the answer shape is demanded, not hoped for');
+  assert.match(consult, /perl -e 'alarm 900; exec @ARGV'/, 'the CLI recipes keep the perl bound — `timeout` is absent on macOS');
+  assert.match(consult, /--max-time 900/, 'and curl owns its own bound, since curl is the process there');
+
+  // 3. The provider table is a table of PROVIDERS. Losing a row silently turns a named backend
+  //    into a misconfiguration for an operator who spelled it exactly as the manifest told them.
+  for (const host of ['api.openai.com', 'generativelanguage.googleapis.com', 'api.x.ai', 'api.deepseek.com', 'api.mistral.ai']) {
+    assert.ok(consult.includes(host), `the provider table must resolve ${host}`);
+  }
+  const backends = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
+    .userConfig.consult_backend.description.match(/[a-z]+/g);
+  for (const b of ['codex', 'gemini', 'openai', 'google', 'xai', 'deepseek', 'mistral', 'api']) {
+    assert.ok(backends.includes(b), `the manifest description must offer ${b}`);
+    assert.ok(consult.includes(`\`${b}\``), `and the agent must route ${b} to a recipe`);
+  }
+
+  // 4. The refusals. An unknown backend, a missing field and a Claude model are all the same
+  //    outcome — a lens that says so rather than one that quietly reviews with something else.
+  assert.match(consult, /misconfigured/, 'the fourth durable cause the agent may report');
+  assert.match(consult, /\/claude\/i/, 'the independence guard: a Claude model on an API backend is not a second opinion');
+
+  // 5. The token. legion stores the env var NAME; the value never enters a message, a log, `raw`
+  //    or `reason`, which is the only reason it is safe to configure this from a plugin dialog.
+  assert.match(consult, /never put it — or any part of it — into `raw`, `reason`, a finding or a log line/,
+    'the token discipline must be stated where the recipe that uses it is written');
+});
+
+test('the consult schema carries `backend` and `misconfigured`, and the latch treats a broken config as durable', () => {
+  // Same argument as `category` and `kind` above: an undeclared property is dropped by the
+  // runtime, so `backend` exists as evidence only because REVIEW_SCHEMA lists it — and an
+  // `unavailable` value missing from the enum arrives as nothing, which reads to the latch exactly
+  // like a lens that never classified its absence.
+  const code = codeOnly(read('workflows', 'build-loop.js'));
+  assert.match(code, /backend:\s*\{\s*type:\s*'string'/,
+    'REVIEW_SCHEMA carries backend — without it the review artifact cannot name which second opinion ran');
+  assert.match(code, /enum: \['cli-missing', 'not-authenticated', 'quota', 'network', 'timeout', 'misconfigured', 'other'\]/,
+    'the unavailable enum carries misconfigured — a broken consult config is an absence like any other');
+  assert.match(code, /CONSULT_DURABLE = \['cli-missing', 'not-authenticated', 'quota', 'misconfigured'\]/,
+    'and it LATCHES: the plugin config cannot change under a running loop, so re-asking only re-bills');
 });
 
 test('.claude-plugin/ contains only the two manifests — components never nest inside it', () => {
@@ -180,7 +301,7 @@ test('every role subagent exists, parses, and declares its tools', () => {
   const kernelOp = parseFrontmatter(read('agents', 'kernel-op.md'), 'kernel-op').frontmatter;
   assert.equal(kernelOp.tools, 'Bash', 'kernel-op must have Bash and nothing else');
   // The reviewers and the critic are read-only by contract; a write tool would break it.
-  for (const ro of ['plan-critic', 'code-reviewer', 'product-reviewer', 'codex-consult', 'visual-reviewer']) {
+  for (const ro of ['plan-critic', 'code-reviewer', 'product-reviewer', 'consult', 'visual-reviewer']) {
     const tools = parseFrontmatter(read('agents', `${ro}.md`), ro).frontmatter.tools;
     for (const banned of ['Edit', 'Write', 'NotebookEdit']) {
       assert.ok(!tools.split(',').map((s) => s.trim()).includes(banned), `${ro} must stay read-only (${banned})`);
@@ -384,7 +505,7 @@ test('the build loop contains NO per-task planning agent — the rule must not r
   // plan. Still no planner. Widen it only when the loop genuinely gains a role, never to quiet a
   // failure.
   const allowed = new Set([
-    'legion:builder', 'legion:code-reviewer', 'legion:codex-consult', 'legion:product-reviewer', 'legion:kernel-op',
+    'legion:builder', 'legion:code-reviewer', 'legion:consult', 'legion:product-reviewer', 'legion:kernel-op',
     'legion:visual-reviewer',
   ]);
   for (const a of dispatched) assert.ok(allowed.has(a), `unexpected agent in the build loop: ${a}`);
@@ -515,7 +636,7 @@ test('every review verdict is recorded in state — an unrecorded review did not
   // loop kept only in memory is a hole in the evidence chain a resumed session cannot see.
   assert.match(src, /state review-record --role \$\{[^}]+\} --verdict \$\{[^}]+\} --subject task:\$\{/);
   // Every lens, not just the primary: `recorded` must ACCUMULATE, or the durable-evidence rule
-  // is enforced for one lens and quietly waived for the codex lens and the re-review.
+  // is enforced for one lens and quietly waived for the consult lens and the re-review.
   const records = [...src.matchAll(/recordVerdict\(/g)].length;
   assert.ok(records >= 3, `all three verdict sites must record, found ${records}`);
   const overwrites = [...src.matchAll(/\brecorded = await recordVerdict\(/g)].length;
@@ -1041,8 +1162,8 @@ test('the decision grammar is declared across the plan surface', () => {
 
   assert.match(read('agents', 'code-reviewer.md'), /category/,
     'reviewer findings can carry the recurrence slug');
-  assert.match(read('agents', 'codex-consult.md'), /category/,
-    'the codex translation carries it too — recurrence counting needs both lenses');
+  assert.match(read('agents', 'consult.md'), /category/,
+    'the consult translation carries it too — recurrence counting needs both lenses');
 });
 
 test('the build stage routes design signals through the PLAN stage, never task-answer', () => {
@@ -1128,17 +1249,17 @@ test('a contested finding is adjudicated by the lens that raised it — in both 
   // The lens that raised a finding is the only one that may withdraw it, and a withdrawal is a
   // `note` carrying why — the shape REVIEW_SCHEMA already has, so the whole rule lives in prose
   // and nothing but this pins it.
-  for (const file of ['code-reviewer.md', 'codex-consult.md']) {
+  for (const file of ['code-reviewer.md', 'consult.md']) {
     const s = agentSection(read('agents', file), 'Adjudicate a contested finding', file);
     assert.match(s, /sustain/i, `${file}: the finding may stand`);
     assert.match(s, /withdraw/i, `${file}: or be withdrawn`);
     assert.match(s, /`note`/, `${file}: a withdrawal is a note, so it rides to the human instead of vanishing`);
     assert.match(s, /evidence/, `${file}: what a contest is judged on`);
   }
-  // The loop records the codex verdict on its own and re-reviews it with codex, so the claim that
+  // The loop records the consult verdict on its own and re-reviews it with the consult lens, so the claim that
   // the Claude lens filters it describes a workflow that does not exist.
-  assert.doesNotMatch(read('agents', 'codex-consult.md'), /adjudicates every finding/,
-    'no lens adjudicates another lens’s findings — codex re-reviews its own');
+  assert.doesNotMatch(read('agents', 'consult.md'), /adjudicates every finding/,
+    'no lens adjudicates another lens’s findings — the consult lens re-reviews its own');
   const builder = agentSection(read('agents', 'builder.md'), 'Contesting a finding', 'builder.md');
   assert.match(builder, /`contested`/, 'the builder is told the channel');
   assert.match(builder, /evidence/, 'and the bar a contest must clear');

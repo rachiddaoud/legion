@@ -495,20 +495,20 @@ test('the stated review SUBJECT is extracted and scopes the receipt; garbage sub
   assert.equal(readTasksJson(s).reviewReceipts.at(-1).subject, null);
 });
 
-test('codex-consult reporting available:false mints ATTENDANCE-ONLY — a missing lens is not a fail', () => {
+test('consult reporting available:false mints ATTENDANCE-ONLY — a missing lens is not a fail', () => {
   // The loop never records an unavailable consult, so a schema-forced 'fail' minted here would
-  // strand an unconsumable fail receipt that anti-fold-blocks the honest pass after codex
-  // comes back at the same tree — the codex lens's own top finding on this feature.
+  // strand an unconsumable fail receipt that anti-fold-blocks the honest pass after the backend
+  // comes back at the same tree — the consult lens's own top finding on this feature.
   const s = scenario();
   const r = fire(s, 'review-receipt', {
-    hook_event_name: 'SubagentStop', agent_type: 'legion:codex-consult', agent_id: 'codex-1',
+    hook_event_name: 'SubagentStop', agent_type: 'legion:consult', agent_id: 'codex-1',
     agent_transcript_path: '/dev/null', stop_hook_active: false, cwd: s.worktree,
     last_assistant_message: '{"available":false,"verdict":"fail","findings":[],"raw":"codex CLI not found"}',
   });
   assert.equal(r.status, 0, r.stderr);
   const receipt = readTasksJson(s).reviewReceipts.at(-1);
   assert.equal(receipt.verdict, null, 'a missing lens has no verdict to certify');
-  assert.equal(receipt.role, 'codex-consult');
+  assert.equal(receipt.role, 'consult');
 });
 
 test('the transcript TAIL is the fallback source when last_assistant_message carries no verdict', () => {
@@ -524,7 +524,7 @@ test('the transcript TAIL is the fallback source when last_assistant_message car
 });
 
 test('available:false voids the verdict for the CONSULT LENS ONLY — any other reviewer keeps its fail', () => {
-  // The orphan-receipt argument is codex-consult's alone: the loop never records an unavailable
+  // The orphan-receipt argument is consult's alone: the loop never records an unavailable
   // consult, so its schema-forced 'fail' would strand an unconsumable receipt. `available` is not
   // in any other reviewer's contract, so honouring it there would let one off-contract field
   // retire the anti-fold rule — a later `review-record --verdict pass` at that subject and tree

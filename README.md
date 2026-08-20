@@ -40,6 +40,33 @@ Manual update:
 claude plugin marketplace update legion && claude plugin update legion@legion
 ```
 
+## Consult backend
+
+The second-opinion review lens defaults to the `codex` CLI. Configure globally via
+`/plugin` → *legion* → configure, or in `~/.claude/settings.json`:
+
+```json
+{
+  "pluginConfigs": {
+    "legion@legion": {
+      "options": {
+        "consult_backend": "xai",
+        "consult_model": "grok-4",
+        "consult_token_env": "XAI_API_KEY"
+      }
+    }
+  }
+}
+```
+
+- `consult_backend` — `codex` | `gemini` (CLIs) · `openai` | `google` | `xai` | `deepseek` | `mistral` (hosted APIs) · `api` (custom OpenAI-compatible endpoint).
+- `consult_model` — optional for the CLIs, required for API backends.
+- `consult_base_url`, `consult_token_env` — required for `api`; optional overrides for named providers (each has a default endpoint and token env var, e.g. `xai` → `XAI_API_KEY`).
+
+`consult_token_env` is the **name** of an env var — export the token itself in your shell
+(`export XAI_API_KEY=...`); legion never stores or prints the value. A missing CLI, token or
+model degrades the review (single lens, reported as such), never blocks it.
+
 ## Start a feature
 
 From a Claude Code session, in any repo:
