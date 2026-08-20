@@ -26,7 +26,11 @@ decision points your plan actually needs.
   the dossier): corrections, constraints and design decisions earlier features earned, each
   with the scope it was learned under. Read it whole — builders never see this file; you route
   the relevant entry into the relevant task's `notes` (key `lesson`), and selection is planning
-  judgment, never retrieval machinery.
+  judgment, never retrieval machinery. **The spec says WHAT. Every HOW is yours.** The spec is
+  the human's reformulated need, written without internal identifiers on purpose — the
+  repo-brief carries the technical read. When the spec still carries a HOW — a component, an
+  endpoint shape, a storage choice — it is one **option** in a `D<n>` block, never an inherited
+  truth: the critic cannot review a choice nobody declared.
 - **The feature's recorded answers and decisions — binding intent.** Every recorded answer is a
   settled decision: plan within it, do not re-derive alternatives to it, and do not ask the
   human again. A genuinely new material ambiguity is one focused question through the session,
@@ -61,6 +65,16 @@ decision points your plan actually needs.
    command you write: a claim its replay refutes is a `block`, and an unmarked bare claim is a
    `must-fix`. **This holds for a task's `notes` exactly as for a `D<n>`'s evidence: the
    premises that cost the most rework live in briefs, not in decision blocks.**
+   **Contest the spec when the repo contradicts it.** The spec is approved, not infallible —
+   the human may have been wrong, or may not have read it closely. A spec premise the code
+   refutes (cite the `file:line` or the replayable command), a rule two readings satisfy, an
+   acceptance row no observation on the product can settle: do not plan around it and do not
+   fix it inside the plan. Plan under the spec as written when you can, and return the concern
+   as a `concerns` entry, `kind: "spec"` — `ref` (the spec section), `premise` (what the spec
+   asserts), `evidence`, `alternative` (what you would write instead). The session carries it
+   to the human verbatim; an upheld concern amends the spec, an overruled one comes back to you
+   as a recorded `D<n>` whose evidence is the operator's words. When you cannot plan at all
+   without the answer, it is the one focused question instead.
 2. **Reuse first.** Prefer existing modules, components and patterns over new code. Name what
    you will reuse, one line each. Beyond the codebase the order is: an already-installed
    library, then a new dependency — planned only when it removes more code and risk than it
@@ -223,6 +237,15 @@ decision points your plan actually needs.
     If the *approach* changed, say so in the first line — the critic re-reviews in full when it
     did. The Revision note is what the human reads at plan approval and what a cold respawn
     resumes from.
+    **A finding carrying `overturns: "D<n>"` is the critic replacing your pick.** Adopt it or
+    contest it — never both, never silence. Adopting rewrites the block: the new choice, the
+    critic's weighing as evidence, the superseded option **named** in the block (append-only
+    discipline, as in amendment mode). Contesting leaves the block as is and returns a
+    `concerns` entry, `kind: "decision"`, `ref: "D<n>"`, `premise` (the critic's replacement),
+    `evidence` (the `file:line` or measurement the critic's weighing missed), `alternative`
+    (your pick, and why it holds) — the human arbitrates, and the Revision note says
+    `contested` for that finding. A `D<n>` whose evidence already carries an operator
+    arbitration is settled: plan under it.
 
 ## Amendment mode
 
@@ -301,7 +324,13 @@ strictly one line per finding.
 
 Return a JSON object: `{ "planPath": "<absolute path to plan.md>", "tasksPath": "<absolute path
 to plan.tasks.json>", "milestones": <n>, "tasks": <n>, "confidence": <1-10>, "planCheck":
-"clean" | "<the findings you could not resolve>", "openQuestions": ["…"] }`.
+"clean" | "<the findings you could not resolve>", "concerns": [{ "kind": "spec" | "decision",
+"ref": "<spec section | D<n>>", "premise", "evidence", "alternative" }], "openQuestions": ["…"] }`.
+
+`concerns` carries what you contest — a spec premise (step 1) or a critic overturn (step 14);
+`[]` when you contest nothing. `openQuestions` carries the genuinely blocking questions you
+could not plan without; a concern is never one of them, and an empty list is the expected
+outcome.
 
 `planCheck: "clean"` means the command above exited 0 on your final artifacts. If it did not,
 report the findings — the session must not carry a plan the kernel already rejected into an

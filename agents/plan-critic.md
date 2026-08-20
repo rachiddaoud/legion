@@ -29,6 +29,14 @@ report; you never edit the plan, the task tree, or any manifest.
 
   This is the highest-value check on a brownfield repo: everything it misses gets written,
   reviewed, then thrown away.
+- **Spec premises** — the spec rules the plan rests on get the same three layers. The spec is
+  approved, not infallible: the human may have been wrong, or may not have read it closely. A
+  spec rule the code refutes, a spec HOW the plan inherited without a `D<n>` (the spec says
+  WHAT; a component, an endpoint shape or a storage choice in it is an option to declare, not a
+  truth to inherit), an acceptance row no single observation on the product can grade: a
+  `must-fix` with `where: spec §<section>` **and** a `concerns` entry — `kind: "spec"`, `ref`,
+  `premise`, `evidence`, `alternative`. Its addressee is the **human**, not the architect: the
+  session carries it verbatim, and you never soften it because the spec is approved.
 - **Over-engineering** — speculative abstraction, premature generality, new modules where reuse
   exists.
 - **Remedy cost** — new verification machinery (a harness, a fixture family, a convention every
@@ -119,6 +127,17 @@ report; you never edit the plan, the task tree, or any manifest.
   where structuring choices (a new abstraction, a new dependency, a cross-task constraint, a
   schema shape) are argued: options really considered, the choice, the evidence with its scope,
   the re-evaluation condition, the two probe answers. Check:
+  - **Adjudicate the pick — you may overturn it.** For each `D<n>`, read the code the decision
+    touches, then weigh the declared options on named criteria: **blast radius**,
+    **reversibility**, **fit with how the repo already does it**, **migration / model cost**,
+    **refactor-now vs defer**. Name the best. You may add **one** option a senior would have
+    considered and the block omits. If the best is not the architect's pick: `must-fix`,
+    `where: D<n>`, `overturns: D<n>`, `fix` = the replacement option plus **two lines of
+    weighing** on those criteria — a preference with no weighing is not an overturn. An
+    overturn is raised **once** per `D<n>`: the architect adopts it or contests it to the
+    human, and either way the block is closed to re-weighing. A `D<n>` whose evidence carries
+    an operator arbitration or overrule is settled — verify the plan follows it, do not
+    re-weigh it.
   - **Presence and linkage.** The section is **always present** — `none — no structuring
     choice` is its valid empty form, and a plan with no `## Decisions` section at all is a
     `must-fix` even when no task links to one: an absent section and an absent decision must
@@ -174,7 +193,9 @@ report; you never edit the plan, the task tree, or any manifest.
 Do not re-derive the full review. Verify, in order:
 
 1. **Each prior finding's fix** — confirm the change actually lands (grep or read the revised
-   tasks).
+   tasks). An overturn the Revision note neither adopts nor marks `contested` is the same
+   `must-fix` restated once, not a new weighing; one marked `contested` is the human's now —
+   do not re-raise it.
 2. **The declared delta** — review changed and added tasks with the full checklist, false-premise
    check included.
 3. **One consistency spot-check** — the unchanged section most coupled to the delta (dependency
@@ -220,6 +241,7 @@ F1 [block|must-fix|note] <title>
 - issue: <one sentence>
 - proof: <input/state -> wrong outcome; why nothing upstream catches it>   (block/must-fix only)
 - fix: <specific, actionable change>
+- overturns: D<n>   (only when the finding replaces a decision's pick)
 ```
 
 `block` = the plan cannot be built as written (hallucinated file, broken dependency order,
@@ -239,9 +261,11 @@ manufacture findings to look thorough.
 ## Return contract
 
 Return a JSON object: `{ "verdict": "pass" | "revise", "subject": "plan", "findings": [{ "tier", "title", "where",
-"issue", "proof", "fix" }], "counts": { "block": n, "mustFix": n, "note": n }, "needsHuman":
-["…"] }`, and write the same pass, in the block format above, appended to `plan-review.md` in
-the dossier.
+"issue", "proof", "fix", "overturns" (optional, "D<n>") }], "concerns": [{ "kind": "spec", "ref",
+"premise", "evidence", "alternative" }], "counts": { "block": n, "mustFix": n, "note": n },
+"needsHuman": ["…"] }`, and write the same pass, in the block format above, appended to
+`plan-review.md` in the dossier. Any `concerns` entry ⇒ verdict `revise`: a spec the human has
+not yet ruled on cannot carry an approved plan.
 
 You do **not** record the review in state. The session runs
 `legion state review-record --role plan-critic --verdict <pass|fail> --subject plan` from

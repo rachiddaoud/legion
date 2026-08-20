@@ -258,11 +258,14 @@ instead of two approval round-trips for a contained change. Steps 1–6 are unch
 change as follows, and these forms **replace — never precede — the unfused steps above**:
 
 - Before the recap, draft the **mini-spec** into the dossier as the spec artifact. This is the
-  canonical mini-spec format, stated once: a **`## Digest` of ≤ 20 lines of prose** plus the
-  **acceptance rows** — the yardstick every later review and amendment grades against — and a
-  data-model or schema change, if there is one, still **named explicitly**, with the table or
-  diagram the quality floor triggers, as legal in a mini-spec as anywhere. No spec interview
-  and no long out-of-scope or process sections: on express the mini-spec IS the spec.
+  canonical mini-spec format, stated once: a **`## Digest` of ≤ 20 lines of prose** saying what
+  you understood, a **`## Assumptions`** section (what you assumed without asking — the spec
+  stage defines it, and it is never empty), plus the **acceptance rows** — the yardstick every
+  later review and amendment grades against — and a data-model or schema change, if there is
+  one, still **named explicitly**, with the table or diagram the quality floor triggers, as
+  legal in a mini-spec as anywhere. The spec stage's register rule applies unchanged: no
+  internal identifier, the technical read lives in `repo-brief.md`. No spec interview and no
+  long out-of-scope or process sections: on express the mini-spec IS the spec.
 - The recap (step 7) presents the intent **and** the mini-spec digest together; the single
   explicit yes covers both. A change that ships user-visible UI adds one line to that recap:
   an HTML mock (`mockups/<slug>.html`, the spec-stage rule below) can be drafted before the
@@ -296,10 +299,29 @@ no interaction. If it is not — the fused chain was interrupted, or a cascade d
 approval — write (or re-present) the spec here **at the mini-spec format defined at intake**,
 nothing more. Everything in this section applies to a mini-spec unchanged.
 
-1. Write the functional spec into the dossier: what changes for the user, business rules,
-   process, statuses, loading/empty/error behaviour, **acceptance rows** the product reviewer
-   will grade against, out-of-scope, any data-model or schema change **named explicitly** —
-   never hidden as an implementation detail — and any evidence artifact.
+1. Write the functional spec into the dossier. **The spec is your reformulation of the need,
+   written for the human at the gate** — what you understood, for whom, where the need comes
+   from — and the human reads it to catch what you misunderstood. It says WHAT; every HOW
+   belongs to the plan.
+   - **Register rule: no internal identifier.** No file path, component or symbol name, test
+     file, validator or schema name, database column, migration, library. What the intake read
+     learned of that kind goes to `repo-brief.md`, which the architect reads — a name in the
+     spec lends a false precision that hides a wrong understanding. What stays is the surface
+     the user or an external consumer sees, in their own terms: a public contract's shape, a
+     URL they type, a file they download.
+   - **A checklist, not a template** — a section exists only when there is something to say,
+     exactly as out-of-scope works today: context and origin, business rules, flows and screens
+     when there is UI, data and API *as the consumer sees them* when a contract changes — still
+     **named explicitly**, never hidden as an implementation detail — edge cases and
+     loading/empty/error states, constraints, out-of-scope, any evidence artifact.
+   - **`## Assumptions` — the questions you did not ask, with the answer you gave yourself.**
+     One line each: `<what you assumed> — instead of asking: <the question>`. Naming the
+     question is what stops a choice from dressing up as a fact. The human reads this section
+     first, and it is never empty.
+   - **Acceptance rows are observations the human can make on the product the feature ships**
+     — a screen, a response, a file it produces — never a command over the source tree
+     (`grep`, `typecheck`): those are gate checks and belong in a task's `validate`. The tree
+     is the product only when the feature's user is its developer.
 2. It opens with a **`## Digest` of ≤ 20 lines of prose** that passes the read-nothing-else
    test — the human at the gate may read nothing else; a visual the quality floor triggers (a
    schema table or diagram) is exempt from the count.
@@ -317,8 +339,11 @@ nothing more. Everything in this section applies to a mini-spec unchanged.
 4. **Sweep the spec before presenting it**, exactly as the plan critic sweeps the plan: no
    placeholder (`TBD`, `TODO`, "etc.", "as appropriate", "handle errors appropriately"), no step
    naming a file or symbol that does not exist, no two rules stating opposite things, no
-   acceptance row admitting two readings. Cite the line and resolve it in the spec — a digest
-   presented over a gap asks the human to approve a decision nobody made.
+   acceptance row admitting two readings — and the three this stage adds: no internal
+   identifier (move it to `repo-brief.md`), no acceptance row the human could not observe on
+   the product, and a `## Assumptions` section that is present and not empty. Cite the line
+   and resolve it in the spec — a digest presented over a gap asks the human to approve a
+   decision nobody made.
 5. `legion state artifact-record spec <path>`, present the digest, get an explicit yes, then
    `legion state decision-record spec`, `legion state stage-complete spec`,
    `legion state stage-enter plan`.
@@ -343,13 +368,35 @@ unreadable fails **closed**, refusing the spec ops in both siblings until it is 
 
 ### plan
 
-1. Dispatch **`legion:architect`** with the spec path, the dossier, the recorded answers, and
-   the project's `lessons.md` path when the file exists (it reads the file whole and routes the
-   relevant entries into task `notes`). A mock under `mockups/` is named in the dispatch too:
-   the human approved that surface, so the plan's UI tasks target it, not a reinvention.
+1. Dispatch **`legion:architect`** with the spec path, the dossier's `repo-brief.md` (the
+   technical read the spec deliberately does not carry), the dossier, the recorded answers,
+   and the project's `lessons.md` path when the file exists (it reads the file whole and routes
+   the relevant entries into task `notes`). A mock under `mockups/` is named in the dispatch
+   too: the human approved that surface, so the plan's UI tasks target it, not a reinvention.
    It writes `plan.md` + `plan.tasks.json` and runs `legion plan check --feature <name>` until
    clean. A plan that check rejects **never reaches the builder** — it goes back to the
    architect.
+   - **CONCERNS GO TO THE HUMAN — before the next kernel op.** The architect returns a
+     `concerns` list (and so does the critic, step 3): each entry contests something the human
+     approved — `kind: "spec"`, a spec premise the repo refutes, with `ref` / `premise` /
+     `evidence` / `alternative`; or `kind: "decision"`, a critic overturn of a `D<n>` the
+     architect judges wrong. Surface every entry to the human **verbatim**, with its evidence,
+     and let the human decide. Never answer one yourself and never pick a default — the human
+     may not have read the spec closely, and this is where they see what the repo said about
+     it. Three outcomes, each recorded where the next reader looks:
+     - **spec, upheld** — the spec was wrong: the Amendments **spec route** below, by
+       reference (`legion state stage-enter spec`, an `A<n>` block naming the concern's
+       section, re-record, cascade, re-approve), then back to this step with the resolution
+       in the architect's brief.
+     - **spec, overruled** — the spec stands: re-dispatch the architect with the operator's
+       words verbatim; it writes a `D<n>` whose options are the spec's premise and the
+       alternative, whose choice is the premise, and whose evidence is the operator's
+       overrule, dated and verbatim, beside the repo evidence that contradicted it.
+     - **decision, arbitrated** — the human picks between the critic's replacement and the
+       architect's pick; the architect re-plans under the arbitration and the `D<n>` records
+       it verbatim as evidence. A `D<n>` carrying an operator arbitration is **settled**: the
+       warm critic verifies the plan follows it and does not re-weigh it.
+     Every outcome is a lessons trigger (the Lessons section below).
 2. **Import the canonical task list — BEFORE any approval:**
    `legion plan check --feature <name> --import`. One command does both halves: it seeds
    `tasks.json` from `plan.tasks.json` **and** records the plan artifact, so there is no
@@ -375,16 +422,22 @@ unreadable fails **closed**, refusing the spec ops in both siblings until it is 
    plan-bound critic verdicts). The record consumes the review receipt the critic's stop just
    minted, so it only succeeds **after** a real critic dispatch on the current plan bytes — a
    refusal here means the critic never ran on this version of the plan.
-5. **REJECTION LOOP.** On `revise`: turn the findings into a change request, send it back to the
-   architect, have it append a Revision note, re-run `legion plan check --feature <name>
-   --import` (re-seeding the tasks and re-recording `plan.md` in one step), and re-review **warm —
-   the same critic that rejected the plan, its own findings as the checklist** (RR1). A fresh
-   critic only if that one is gone, and then its prompt carries the prior findings verbatim.
-   Repeat until the critic passes. Never approve past a failing critic, and never argue a
-   finding away on the architect's behalf.
+5. **REJECTION LOOP.** On `revise`: first route anything addressed to the human — a critic
+   `concerns` entry goes to the human (step 1's CONCERNS rule), never to the architect. Then
+   turn the remaining findings into a change request, send it back to the architect — a finding
+   carrying `overturns: "D<n>"` is one the architect **adopts or contests, never silently
+   ignores** (its Revision note says which; a contest comes back as a `kind: "decision"`
+   concern, for the human) — have it append a Revision note, re-run
+   `legion plan check --feature <name> --import` (re-seeding the tasks and re-recording
+   `plan.md` in one step), and re-review **warm — the same critic that rejected the plan, its
+   own findings as the checklist** (RR1). A fresh critic only if that one is gone, and then its
+   prompt carries the prior findings verbatim. Repeat until the critic passes. Never approve
+   past a failing critic, never argue a finding away on the architect's behalf, and never
+   answer a concern on the human's behalf.
 6. **PLAN APPROVAL — the human gate.** Present the plan **digest**, the milestone list, the test
-   seams, new dependencies, and the top risk. This is the one thing the human is guaranteed to
-   read. Get an explicit yes.
+   seams, new dependencies, the top risk — and every concern raised on the way with how it was
+   settled, and every `D<n>` the critic overturned. This is the one thing the human is
+   guaranteed to read. Get an explicit yes.
 7. On yes: `legion state decision-record plan`, then `legion state stage-complete plan`. That op
    independently requires a passing critic review **and** a hash-valid plan approval (on
    express, the approval alone — unless a critic verdict is on record, in which case a fail
@@ -839,7 +892,9 @@ define. What this section adds is the route and the discipline. Three fences fir
 - **A defect is not an amendment** — the plan was right, the code is not: that is the pre-merge
   REJECTION → FIXUP path (defect shape), or an ordinary build round.
 - **A design concern is not an amendment** — the repo contradicts a plan premise: the DESIGN
-  ROUTE in the build stage.
+  ROUTE in the build stage. **A spec concern the human upholds IS one** — the architect or the
+  critic found the repo contradicting the spec itself (the plan stage's CONCERNS rule): the
+  spec route below, the concern's section named in the `A<n>` motivation.
 - **A closed feature takes no amendment** — the kernel refuses every
   `legion state stage-enter` on a delivered or abandoned feature. New work after close is a new
   feature.
