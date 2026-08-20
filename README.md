@@ -59,8 +59,8 @@ The second-opinion review lens defaults to the `codex` CLI. Configure globally v
 }
 ```
 
-- `consult_backend` — `codex` | `gemini` (CLIs) · `openai` | `google` | `xai` | `deepseek` | `mistral` (hosted APIs) · `api` (custom OpenAI-compatible endpoint).
-- `consult_model` — optional for the CLIs, required for API backends.
+- `consult_backend` — `codex` | `gemini` | `agy` (CLIs; `agy` is Google's Antigravity CLI) · `openai` | `google` | `xai` | `deepseek` | `mistral` (hosted APIs) · `api` (custom OpenAI-compatible endpoint).
+- `consult_model` — optional for the CLIs, required for API backends. Unset on `agy` pins `gemini-3.7-flash-medium`.
 - `consult_base_url`, `consult_token_env` — required for `api`; optional overrides for named providers (each has a default endpoint and token env var, e.g. `xai` → `XAI_API_KEY`).
 
 `consult_token_env` is the **name** of an env var — export the token itself in your shell

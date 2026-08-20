@@ -153,7 +153,7 @@ test('the consult agent reads its config from user_config and pins ONE recipe pe
   assert.ok(consult.indexOf('RESOLVE YOUR BACKEND FIRST') < consult.indexOf('command -v codex'),
     'and it precedes it IN THE FILE — the ordering is the mechanism, not the wording');
 
-  // 2. Three recipes, each probed for and each pinned. A lens that falls back from one backend to
+  // 2. Four recipes, each probed for and each pinned. A lens that falls back from one backend to
   //    another returns a second opinion whose provenance nobody chose.
   assert.match(consult, /command -v codex/, 'codex recipe: the probe');
   assert.match(consult, /codex exec review --commit <SHA> --json -o/, 'codex recipe: the pinned command, unchanged');
@@ -167,6 +167,116 @@ test('the consult agent reads its config from user_config and pins ONE recipe pe
   assert.match(consult, /json_schema/, 'api recipe: the answer shape is demanded, not hoped for');
   assert.match(consult, /perl -e 'alarm 900; exec @ARGV'/, 'the CLI recipes keep the perl bound — `timeout` is absent on macOS');
   assert.match(consult, /--max-time 900/, 'and curl owns its own bound, since curl is the process there');
+  assert.match(consult, /command -v agy/, 'agy recipe: the probe');
+
+  // 2b. The agy recipe, SCOPED to its own section. 3d shares 3b's pinned question, its 200 KiB cap
+  //     and its refusal, so a matcher run over the whole file would stay green with 3d deleted.
+  const iAgy = consult.indexOf('### 3d. Recipe `agy`');
+  const iShared = consult.indexOf('### Shared from here on');
+  assert.ok(iAgy > 0 && iShared > iAgy, 'the agy recipe must exist, and before the shared steps');
+  const agy = consult.slice(iAgy, iShared);
+  assert.match(agy, /agy -p "\$\(cat "\$DIR\/q\.txt"/,
+    'agy recipe: the prompt rides on argv — stdin exists only under --input-format stream-json, which costs the envelope');
+  assert.match(agy, /--output-format json\b/, 'agy recipe: the JSON envelope the outcome table reads');
+  assert.match(agy, /--json-schema "\$DIR\/schema\.json"/,
+    'agy recipe: the answer shape is enforced, and structured_output is what conforms to it');
+  assert.match(agy, /--model gemini-3\.7-flash-medium/,
+    'agy recipe: an unset consult_model PINS a model — an upstream default that moves would change what the review is worth');
+  assert.match(agy, /--disable-slash-commands/,
+    'agy recipe: diff content beginning with `/` must not expand into a command');
+  // BOTH BOUNDS, PINNED TOGETHER, because they do two different jobs. --print-timeout is the only
+  // one that can return a parseable envelope; the SIGKILL watchdog is the only one that terminates
+  // a hang nothing else classifies. MEASURED on the real binary, network black-holed, varying only
+  // the flag: the run returned at 1m40.194s under --print-timeout 15s and 1m40.200s under
+  // --print-timeout 300s. Identical, so the AUTHENTICATION path runs on agy's own fixed ~100 s
+  // deadline, outside the flag entirely, and ends in a structured envelope the table maps to
+  // not-authenticated — that class needs no watchdog. The watchdog is a BACKSTOP for a hang that
+  // neither fails auth nor completes, a class no measurement establishes; what is established is
+  // that agy survives SIGALRM (so 3b's perl alarm cannot be the outer bound) and that an
+  // unattended loop has nothing else to stop such a hang if one exists.
+  assert.match(agy, /--print-timeout 900s/, 'agy recipe: the inner, structured deadline');
+  assert.match(agy, /sleep 1080; kill -9 "\$AGY"/,
+    'agy recipe: the outer SIGKILL backstop, since agy survives the SIGALRM that bounds 3a and 3b');
+  // ORDERING, AND ONLY ORDERING. The outer bound must stay above the inner one or SIGKILL pre-empts
+  // the --print-timeout return on a slow-but-authenticated run, destroying the structured envelope
+  // that is the inner bound's whole payoff and putting the `timeout waiting for response` row out
+  // of reach. How much cushion agy needs to serialize out.json and exit is NOT derivable from
+  // anything measured, so no margin is asserted here — an earlier version of this line asserted a
+  // 100 s gap on a pre-auth-latency model that a second measurement refuted. The constants
+  // themselves are pinned by the two string matches above; this pins the relationship between them.
+  const inner = Number(agy.match(/--print-timeout (\d+)s/)[1]);
+  const outer = Number(agy.match(/sleep (\d+); kill -9/)[1]);
+  assert.ok(outer > inner, `the watchdog must not pre-empt --print-timeout (inner ${inner}s, outer ${outer}s)`);
+  assert.match(agy, /LEGION-DIFF-OVER-CAP/, 'agy recipe: 3b\'s 200 KiB cap, unchanged');
+  assert.match(agy, /exit 3/, 'and its guard — the run stops before a byte reaches the backend');
+  // Prohibitions asserted as WRITTEN TEXT, in the --yolo style above: a bare doesNotMatch would
+  // trip on the prohibition itself and teach the next editor to delete the sentence.
+  assert.match(agy, /Never `--dangerously-skip-permissions`/,
+    'agy recipe: the read-only posture — measured, tools are denied by default and this lens needs none');
+  assert.match(agy, /Never add `--mode plan`/,
+    'agy recipe: measured inert beside --disable-slash-commands, so the written prohibition is what stops it being re-added');
+  // THE ROWS THEMSELVES, not the paragraphs around them. Everything below is scoped to the table:
+  // the prose above it explains all of this in the same words, so a section-wide matcher goes green
+  // against a table that has stopped saying it — which is exactly what this pin caught once.
+  const iTable = agy.indexOf('| signal | `unavailable` |');
+  assert.ok(iTable > 0, 'the agy recipe must carry its own outcome table');
+  const tableEnd = agy.indexOf('\n\n', iTable);
+  const table = agy.slice(iTable, tableEnd < 0 ? undefined : tableEnd);
+  // ROW ORDER IS THE RULE: the auth-stall message contains the words "timed out", so it matches the
+  // timeout row too. First match wins, so the auth row must sit ABOVE it — inverted, a stale login
+  // reads as a slow model and the caller re-dispatches instead of latching the lens off.
+  const authRow = table.indexOf('| `error` is exactly `authentication failed or timed out`');
+  const timeoutRow = table.indexOf('| `error` is exactly `timeout waiting for response`');
+  assert.ok(authRow >= 0 && timeoutRow > 0, 'both measured error strings must be rows of the outcome table');
+  assert.ok(authRow < timeoutRow, 'the auth row must precede the timeout row — first match wins');
+  // THE STATUS IS READ OFF $RC, NEVER $?. 3d backgrounds its backend, so the value $? holds after
+  // the block belongs to `kill "$WATCHDOG"` — MEASURED with a stand-in: on the watchdog path
+  // RC=137 while $? is 1, on a clean run RC is the real status while $? is 0. 3a and 3b run in the
+  // foreground and legitimately say "exit 127"; a row here phrased their way would be read against
+  // the wrong variable, match nothing, and report every SIGKILL as `other`.
+  assert.match(table, /`\$RC` is 137/, 'the watchdog exit maps to timeout, named as the variable that actually holds it');
+  assert.match(table, /`\$RC` is 127/, 'and so does cli-missing');
+  assert.doesNotMatch(table, /\| exit \d/, 'no row may name a bare exit status — $? there is the watchdog kill\'s, not agy\'s');
+  assert.match(agy, /Read the exit status off `\$RC`, never off `\$\?`/,
+    'and the rule is stated, since 3b two sections up teaches the opposite habit');
+  // THE ONE PLACE 3d DEPARTS FROM 3b, and the one a tidy-up would "fix" back into a credential
+  // leak: on the auth path agy writes a Google OAuth URL to stderr carrying a live code_challenge
+  // and client_id, so `reason` is built from the structured `error` field and never from stderr.
+  assert.match(agy, /`error` field and nothing else — NEVER stderr/,
+    'agy recipe: reason comes from the envelope, not from the stream that carries the credential');
+  assert.match(agy, /code_challenge/, 'and the measured reason why is written down beside it');
+  // …and the ONE row that rule cannot serve: a SIGKILLed run wrote no envelope, so there is no
+  // `error` field to quote and the only text on disk is the err.txt that may hold the challenge.
+  // Without a literal pinned here the agent has nothing to put in a `reason` the contract requires,
+  // and the nearest precedent is 3b's "first ~300 characters of stdout and stderr" — the leak.
+  assert.match(agy, /no envelope was written/,
+    'the SIGKILL row carries a literal reason, or the required field resolves into the forbidden file');
+  assert.match(agy, /Parse `structured_output`, never `response`/,
+    'agy recipe: `response` wraps the answer in toolAction/toolSummary noise; the schema-conforming field is the contract');
+
+  // 2c. THE THREE INVARIANTS THE STRING PINS CANNOT SEE. 3d holds a COPY of 3b's question and of
+  //     3c's schema, and the ONE translation table at step 5 is what a drift between them breaks —
+  //     silently, and from the other end: someone editing 3b or 3c has no reason to open 3d.
+  const heredoc = (section, file, what) => {
+    const open = `cat > "$DIR/${file}" <<'LEGION_EOF'\n`;
+    const i = section.indexOf(open);
+    assert.ok(i > 0, `${what}: no ${file} heredoc`);
+    const end = section.indexOf('\n   LEGION_EOF', i);
+    assert.ok(end > i, `${what}: unterminated ${file} heredoc`);
+    return section.slice(i + open.length, end);
+  };
+  const iGemini = consult.indexOf('### 3b. Recipe `gemini`');
+  const iApi = consult.indexOf('### 3c. Recipe `api`');
+  assert.ok(iGemini > 0 && iApi > iGemini && iAgy > iApi, 'the recipes must run 3b, 3c, 3d in order');
+  assert.equal(heredoc(agy, 'q.txt', '3d'), heredoc(consult.slice(iGemini, iApi), 'q.txt', '3b'),
+    'the pinned question must be 3b\'s BYTE FOR BYTE — it defines the priority polarity the shared table reads');
+  const payload = consult.slice(iApi, iAgy).match(/```json\n([\s\S]*?)```/);
+  assert.ok(payload, '3c must carry its payload as a json block');
+  assert.deepEqual(
+    JSON.parse(heredoc(agy, 'schema.json', '3d').replace(/^ {3}/gm, '')),
+    JSON.parse(payload[1].replace(/^ {3}/gm, '')).response_format.json_schema.schema,
+    '3d\'s --json-schema file must BE 3c\'s schema — one shape, or step 5 is translating two',
+  );
 
   // 3. The provider table is a table of PROVIDERS. Losing a row silently turns a named backend
   //    into a misconfiguration for an operator who spelled it exactly as the manifest told them.
@@ -175,7 +285,7 @@ test('the consult agent reads its config from user_config and pins ONE recipe pe
   }
   const backends = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
     .userConfig.consult_backend.description.match(/[a-z]+/g);
-  for (const b of ['codex', 'gemini', 'openai', 'google', 'xai', 'deepseek', 'mistral', 'api']) {
+  for (const b of ['codex', 'gemini', 'agy', 'openai', 'google', 'xai', 'deepseek', 'mistral', 'api']) {
     assert.ok(backends.includes(b), `the manifest description must offer ${b}`);
     assert.ok(consult.includes(`\`${b}\``), `and the agent must route ${b} to a recipe`);
   }
@@ -183,7 +293,8 @@ test('the consult agent reads its config from user_config and pins ONE recipe pe
   // 4. The refusals. An unknown backend, a missing field and a Claude model are all the same
   //    outcome — a lens that says so rather than one that quietly reviews with something else.
   assert.match(consult, /misconfigured/, 'the fourth durable cause the agent may report');
-  assert.match(consult, /\/claude\/i/, 'the independence guard: a Claude model on an API backend is not a second opinion');
+  assert.match(consult, /\/claude\/i/,
+    'the independence guard: a Claude model on an API backend — or on agy, which serves them too — is not a second opinion');
 
   // 5. The token. legion stores the env var NAME; the value never enters a message, a log, `raw`
   //    or `reason`, which is the only reason it is safe to configure this from a plugin dialog.
