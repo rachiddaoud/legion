@@ -682,8 +682,9 @@ test('/api/feature is T39\'s projection verbatim — the server derives nothing'
         // The git block is the SEAM's verdict, and the commit rows reached the activity feed.
         assert.equal(r.body.feature.git.available, true);
         assert.ok(r.body.feature.activity.some((a) => a.kind === 'commit' && /work one/.test(a.label)));
-        // Approvals are RECORDED, never valid — the rule the whole viewer exists to obey.
-        assert.match(r.body.feature.approvalsCaveat, /recorded != valid/);
+        // Approvals are RECORDED, never valid — the rule the whole viewer exists to obey. The
+        // body carries the stored facts and the kernel's live answer, and no prose about either.
+        assert.ok(!('approvalsCaveat' in r.body.feature));
 
         // A feature that does not exist is a 404 that names what was asked.
         const gone = await getJson(s.base, '/api/feature?org=default&project=proj&name=nope');

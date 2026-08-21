@@ -37,14 +37,6 @@ export function Insights({ data }: { data: InsightsResponse }) {
 
   return (
     <>
-      <p className="muted" style={{ marginTop: 0 }}>
-        Over {data.population.features} feature{data.population.features === 1 ? '' : 's'} registered on this machine
-        ({data.population.readable} readable, {data.population.unreadable} unreadable
-        {data.population.org ? `, org ${data.population.org}` : ', all orgs'}) and {data.population.tasks ?? 0} recorded
-        tasks. Every number below is computed server-side by the one projection module and rendered here without
-        recomputation. Percentiles are nearest-rank: nothing is interpolated or smoothed.
-      </p>
-
       <div className="tiles">
         {VIEWER_STATUSES.filter((s: ViewerStatus) => data.outcomes[s] > 0).map((s) => (
           <div className="tile" key={s}>
@@ -130,11 +122,6 @@ export function Insights({ data }: { data: InsightsResponse }) {
           </div>
         )}
       </Section>
-
-      <p className="muted">
-        Cost, token counts and a waiting-versus-processing split are not shown, and there is no placeholder for them:
-        nothing in legion3 records them, so there is no honest number to render.
-      </p>
     </>
   );
 }

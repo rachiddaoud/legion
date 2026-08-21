@@ -25,10 +25,6 @@ import type {
 export const FIXTURE_NOW = '2026-07-31T11:00:00.000Z';
 const T = (hoursAgo: number) => new Date(Date.parse(FIXTURE_NOW) - hoursAgo * 3_600_000).toISOString();
 
-export const CAVEAT =
-  'recorded != valid — an artifact edit invalidates deterministically; the kernel decides at use '
-  + 'time, and its refusal is the answer.';
-
 const noReceipt: Receipt = {
   present: false, declaredCommands: null, weak: false, tier: null, head: null, treeHash: null, at: null,
 };
@@ -117,7 +113,6 @@ function view(s: FeatureSummary, over: Partial<FeatureView> = {}): FeatureView {
       spec: { at: T(21), subjectHash: 'sub-spec-bbbb' },
       plan: { at: T(13), subjectHash: 'sub-plan-cccc' },
     },
-    approvalsCaveat: CAVEAT,
     reviews: [
       { role: 'code-reviewer', verdict: 'fail', subject: 'task:T1', at: T(10) },
       { role: 'code-reviewer', verdict: 'pass', subject: 'task:T1', at: T(9) },

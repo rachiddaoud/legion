@@ -53,7 +53,6 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { fixture, planTask, NOW } from '../helpers/fixture.mjs';
 import { createViewerServer } from '../../src/cli/_viewer/server.mjs';
-import { APPROVALS_CAVEAT } from '../../src/cli/_viewer/projection.mjs';
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url)))); // test/viewer/x -> repo root
 const DIST = join(ROOT, 'viewer', 'dist');
@@ -326,7 +325,7 @@ test('Features: all four are listed, and the unreadable one renders distinctly w
   });
 });
 
-test('FeatureDetail/Overview: the spine, the RECORDED approval caveat, and session presence as a recorded fact', { skip }, async () => {
+test('FeatureDetail/Overview: the spine, the RECORDED approvals, and session presence as a recorded fact', { skip }, async () => {
   await withUi(detail('f-visual'), async (page) => {
     await page.locator('ol.spine').waitFor();
     const spine = await page.locator('ol.spine').innerText();
@@ -335,13 +334,6 @@ test('FeatureDetail/Overview: the spine, the RECORDED approval caveat, and sessi
     assert.match(spine, /completed/); // intake was really completed by the kernel op
     assert.match(spine, /current/);
 
-    // THE CAVEAT IS THE SERVER'S SENTENCE, rendered verbatim under a heading that says RECORDED.
-    const caveat = page.locator('p.caveat').first();
-    await caveat.waitFor();
-    const caveatText = await caveat.innerText();
-    assert.match(caveatText, /Recorded, not valid\./);
-    assert.ok(caveatText.includes(APPROVALS_CAVEAT), 'the rendered caveat is not the projection\'s string');
-
     // RECORDED and VALID-NOW are two columns, never one green tick. The recorded row carries a time
     // and a subject hash; the kernel's live answer sits beside it, labelled as asked just now.
     const approvals = sect(page, 'Approvals — recorded');
@@ -349,8 +341,10 @@ test('FeatureDetail/Overview: the spine, the RECORDED approval caveat, and sessi
     assert.match(approvalsText, /intake/);
     assert.match(approvalsText, /The kernel, asked just now/i); // the th is text-transform: uppercase
     assert.match(approvalsText, /still binds/);
-    // The word "valid" appears in the caveat and NOWHERE as a verdict on a recorded row.
+    // "valid" is that column's business and nothing else's: no verdict on a recorded row, and no
+    // preamble paragraph above the table saying in prose what the column says per row.
     assert.doesNotMatch(approvalsText, /\bapproved\b/i);
+    assert.equal(await approvals.locator('p.caveat').count(), 0);
 
     // Session presence, as RECORDED: the id and the manifest-write facts, with no liveness claim
     // anywhere on the panel (the c13b prose trim removed the explainer; the ABSENCE of "running"/
@@ -361,11 +355,13 @@ test('FeatureDetail/Overview: the spine, the RECORDED approval caveat, and sessi
     assert.match(sessionsText, /last manifest write/i);
     assert.doesNotMatch(sessionsText, /\b(running|working|live)\b/i);
 
-    // The kernel's live verdict is a panel of ITS OWN, and it names the next unsatisfied stage the
-    // kernel picked — not one this client ordered.
+    // The kernel's live verdict is a panel of ITS OWN, and it gives that verdict ONCE. The stage
+    // the kernel picked as next unsatisfied IS this feature's stage, so a second paragraph would
+    // print the reason already beside it, word for word.
     const now = await page.locator('.lifecycle-now').innerText();
-    assert.match(now, /satisfied/);
-    assert.match(now, /Next unsatisfied:\s*spec/);
+    assert.match(now, /Stage\s*spec/);
+    assert.match(now, /not satisfied/);
+    assert.doesNotMatch(now, /Next unsatisfied/);
   });
 });
 
@@ -467,11 +463,13 @@ test('Insights: every tile carries its denominator', { skip }, async () => {
     assert.match(all, /Closed in 7d/i);
     // The other populations are stated in words rather than left implicit under a percentile.
     assert.match(all, /4 tasks across 3 readable features\./);
-    // Cost and tokens have no source in legion3, so there is no tile and no placeholder for them —
-    // only a sentence saying they are absent and why. The absence is the claim under test.
+    // Cost and tokens have no source in legion3, so there is no tile and no placeholder for them.
     assert.equal(await page.locator('.tile', { hasText: /cost|token/i }).count(), 0);
-    assert.match(all, /Cost, token counts and a waiting-versus-processing split are not shown/);
     assert.doesNotMatch(all, /\$[0-9]/);
+    // The screen opens on those numbers and ends on its last table: neither end explains to the
+    // operator how the numbers were computed or why a figure they did not ask for is missing.
+    assert.doesNotMatch(all, /Percentiles are nearest-rank/);
+    assert.doesNotMatch(all, /Cost, token counts and a waiting-versus-processing split are not shown/);
   });
 });
 
@@ -486,7 +484,9 @@ test('the empty home renders the honest All-clear, not an error and not a spinne
     assert.equal(await page.locator('[role="alert"]').count(), 0);
     assert.doesNotMatch(text, /Loading /);
     // …and the connection is healthy, which is what distinguishes "empty" from "unreachable".
-    assert.match(await page.locator('.conn').innerText(), /read-only · loopback/);
+    const conn = await page.locator('.conn').innerText();
+    assert.match(conn, /connected/);
+    assert.doesNotMatch(conn, /loopback|read-only/);
   }, { home: world.empty });
 });
 
@@ -508,6 +508,10 @@ test('the unreachable server is NAMED, the last good read is kept, and nothing s
     // empty world that would read as "you have no features".
     await page.getByRole('button', { name: 'default/proj/f-active' }).first().waitFor();
     assert.doesNotMatch(await bodyText(page), /Loading the feature inventory/);
+
+    // Health is polled every 30s, and a re-focused tab re-reads immediately (App's header).
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.locator('.conn', { hasText: 'unreachable' }).waitFor({ timeout: 15_000 });
   });
 });
 

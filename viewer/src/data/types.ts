@@ -205,7 +205,8 @@ export interface TaskDetail {
  *  hash and at are null, and nothing about its bytes is claimed. */
 export interface ArtifactRef { path: string | null; inside: boolean; hash: string | null; at: string | null; recorded: boolean }
 
-/** RECORDED, never valid. There is deliberately no `valid` key — see `approvalsCaveat`. */
+/** RECORDED, never valid. There is deliberately no `valid` key: whether an approval still binds
+ *  is the kernel's live answer, and it arrives per kind in `lifecycleNow.approvalsValidNow`. */
 export interface ApprovalRef { at: string | null; subjectHash: string | null }
 
 export type ActivityKind =
@@ -250,8 +251,6 @@ export interface FeatureView extends FeatureSummary {
   tasksDetail: TaskDetail[];
   artifacts: Record<string, ArtifactRef>;
   approvals: Record<string, ApprovalRef>;
-  /** shipped IN the DTO so no client can render an approval without it (projection.mjs) */
-  approvalsCaveat: string;
   reviews: Review[];
   boundaryReceipt: Receipt;
   /** TIER-KEYED, and NOT a string: `feature start` pins one hash PER GATE TIER

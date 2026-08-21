@@ -10,6 +10,11 @@
 // (decision 9), so there is no `—` placeholder for them either — a dash implies a number that
 // could arrive, and none can.
 //
+// `ApprovalsCaveat` IS GONE THE SAME WAY, and the fact it carried is not: it rendered a paragraph
+// warning that a recorded approval may no longer bind, above a table whose last column answers
+// exactly that, per row, from the kernel asked on this request. A preamble that repeats a column
+// is space the rows were owed.
+//
 // NOTHING HERE DERIVES LIFECYCLE STATE. Every component takes recorded facts and renders them.
 // The spine in particular is built from `stageHistory` / `completedStages` / the current `stage` /
 // the KERNEL's own `nextUnsatisfied` verdict — it does NOT carry a copy of the kernel's STAGES
@@ -22,6 +27,7 @@ import type {
   Attention, FeatureView, LifecycleNow, Receipt, ViewerStatus,
 } from '../data/types';
 import { STATUS_CLASS, STATUS_LABELS } from '../data/types';
+import { showNextUnsatisfied } from '../lib/shell.mjs';
 
 const STATUS_ICON: Record<string, string> = { attn: '●', bad: '■', good: '✓', muted: '○', run: '◐' };
 
@@ -169,6 +175,7 @@ export function LifecycleNowPanel({ now }: { now: LifecycleNow }) {
       </p>
     );
   }
+  const next = showNextUnsatisfied(now) ? now.nextUnsatisfied : null;
   return (
     <div className="lifecycle-now">
       <p>
@@ -177,8 +184,8 @@ export function LifecycleNowPanel({ now }: { now: LifecycleNow }) {
           ? <span className="verdict-badge verdict-pass">satisfied</span>
           : <><span className="verdict-badge verdict-fail">not satisfied</span> — {now.why}</>}
       </p>
-      {now.nextUnsatisfied && (
-        <p>Next unsatisfied: <span className="mono">{now.nextUnsatisfied.stage}</span> — {now.nextUnsatisfied.why}</p>
+      {next && (
+        <p>Next unsatisfied: <span className="mono">{next.stage}</span> — {next.why}</p>
       )}
     </div>
   );
@@ -219,12 +226,6 @@ export function ReceiptDetail({ receipt }: { receipt: Receipt }) {
       {receipt.allowConfig && <div><dt>allowConfig</dt><dd className="mono">true</dd></div>}
     </dl>
   );
-}
-
-/** THE approvals caveat, rendered from the string the SERVER shipped — never re-worded here, so
- * there is exactly one wording of "recorded is not valid" in the product. */
-export function ApprovalsCaveat({ caveat }: { caveat: string }) {
-  return <p className="caveat" role="note"><strong>Recorded, not valid.</strong> {caveat}</p>;
 }
 
 // --- load / empty states (VF19) ----------------------------------------------------------------------

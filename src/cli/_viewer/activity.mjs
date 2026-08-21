@@ -103,7 +103,8 @@ export function featureActivity({ feature, tasks = null, commits = [] } = {}) {
   }
   // Approvals are RECORDED facts here exactly as everywhere else in this viewer: the row says one
   // was recorded at a time, and says nothing about whether it still validates (that is a hash
-  // comparison the kernel performs at the moment of use — see projection.mjs APPROVALS_CAVEAT).
+  // comparison the kernel performs at the moment of use, reported per approval under
+  // `lifecycleNow.approvalsValidNow`).
   for (const [kind, appr] of Object.entries(tasks?.approvals ?? {})) {
     push(dated(appr?.at), 'approval', `${kind} decision recorded`);
   }

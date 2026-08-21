@@ -10,8 +10,8 @@
 // are not in the DTO, the mutation methods are not on the data source, and the routes do not exist
 // on the server. Orchestration lives in the session (PLAN-V3 decision 12a).
 //
-// APPROVALS RENDER AS RECORDED. The panel shows `{at, subjectHash}` — what tasks.json stores — under
-// the server's own caveat string, and beside it, separately labelled, the kernel's LIVE verdict from
+// APPROVALS RENDER AS RECORDED. The panel shows `{at, subjectHash}` — what tasks.json stores — and
+// beside it, separately labelled, the kernel's LIVE verdict from
 // `lifecycleNow.approvalsValidNow`, which was computed by CALLING approvalValid on this request. The
 // two are never merged into one green tick: a recorded approval is a fact about a hash at a moment,
 // and whether it still binds is a comparison the kernel performs at the moment of use.
@@ -31,7 +31,7 @@ import type {
 } from '../data/types';
 import { ACTIVITY_KINDS, isUnreadable, mrRef } from '../data/types';
 import {
-  ApprovalsCaveat, AttentionRow, Empty, LifecycleNowPanel, Loading, RawStatusNote, ReceiptBadge,
+  AttentionRow, Empty, LifecycleNowPanel, Loading, RawStatusNote, ReceiptBadge,
   ReceiptDetail, RelTime, Section, Spine, StatusPill, exactTime,
 } from '../components/ui';
 import { Markdown } from '../components/Markdown';
@@ -39,8 +39,8 @@ import { artifactUrl, isHtml, isMarkdown, isServableImage, resolveArtifactPath }
 import { clipNote, clipRows, diffSummary, fileStatus, parsePatch } from '../lib/diff-view.mjs';
 import { getHighlighter, langOfPath } from '../lib/highlight';
 import { safeHref } from '../lib/safe-href.mjs';
+import { TABS } from '../lib/shell.mjs';
 
-const TABS = ['Overview', 'Artifacts', 'Activity', 'Changes'] as const;
 type Tab = (typeof TABS)[number];
 
 /** A dossier that would not parse still gets a page — the same honest "here is why" the inventory
@@ -186,7 +186,6 @@ function OverviewTab({ view }: { view: FeatureView }) {
 
       <Section title="Approvals — recorded">
         <div className="card">
-          <ApprovalsCaveat caveat={view.approvalsCaveat} />
           {approvalKinds.length === 0 ? <p className="muted" style={{ margin: 0 }}>No approval is recorded for this feature.</p> : (
             <div className="tbl-wrap">
               <table className="tbl">
@@ -224,18 +223,6 @@ function OverviewTab({ view }: { view: FeatureView }) {
           </dl>
         </div>
       </Section>
-
-      {view.initiative && (
-        <Section title="Initiative">
-          <div className="card">
-            <dl className="kv">
-              <div><dt>id</dt><dd className="mono">{view.initiative.id}</dd></div>
-              {view.initiative.role && <div><dt>role</dt><dd className="mono">{String(view.initiative.role)}</dd></div>}
-              {view.initiative.primary && <div><dt>primary</dt><dd className="mono">{String(view.initiative.primary)}</dd></div>}
-            </dl>
-          </div>
-        </Section>
-      )}
     </>
   );
 }
@@ -698,13 +685,14 @@ function ChangesTab({ view, id, source }: { view: FeatureView; id: FeatureId; so
 
 // --- the screen ---------------------------------------------------------------------------------------
 
-export function FeatureDetail({ view, id, source, onBack }: {
+export function FeatureDetail({ view, id, tab, source, onTab, onBack }: {
   view: FeatureDetailView;
   id: FeatureId;
+  tab: Tab;
   source: ViewerDataSource;
+  onTab: (t: Tab) => void;
   onBack: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>('Overview');
   if (isUnreadable(view)) return <UnreadablePage row={view} onBack={onBack} />;
 
   const onTabKey = (e: React.KeyboardEvent, i: number) => {
@@ -715,7 +703,7 @@ export function FeatureDetail({ view, id, source, onBack }: {
           : e.key === 'End' ? n - 1 : -1;
     if (j < 0) return;
     e.preventDefault();
-    setTab(TABS[j]);
+    onTab(TABS[j]);
   };
 
   return (
@@ -743,7 +731,7 @@ export function FeatureDetail({ view, id, source, onBack }: {
             aria-controls="detail-panel"
             tabIndex={tab === t ? 0 : -1}
             onKeyDown={(e) => onTabKey(e, i)}
-            onClick={() => setTab(t)}
+            onClick={() => onTab(t)}
           >
             {t}
           </button>

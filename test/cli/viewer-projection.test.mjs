@@ -34,7 +34,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixture, planTask, NOW } from '../helpers/fixture.mjs';
 import {
-  APPROVALS_CAVEAT, ATTENTION_KINDS, DRAFT_FILENAMES, KERNEL_STATUSES, QUIET_AFTER_HOURS,
+  ATTENTION_KINDS, DRAFT_FILENAMES, KERNEL_STATUSES, QUIET_AFTER_HOURS,
   RECENT_OUTCOME_DAYS, VIEWER_STATUSES, featureSummaries, featureView, groupByInitiative, insights,
 } from '../../src/cli/_viewer/projection.mjs';
 import { ARTIFACT_KINDS } from '../../src/kernel/state.mjs';
@@ -61,16 +61,13 @@ const patch = (dir, file, fn) => writeManifest(dir, file, fn(readManifest(dir, f
 const keys = (rows) => rows.map((r) => r.key).sort();
 const HOUR = 3_600_000;
 
-test('the vocabularies are closed sets and the caveat is the hook\'s wording', () => {
+test('the vocabularies are closed sets', () => {
   assert.deepEqual(VIEWER_STATUSES,
     ['delivered', 'abandoned', 'init-failed', 'blocked', 'active', 'unreadable', 'unknown']);
   assert.deepEqual(KERNEL_STATUSES, ['active', 'initialization_failed', 'delivered', 'abandoned']);
   assert.deepEqual(ATTENTION_KINDS, ['open-question', 'init-failed', 'unreadable-manifest', 'quiet']);
   assert.equal(QUIET_AFTER_HOURS, 24);
   assert.equal(RECENT_OUTCOME_DAYS, 7);
-  // The rule this whole viewer exists to obey: an approval is RECORDED, never VALID.
-  assert.match(APPROVALS_CAVEAT, /recorded != valid/);
-  assert.match(APPROVALS_CAVEAT, /the kernel decides at use time/);
   // No lifecycle state the manifests cannot support (header: there is no source for either).
   assert.ok(!VIEWER_STATUSES.includes('stalled'));
   assert.ok(!VIEWER_STATUSES.includes('running'));
@@ -272,8 +269,10 @@ test('approvals render RECORDED; validity comes from CALLING the kernel and dies
     assert.deepEqual(Object.keys(before.approvals), ['intake']);
     assert.deepEqual(Object.keys(before.approvals.intake).sort(), ['at', 'subjectHash']);
     assert.equal(before.approvals.intake.at, NOW);
-    assert.equal(before.approvalsCaveat, APPROVALS_CAVEAT);
     assert.ok(!/valid/i.test(JSON.stringify(before.approvals)));
+    // The DTO ships no prose about the difference either: whether an approval still binds is
+    // `approvalsValidNow` below, per kind, and there is nowhere else for a client to read it.
+    assert.ok(!('approvalsCaveat' in before), 'the DTO still ships a caveat string');
     // COMPUTED NOW, by the kernel's own approvalValid — the intake row re-derives satisfied.
     assert.equal(before.lifecycleNow.available, true);
     assert.equal(before.lifecycleNow.approvalsValidNow.intake, true);

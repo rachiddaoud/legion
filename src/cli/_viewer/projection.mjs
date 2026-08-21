@@ -25,10 +25,9 @@
 // this kernel knows is a feature this projection cannot place, and saying so is the answer.
 //
 // RECORDED IS NOT VALID, EVERYWHERE. `approvals` renders {at, subjectHash} — the facts tasks.json
-// stores — and carries APPROVALS_CAVEAT so no client can render an approval without the caveat
-// hooks/session-start.mjs already prints. Validity is a HASH COMPARISON the kernel performs at
-// the moment of use, so where this file needs it (the informational next-unsatisfied line) it
-// CALLS approvalValid/stageSatisfied/unsatisfiedPrefix from src/kernel/state.mjs, live, on this
+// stores — and nothing more. Validity is a HASH COMPARISON the kernel performs at the moment of
+// use, so where this file needs it (the informational next-unsatisfied line) it CALLS
+// approvalValid/stageSatisfied/unsatisfiedPrefix from src/kernel/state.mjs, live, on this
 // request, under `lifecycleNow` — a block named for the fact that it is computed now and stored
 // nowhere. Re-implementing any of those three here would be the drift the kernel's own header
 // forbids: two definitions of "satisfied" is one definition too many. A DRAFT is one step
@@ -95,13 +94,6 @@ export const QUIET_AFTER_HOURS = 24;
 
 /** The "recent outcomes" window Operations and Insights both report over. */
 export const RECENT_OUTCOME_DAYS = 7;
-
-/** The caveat every approval rendering carries, worded as hooks/session-start.mjs words it (the
- * tone precedent named by the kickoff). Shipped IN the DTO so a client cannot render approvals
- * without it and cannot invent a second wording. */
-export const APPROVALS_CAVEAT =
-  'recorded != valid — an artifact edit invalidates deterministically; the kernel decides at use '
-  + 'time, and its refusal is the answer.';
 
 /** Conventional DRAFT filenames, per kind — a viewer display convention, deliberately NOT a
  * kernel export: `artifact-record` accepts any path and enforces no filename, so the kernel must
@@ -449,7 +441,6 @@ export function featureView({ org, project, name, now = Date.now(), commits = []
     tasksDetail: tasksDetailOf(tasks),
     artifacts: artifactsOf(tasks, dossier),
     approvals: approvalsOf(tasks),
-    approvalsCaveat: APPROVALS_CAVEAT,
     reviews: (tasks?.reviews ?? []).map((r) => ({
       role: r?.role ?? null, verdict: r?.verdict ?? null, subject: r?.subject ?? null, at: r?.at ?? null,
     })),
