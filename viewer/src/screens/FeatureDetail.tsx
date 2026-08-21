@@ -27,12 +27,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import type {
   ActivityKind, CommitsResponse, DiffFileRow, DiffResponse, FeatureId, FeatureDetailView, FeatureView,
-  Loaded, TaskDetail, UnreadableRow, ViewerDataSource,
+  Loaded, TaskDetail, TokenBlock, TokenFigures, UnreadableRow, ViewerDataSource,
 } from '../data/types';
 import { ACTIVITY_KINDS, isUnreadable, mrRef } from '../data/types';
 import {
   AttentionRow, Empty, LifecycleNowPanel, Loading, RawStatusNote, ReceiptBadge,
-  ReceiptDetail, RelTime, Section, Spine, StatusPill, exactTime,
+  ReceiptDetail, RelTime, Section, Spine, StatusPill, exactTime, fmtDuration, fmtTokens,
 } from '../components/ui';
 import { Markdown } from '../components/Markdown';
 import { artifactUrl, isHtml, isMarkdown, isServableImage, resolveArtifactPath } from '../lib/artifact-url.mjs';
@@ -95,6 +95,75 @@ function policyPins(pins: FeatureView['commandPolicyHash']): string {
       return `${tier} ${h.length > 16 ? `${h.slice(0, 16)}…` : h}`;
     })
     .join(' · ');
+}
+
+/** Nothing attributed ⇒ "not recorded", which is a different statement from a zero. */
+function TaskTokens({ figures }: { figures: TokenFigures | null }) {
+  if (figures === null) return <span className="muted">not recorded</span>;
+  return (
+    <>
+      <span className="mono">{fmtTokens(figures.input)} / {fmtTokens(figures.output)}</span>
+      <p className="mission-sub" style={{ margin: 0 }}>
+        cache {fmtTokens(figures.cacheRead)} r / {fmtTokens(figures.cacheCreate)} w
+      </p>
+    </>
+  );
+}
+
+function TokenRow({ what, figures }: { what: string; figures: TokenFigures | undefined }) {
+  return (
+    <tr>
+      <td>{what}</td>
+      <td className="mono">{fmtTokens(figures?.input)}</td>
+      <td className="mono">{fmtTokens(figures?.output)}</td>
+      <td className="mono">{fmtTokens(figures?.cacheRead)}</td>
+      <td className="mono">{fmtTokens(figures?.cacheCreate)}</td>
+    </tr>
+  );
+}
+
+/** THE RECONCILIATION, rendered so the arithmetic is visible: the total claims the whole feature,
+ * so every part it is made of gets a row — a session that was not read and one a second feature also
+ * records (counted for neither) included. */
+function TokenTable({ tokens }: { tokens: TokenBlock }) {
+  if (!tokens.available) {
+    return <p className="muted" style={{ margin: 0 }}>{tokens.reason ?? 'no transcript was read for this feature.'}</p>;
+  }
+  return (
+    <>
+      {typeof tokens.dispatches === 'number' && (
+        <p className="mission-sub" style={{ marginTop: 0 }}>{tokens.dispatches} dispatch(es) read for this feature.</p>
+      )}
+      <div className="tbl-wrap">
+        <table className="tbl">
+          <thead><tr><th>What</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th></tr></thead>
+          <tbody>
+            <TokenRow what="dispatches inside a task window" figures={tokens.tasks} />
+            <TokenRow what="dispatches inside no task window" figures={tokens.unattributed} />
+            {tokens.session
+              ? <TokenRow what={`the coordinator session ${tokens.sessionId ?? ''}`.trim()} figures={tokens.session} />
+              : (
+                <tr>
+                  <td>the coordinator session</td>
+                  <td colSpan={4} className="muted">
+                    {tokens.sessionReason ?? 'was not counted — see the exclusion below.'}
+                  </td>
+                </tr>
+              )}
+            {(tokens.excluded ?? []).map((e) => (
+              <tr key={e.sessionId}>
+                <td>session <span className="mono">{e.sessionId}</span>, excluded</td>
+                <td colSpan={4} className="muted">
+                  also recorded by {e.alsoRecordedBy.join(', ')}, so its tokens count for neither feature
+                </td>
+              </tr>
+            ))}
+            <TokenRow what="the whole feature" figures={tokens.total} />
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
 }
 
 function OverviewTab({ view }: { view: FeatureView }) {
@@ -165,7 +234,7 @@ function OverviewTab({ view }: { view: FeatureView }) {
             </div>
             <div className="tbl-wrap">
               <table className="tbl">
-                <thead><tr><th>Task</th><th>Status</th><th>Attempt</th><th>Depends on</th><th>Gate receipt</th><th>Done</th></tr></thead>
+                <thead><tr><th>Task</th><th>Status</th><th>Attempt</th><th>Depends on</th><th>Gate receipt</th><th>Duration</th><th>Tokens in / out</th></tr></thead>
                 <tbody>
                   {view.tasksDetail.filter((t) => t.milestone === m.id).map((t) => (
                     <tr key={String(t.id)}>
@@ -174,7 +243,8 @@ function OverviewTab({ view }: { view: FeatureView }) {
                       <td className="mono">{t.attempt ?? '—'}</td>
                       <td className="mono">{t.depends_on.length ? t.depends_on.join(', ') : '—'}</td>
                       <td><ReceiptBadge receipt={t.receipt} what={`task ${t.id}`} /></td>
-                      <td><RelTime iso={t.doneAt} /></td>
+                      <td className="mono" title={t.doneAt ? `done ${exactTime(t.doneAt)}` : undefined}>{fmtDuration(t.durationMs)}</td>
+                      <td><TaskTokens figures={t.tokens} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -182,6 +252,10 @@ function OverviewTab({ view }: { view: FeatureView }) {
             </div>
           </div>
         ))}
+      </Section>
+
+      <Section title="Token cost — every dispatch, plus the coordinator session">
+        <div className="card"><TokenTable tokens={view.tokens} /></div>
       </Section>
 
       <Section title="Approvals — recorded">

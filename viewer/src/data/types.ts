@@ -186,6 +186,36 @@ export interface Receipt {
 
 export interface Answer { question: string | null; answer: string | null; at: string | null }
 
+/** The four counts Claude Code's transcripts record, never blended into one number. A figure the
+ *  transcript did not carry stays null — never a zero standing in for a count nobody wrote down. */
+export interface TokenFigures {
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheCreate: number | null;
+}
+
+/** A coordinator session that more than one registered feature records. Its tokens count for
+ *  NEITHER — splitting them would need a rule nothing records — and the screen names it. */
+export interface ExcludedSession { sessionId: string; alsoRecordedBy: string[] }
+
+/** What the whole feature cost, in the parts that reconcile to the total (projection.mjs D6): the
+ *  per-task column, the dispatches no task window contains, and the coordinator session — null, with
+ *  a reason, when that transcript could not be read or was excluded. `available:false` carries no
+ *  figure at all rather than a zero. */
+export interface TokenBlock {
+  available: boolean;
+  reason?: string;
+  dispatches?: number;
+  tasks?: TokenFigures;
+  unattributed?: TokenFigures;
+  session?: TokenFigures | null;
+  sessionId?: string | null;
+  sessionReason?: string | null;
+  excluded?: ExcludedSession[];
+  total?: TokenFigures;
+}
+
 export interface TaskDetail {
   id: string | null;
   title: string | null;
@@ -195,6 +225,10 @@ export interface TaskDetail {
   depends_on: string[];
   startedAt: string | null;
   doneAt: string | null;
+  /** `doneAt − startedAt`, SUBTRACTED BY THE SERVER; null while a task is still running. */
+  durationMs: number | null;
+  /** The dispatches inside this task's recorded window; null — never zero — where there was none. */
+  tokens: TokenFigures | null;
   /** `answer === null` IS the open question (projection.mjs / hooks/session-start.mjs) */
   answers: Answer[];
   receipt: Receipt;
@@ -267,6 +301,7 @@ export interface FeatureView extends FeatureSummary {
   activity: ActivityRow[];
   lifecycleNow: LifecycleNow;
   git: GitBlock;
+  tokens: TokenBlock;
 }
 
 export type FeatureDetailView = FeatureView | UnreadableRow;

@@ -16,8 +16,13 @@
 //
 // THE SERVER DERIVES NOTHING. Every JSON body below is a projection call rendered verbatim
 // (featureSummaries / featureView / activityFeed / insights). There is no status vocabulary here,
-// no attention rule, no statistic, no cache and no cross-request memory: the process is STATELESS
-// and recomputes per request, so freshness is the client's polling interval and nothing else.
+// no attention rule and no statistic. IT RECOMPUTES PER REQUEST, with ONE exception, and the
+// exception is deliberately not a cache of an answer: transcripts.mjs memoises each transcript
+// file's digest on that file's OWN IDENTITY (mtimeMs + size), so a changed file is re-read and a
+// stale digest cannot outlive its bytes. It buys the read that would otherwise be paid on every
+// poll — 174 ms cold against 10 ms warm for one feature's 63 transcripts, measured in that file's
+// header, against a 3 s detail poll. Nothing else here remembers anything between requests, so
+// freshness is the client's polling interval and nothing else.
 // The two things the server DOES own are the two the projection deliberately refuses: HTTP, and
 // the hardened git reads (the projection never spawns — activity.mjs's header says why), which
 // travel back INTO the projection through its `readCommits` injection so even the git verdict is
@@ -59,6 +64,7 @@ import { featureDir, legionHome, safeSegment } from '../../kernel/paths.mjs';
 import {
   ACTIVITY_FEED_LIMIT, activityFeed, featureSummaries, featureView, insights,
 } from './projection.mjs';
+import { readFeatureAgents } from './transcripts.mjs';
 
 /** THE route table, exhaustive and EXPORTED so the prohibition test can walk it programmatically
  * rather than re-typing a list that would drift. Order is irrelevant (exact-match dispatch); the
@@ -396,7 +402,15 @@ export function createViewerServer({ distDir = null, org = null, host = '127.0.0
           // readCommits is the hardened seam handed INTO the projection (projection.mjs docblock):
           // one dossier read, and the git verdict rendered by the module that owns the DTO. The rows
           // themselves end in the activity fold, which reads sha/date/subject and no ± at all.
-          view = featureView({ org: id.org, project: id.project, name: id.name, readCommits: (w) => readFeatureCommits(w, { counts: false }) });
+          // readAgents is the second such seam (D6), handed in HERE and nowhere else: no other route
+          // pays for it and no projection test can reach the operator's real ~/.claude.
+          view = featureView({
+            org: id.org,
+            project: id.project,
+            name: id.name,
+            readCommits: (w) => readFeatureCommits(w, { counts: false }),
+            readAgents: readFeatureAgents,
+          });
         } catch (err) {
           // A feature that does not exist is a caller error — 404 naming what was asked. A feature
           // that exists but cannot be READ never reaches here: the projection returns the

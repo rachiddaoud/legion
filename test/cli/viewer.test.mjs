@@ -43,6 +43,7 @@ import { DEFAULT_HOST, DEFAULT_PORT, bundleStale, distRefusal, staleWarning, vie
 import { STAMP_FILE, computeSourceDigest } from '../../src/cli/_viewer-bundle.mjs';
 import { ALLOWED_METHODS, ROUTES, createViewerServer, readFeatureCommits } from '../../src/cli/_viewer/server.mjs';
 import { featureSummaries, featureView } from '../../src/cli/_viewer/projection.mjs';
+import { readFeatureAgents } from '../../src/cli/_viewer/transcripts.mjs';
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url)))); // test/cli/x -> repo root
 const BIN = join(ROOT, 'bin', 'legion.mjs');
@@ -322,6 +323,7 @@ test('PROHIBITION: viewer code imports no state-mutating machinery and names no 
     join(ROOT, 'src', 'cli', '_viewer', 'server.mjs'),
     join(ROOT, 'src', 'cli', '_viewer', 'projection.mjs'),
     join(ROOT, 'src', 'cli', '_viewer', 'activity.mjs'),
+    join(ROOT, 'src', 'cli', '_viewer', 'transcripts.mjs'),
   ];
   for (const f of files) assert.ok(existsSync(f), `${f} is missing`);
 
@@ -663,6 +665,11 @@ test('/api/features renders the inventory including the unreadable row (H06)', a
 
 test('/api/feature is T39\'s projection verbatim — the server derives nothing', async () => {
   const h = fixture({ project: 'proj', feature: 'f1' });
+  // The transcript reader resolves its root from the environment, and this suite calls the
+  // projection IN PROCESS, where HOME is still the operator's. Pinned at a sandbox path that does
+  // not exist, both calls below get the same "nowhere to look" verdict and neither walks ~/.claude.
+  const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(h.sandbox, 'claude');
   try {
     h.seedPlan([planTask('T1', { milestone: 'M1' })]);
     assert.equal(h.legion('state', 'task-start', 'T1').code, 0);
@@ -673,9 +680,12 @@ test('/api/feature is T39\'s projection verbatim — the server derives nothing'
       try {
         const r = await getJson(s.base, '/api/feature?org=default&project=proj&name=f1');
         assert.equal(r.status, 200);
-        // The SAME projection call the server makes, with the SAME injected git seam. Only
-        // `ageHours` may differ (the two calls are milliseconds apart).
-        const direct = featureView({ org: 'default', project: 'proj', name: 'f1', readCommits: readFeatureCommits });
+        // The SAME projection call the server makes, with the SAME injected git and transcript
+        // seams. Only `ageHours` may differ (the two calls are milliseconds apart).
+        const direct = featureView({
+          org: 'default', project: 'proj', name: 'f1',
+          readCommits: readFeatureCommits, readAgents: readFeatureAgents,
+        });
         const strip = (v) => { const { ageHours, ...rest } = v; return rest; };
         assert.deepEqual(strip(r.body.feature), strip(direct));
         assert.equal(typeof r.body.feature.ageHours, 'number');
@@ -697,7 +707,11 @@ test('/api/feature is T39\'s projection verbatim — the server derives nothing'
         assert.match(bad.body.error, /missing required query parameter 'project'/);
       } finally { await s.close(); }
     });
-  } finally { h.cleanup(); }
+  } finally {
+    if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
+    h.cleanup();
+  }
 });
 
 test('an unreadable dossier is a 200 unreadable ROW on the detail endpoint, never a 500', async () => {

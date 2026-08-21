@@ -5,10 +5,12 @@
 // WHAT WAS DELETED FROM legion2's VERSION, and why it could not be ported: `QuestionCard` (a form
 // that POSTed an answer), `GateEvidencePanel` (the approve/reject consequence table a human gate
 // rendered above two buttons), `SimulatedBanner`'s "every control transitions fixtures only" copy,
-// and `fmtCost`/`fmtTokens`. The first three are the orchestration surface decision 12a deletes
-// outright. The last two are honesty: legion3 records no cost and no token count anywhere
-// (decision 9), so there is no `—` placeholder for them either — a dash implies a number that
-// could arrive, and none can.
+// and `fmtCost`. The first three are the orchestration surface decision 12a deletes outright.
+// `fmtCost` is honesty: no rate is recorded anywhere, so a money figure has no source and there is
+// no `—` placeholder for one either — a dash implies a number that could arrive, and none can.
+// `fmtTokens` IS BACK, because that last sentence was never true of token counts: Claude Code's
+// transcripts record them per dispatch, the projection reports them per task and per feature, and
+// what a formatter owes them is the "not recorded" this one prints where nothing was attributed.
 //
 // `ApprovalsCaveat` IS GONE THE SAME WAY, and the fact it carried is not: it rendered a paragraph
 // warning that a recorded approval may no longer bind, above a table whose last column answers
@@ -309,3 +311,9 @@ export const fmtDuration = (ms: number | null) => {
   const h = min / 60;
   return h < 48 ? `${h.toFixed(1)}h` : `${(h / 24).toFixed(1)}d`;
 };
+
+/** A RECORDED token count, grouped for reading. `null` is not a number that could arrive later — it
+ * means no dispatch was attributed or no transcript was read — so it says so rather than printing 0
+ * or a dash, both of which read as a measurement. */
+export const fmtTokens = (n: number | null | undefined) =>
+  (n == null ? 'not recorded' : n.toLocaleString('en-US'));

@@ -625,7 +625,8 @@ test('insights: THE one stats formula, pinned exactly over a forged two-feature 
         { key: 'default/proj/fb', reviews: 1, fixRounds: 0, unresolvedFails: 1 },
       ],
     });
-    // NO COST AND NO TOKEN NUMBERS ANYWHERE: no source exists, so nothing is rendered (decision 9).
+    // NO COST AND NO TOKEN NUMBERS ANYWHERE. Money has no source at all; token counts have one, and
+    // this formula is handed no reader for it (projection.mjs insights), so it renders neither.
     assert.ok(!/cost|token/i.test(JSON.stringify(out)));
   } finally { h.cleanup(); }
 });
@@ -643,5 +644,178 @@ test('insights carries its denominators when the population is empty or unreadab
     assert.deepEqual(out.stageDuration, {});
     assert.deepEqual(out.attempts, { tasks: 0, features: 0, distribution: {} });
     assert.deepEqual(out.reviewRounds, { features: 0, reviews: 0, fixRounds: 0, unresolvedFails: 0, byFeature: [] });
+  } finally { h.cleanup(); }
+});
+
+// --- T4: the duration, and what a feature's tokens COVER (D6) ---------------------------------
+
+const T0 = Date.parse('2026-07-25T00:00:00.000Z');
+const at = (hours) => new Date(T0 + hours * HOUR).toISOString();
+const figures = (input, output, cacheRead, cacheCreate) => ({ input, output, cacheRead, cacheCreate });
+
+/** The `readAgents` seam, injected: it answers about the sessions it is ASKED about and no others,
+ * which is what makes a session left out of the question observable. A session with no entry in
+ * `coordinators` is one whose transcript could not be read — the T3 shape's `session: null` plus a
+ * reason, never a zero. */
+function fakeAgents({ agents = [], coordinators = {} } = {}) {
+  const fn = ({ sessions }) => {
+    fn.asked.push([...sessions]);
+    const read = sessions.filter((id) => coordinators[id] !== undefined);
+    const tokens = figures(0, 0, 0, 0);
+    for (const id of read) for (const k of Object.keys(tokens)) tokens[k] += coordinators[id][k];
+    const unread = sessions.filter((id) => coordinators[id] === undefined);
+    return {
+      available: true,
+      agents,
+      session: read.length === 0 ? null : { tokens, sessionId: read.length === 1 ? read[0] : null },
+      sessionReason: unread.length === 0 ? null : `no coordinator transcript was read for ${unread.join(', ')}`,
+    };
+  };
+  fn.asked = [];
+  return fn;
+}
+
+/** Four recorded windows: T1 ran two hours and closed, T2 is still open, T3 never started, and T4
+ * started while T2 was still open — the overlap a task nobody closed leaves behind. */
+function withWindows(h) {
+  h.seedPlan(['T1', 'T2', 'T3', 'T4'].map((id) => planTask(id, { milestone: 'M1' })));
+  const started = { T1: [at(0), at(2)], T2: [at(3), null], T4: [at(5), null] };
+  patch(dossierOf(h, 'f1'), 'tasks.json', (doc) => ({
+    ...doc,
+    tasks: doc.tasks.map((t) => (started[t.id] === undefined ? t : {
+      ...t,
+      status: started[t.id][1] === null ? 'started' : 'done',
+      startedAt: started[t.id][0],
+      doneAt: started[t.id][1],
+    })),
+  }));
+}
+
+/** A second REGISTERED feature, in ANOTHER org, recording `sessionId`. Registration is what the
+ * multiplicity is read from, so the index entry is the point. Returns the index bytes from before,
+ * so the same fixture can be re-read with the sibling gone. */
+function registerSibling(h, { org, project, name, sessionId }) {
+  const dir = join(h.home, 'orgs', org, 'projects', project, 'features', name);
+  mkdirSync(dir, { recursive: true });
+  writeManifest(dir, 'feature.json', {
+    ...h.readFeature(), featureId: `${org}/${project}/${name}`, name, dossier: dir,
+    sessionHistory: [{ sessionId, at: NOW }], currentSession: sessionId,
+  });
+  const indexPath = join(h.home, 'projects.json');
+  const before = readFileSync(indexPath, 'utf8');
+  const index = JSON.parse(before);
+  index.projects.push({
+    org,
+    name: project,
+    repoRoot: h.repoRoot,
+    configPath: join(h.home, 'orgs', org, 'projects', project, 'project.json'),
+    features: [{ name, featureId: `${org}/${project}/${name}`, dossier: dir, worktree: null, branch: `feat/${name}` }],
+  });
+  writeFileSync(indexPath, `${JSON.stringify(index, null, 2)}\n`);
+  return () => writeFileSync(indexPath, before);
+}
+
+test('a task duration is the recorded subtraction, and an unfinished task has none (A3)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    withWindows(h);
+    const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1' }));
+    const by = Object.fromEntries(v.tasksDetail.map((t) => [t.id, t]));
+    assert.equal(by.T1.durationMs, 2 * HOUR);
+    assert.equal(by.T2.durationMs, null); // started, no closing timestamp: an open interval is not a duration
+    assert.equal(by.T3.durationMs, null); // never started
+    // A12, the half that needs NO reader: no transcript was read, so there is no figure at all —
+    // not a zero, and not a `—` that would imply a number which could still arrive.
+    assert.deepEqual(Object.keys(v.tokens), ['available', 'reason']);
+    assert.equal(v.tokens.available, false);
+    assert.match(v.tokens.reason, /the projection never opens Claude Code transcripts/);
+    assert.equal(JSON.stringify(v.tokens).includes('0'), false);
+    assert.deepEqual(v.tasksDetail.map((t) => t.tokens), [null, null, null, null]);
+  } finally { h.cleanup(); }
+});
+
+test('the feature total covers what its label claims: the task column, the residual and the session (A4)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    withWindows(h);
+    assert.equal(h.legion('state', 'session-record', '--session-id', 'sess-A').code, 0);
+    const readAgents = fakeAgents({
+      agents: [
+        { at: at(0), tokens: figures(1, 0, 0, 0) }, // ON T1's startedAt: the window includes its edges
+        { at: at(1), tokens: figures(10, 20, 30, 40) }, // inside T1's window
+        { at: at(2), tokens: figures(0, 3, 0, 0) }, // ON T1's doneAt, and before T2 started
+        { at: at(4), tokens: figures(1, 2, 3, 4) }, // inside T2's still-open window
+        { at: at(6), tokens: figures(7, 0, 0, 0) }, // inside T2's AND T4's: the task that started last
+        { at: at(-1), tokens: figures(100, 200, 300, 400) }, // before every window: attributed to no task
+      ],
+      coordinators: { 'sess-A': figures(5, 6, 7, 8) },
+    });
+    const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1', readAgents }));
+    const by = Object.fromEntries(v.tasksDetail.map((t) => [t.id, t]));
+    assert.deepEqual(by.T1.tokens, figures(11, 23, 30, 40));
+    assert.deepEqual(by.T2.tokens, figures(1, 2, 3, 4));
+    assert.deepEqual(by.T4.tokens, figures(7, 0, 0, 0));
+    assert.equal(by.T3.tokens, null); // no window, so no dispatch: "not recorded", never 0
+
+    assert.equal(v.tokens.available, true);
+    assert.equal(v.tokens.dispatches, 6);
+    assert.deepEqual(v.tokens.tasks, figures(19, 25, 33, 44));
+    assert.deepEqual(v.tokens.unattributed, figures(100, 200, 300, 400));
+    assert.deepEqual(v.tokens.session, figures(5, 6, 7, 8));
+    assert.equal(v.tokens.sessionId, 'sess-A');
+    assert.deepEqual(v.tokens.excluded, []);
+    // THE ARITHMETIC IS THE CLAIM: the label says "the whole feature", so nothing is left outside —
+    // counting the dispatches alone puts two thirds of the spend under a label saying all of it.
+    assert.deepEqual(v.tokens.total, figures(124, 231, 340, 452));
+    for (const k of ['input', 'output', 'cacheRead', 'cacheCreate']) {
+      assert.equal(v.tokens.total[k], v.tokens.tasks[k] + v.tokens.unattributed[k] + v.tokens.session[k]);
+    }
+  } finally { h.cleanup(); }
+});
+
+test('a coordinator transcript nobody could read is NAMED, never counted as zero (A12)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    withWindows(h);
+    assert.equal(h.legion('state', 'session-record', '--session-id', 'sess-A').code, 0);
+    const readAgents = fakeAgents({ agents: [{ at: at(1), tokens: figures(10, 20, 30, 40) }] });
+    const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1', readAgents }));
+    assert.equal(v.tokens.session, null);
+    assert.equal(v.tokens.sessionId, null);
+    assert.match(v.tokens.sessionReason, /no coordinator transcript was read for sess-A/);
+    assert.deepEqual(v.tokens.total, figures(10, 20, 30, 40)); // the dispatches, and no zero row for the session
+  } finally { h.cleanup(); }
+});
+
+test('a coordinator session two features record counts for NEITHER, and both DTOs name the other (A4, D6)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    withWindows(h);
+    assert.equal(h.legion('state', 'session-record', '--session-id', 'sess-shared').code, 0);
+    const unregister = registerSibling(h, { org: 'other', project: 'p2', name: 'fz', sessionId: 'sess-shared' });
+    const readAgents = fakeAgents({
+      agents: [{ at: at(1), tokens: figures(1, 2, 3, 4) }],
+      coordinators: { 'sess-shared': figures(5, 6, 7, 8) },
+    });
+    const ask = (org, project, name) => withHome(h.home, () => featureView({ org, project, name, readAgents }));
+
+    const mine = ask('default', 'proj', 'f1');
+    assert.equal(mine.tokens.session, null);
+    assert.deepEqual(mine.tokens.excluded, [{ sessionId: 'sess-shared', alsoRecordedBy: ['other/p2/fz'] }]);
+    assert.deepEqual(mine.tokens.total, figures(1, 2, 3, 4));
+    // CROSS-ORG on purpose: a terminal session belongs to the operator, not to an org, so the
+    // sibling that creates the case is routinely in another one.
+    const theirs = ask('other', 'p2', 'fz');
+    assert.equal(theirs.tokens.session, null);
+    assert.deepEqual(theirs.tokens.excluded, [{ sessionId: 'sess-shared', alsoRecordedBy: ['default/proj/f1'] }]);
+
+    // THE NEGATIVE TWIN: the same fixture with the sibling no longer registered counts that very
+    // session, so the assertion above cannot pass by the session having been unreadable anyway.
+    unregister();
+    const alone = ask('default', 'proj', 'f1');
+    assert.deepEqual(alone.tokens.session, figures(5, 6, 7, 8));
+    assert.equal(alone.tokens.sessionId, 'sess-shared');
+    assert.deepEqual(alone.tokens.excluded, []);
+    assert.deepEqual(alone.tokens.total, figures(6, 8, 10, 12));
   } finally { h.cleanup(); }
 });

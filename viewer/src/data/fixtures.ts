@@ -89,17 +89,21 @@ function view(s: FeatureSummary, over: Partial<FeatureView> = {}): FeatureView {
     tasksDetail: [
       {
         id: 'T1', title: 'Port the shell', status: 'done', attempt: 1, milestone: 'M1',
-        depends_on: [], startedAt: T(11), doneAt: T(9), answers: [], receipt: fullReceipt,
+        depends_on: [], startedAt: T(11), doneAt: T(9), durationMs: 2 * 3_600_000,
+        tokens: { input: 412, output: 58_213, cacheRead: 3_104_882, cacheCreate: 241_007 },
+        answers: [], receipt: fullReceipt,
       },
       {
         id: 'T2', title: 'Reshape the data layer', status: 'started', attempt: 2, milestone: 'M1',
-        depends_on: ['T1'], startedAt: T(4), doneAt: null,
+        depends_on: ['T1'], startedAt: T(4), doneAt: null, durationMs: null,
+        tokens: { input: 108, output: 12_004, cacheRead: 901_233, cacheCreate: 44_512 },
         answers: [{ question: 'Which base branch should the diff render against?', answer: 'the pinned baseSha', at: T(5) }],
         receipt: noReceipt,
       },
       {
         id: 'T3', title: 'Budgets', status: 'pending', attempt: 0, milestone: 'M2',
-        depends_on: ['T2'], startedAt: null, doneAt: null, answers: [], receipt: noReceipt,
+        depends_on: ['T2'], startedAt: null, doneAt: null, durationMs: null, tokens: null,
+        answers: [], receipt: noReceipt,
       },
     ],
     artifacts: {
@@ -144,6 +148,19 @@ function view(s: FeatureSummary, over: Partial<FeatureView> = {}): FeatureView {
       approvalsValidNow: { intake: true, spec: true, plan: true, preview: false, 'pre-merge': false },
     },
     git: { available: true, head: '9c1f2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3' },
+    // The rows RECONCILE: the two task cells above, plus the residual, plus the session, are the
+    // total. A fixture whose arithmetic did not hold teaches a shape the projection never emits.
+    tokens: {
+      available: true,
+      dispatches: 5,
+      tasks: { input: 520, output: 70_217, cacheRead: 4_006_115, cacheCreate: 285_519 },
+      unattributed: { input: 96, output: 9_880, cacheRead: 612_400, cacheCreate: 31_090 },
+      session: { input: 84, output: 31_442, cacheRead: 2_884_010, cacheCreate: 58_331 },
+      sessionId: 'sess-7f3a',
+      sessionReason: null,
+      excluded: [],
+      total: { input: 700, output: 111_539, cacheRead: 7_502_525, cacheCreate: 374_940 },
+    },
     ...over,
   };
 }
@@ -354,13 +371,14 @@ const blockedView = view(blocked, {
   tasksDetail: [
     {
       id: 'T1', title: 'Export selector', status: 'started', attempt: 1, milestone: 'M1',
-      depends_on: [], startedAt: T(6), doneAt: null,
+      depends_on: [], startedAt: T(6), doneAt: null, durationMs: null, tokens: null,
       answers: [{ question: 'Should the export include archived rows? The spec is silent.', answer: null, at: T(3) }],
       receipt: noReceipt,
     },
     {
       id: 'T2', title: 'CSV writer', status: 'pending', attempt: 0, milestone: 'M1',
-      depends_on: ['T1'], startedAt: null, doneAt: null, answers: [], receipt: noReceipt,
+      depends_on: ['T1'], startedAt: null, doneAt: null, durationMs: null, tokens: null,
+      answers: [], receipt: noReceipt,
     },
   ],
   milestones: [{ id: 'M1', taskIds: ['T1', 'T2'], tasks: { total: 2, done: 0, started: 1, pending: 1 }, closeReviews: [] }],
@@ -371,6 +389,8 @@ const blockedView = view(blocked, {
   ],
   reviews: [],
   git: { available: false, reason: 'the recorded worktree /tmp/work/cv-mf--cv42-export is absent — pruned by `legion feature clean`, or removed by hand' },
+  // The other honest half: no transcript was read, so there is no figure at all.
+  tokens: { available: false, reason: 'none of the 1 session(s) this feature recorded has a transcript under /tmp/home/.claude/projects' },
 });
 const deliveredView = view(delivered, {
   worktree: { path: '/tmp/work/cv-mf--cv39-ticket-link', present: false },
