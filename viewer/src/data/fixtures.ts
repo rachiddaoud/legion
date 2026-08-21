@@ -322,8 +322,14 @@ function world(
       baseSha: '1a2b3c4d5e6f7081920a1b2c3d4e5f6071829304',
       head: '9c1f2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3',
       commits: [
-        { sha: '9c1f2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3', at: T(9), subject: 'feat(m1): the shell and the poll loop' },
-        { sha: '3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5', at: T(20), subject: 'chore: gitignore the viewer build outputs' },
+        {
+          sha: '9c1f2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3', at: T(9), subject: 'feat(m1): the shell and the poll loop',
+          parents: ['3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5'], added: 96, deleted: 12, binary: false,
+        },
+        {
+          sha: '3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5', at: T(20), subject: 'chore: gitignore the viewer build outputs',
+          parents: ['1a2b3c4d5e6f7081920a1b2c3d4e5f6071829304'], added: 4, deleted: 0, binary: false,
+        },
       ],
     },
     diff: {
@@ -331,7 +337,11 @@ function world(
       available: true,
       baseSha: '1a2b3c4d5e6f7081920a1b2c3d4e5f6071829304',
       head: '9c1f2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3',
-      files: [{ status: 'M', path: 'src/App.tsx' }, { status: 'A', path: 'src/data/types.ts' }],
+      rev: null,
+      files: [
+        { status: 'M', path: 'src/App.tsx', added: 1, deleted: 1, binary: false },
+        { status: 'A', path: 'src/data/types.ts', added: 99, deleted: 11, binary: false },
+      ],
       file: null,
       diff: FIXTURE_DIFF,
     },

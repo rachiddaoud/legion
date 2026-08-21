@@ -174,6 +174,8 @@ export default function App() {
     `insights:${sourceKey}`, (s) => source.insights(s), FEATURES_POLL_MS,
     route.screen === 'insights',
   );
+  // The poll key AND the detail screen's React key: a selected commit, file or artifact belongs to
+  // the feature it was picked in, and none of it may survive a hop to another feature's screen.
   const detailKey = route.id ? keyOfId(route.id) : '';
   const routeId = route.id;
   const [detail, retryDetail] = usePoll<FeatureResponse>(
@@ -245,7 +247,7 @@ export default function App() {
             )
               : route.screen === 'detail' ? (
                 detail.state === 'loading' ? <Loading what={detailKey} />
-                  : detailData ? <FeatureDetail view={detailData.feature} id={route.id!} tab={route.tab} onTab={(t) => nav(routeHash(route.id!, t))} source={source} onBack={() => nav('#/operations')} />
+                  : detailData ? <FeatureDetail key={detailKey} view={detailData.feature} id={route.id!} tab={route.tab} onTab={(t) => nav(routeHash(route.id!, t))} source={source} onBack={() => nav('#/operations')} />
                     : <Loading what={detailKey} />
               )
                 : featuresData === null ? <Loading what="the feature inventory" />

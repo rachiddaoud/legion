@@ -36,7 +36,7 @@ import {
 } from '../components/ui';
 import { Markdown } from '../components/Markdown';
 import { artifactUrl, isHtml, isMarkdown, isServableImage, resolveArtifactPath } from '../lib/artifact-url.mjs';
-import { clipNote, clipRows, diffSummary, fileStatus, parsePatch } from '../lib/diff-view.mjs';
+import { clipNote, clipRows, diffSummary, fileCounts, fileStatus, parsePatch } from '../lib/diff-view.mjs';
 import { getHighlighter, langOfPath } from '../lib/highlight';
 import { safeHref } from '../lib/safe-href.mjs';
 import { TABS } from '../lib/shell.mjs';
@@ -486,19 +486,19 @@ function PatchPane({ diff, path }: { diff: DiffResponse; path: string }) {
   );
 }
 
-function FileDiff({ source, id, path }: { source: ViewerDataSource; id: FeatureId; path: string }) {
+function FileDiff({ source, id, path, rev }: { source: ViewerDataSource; id: FeatureId; path: string; rev: string | null }) {
   const [state, setState] = useState<Loaded<DiffResponse>>({ state: 'loading' });
   useEffect(() => {
     const ac = new AbortController();
     setState({ state: 'loading' });
-    source.diff(id, path, ac.signal)
+    source.diff(id, path, rev, ac.signal)
       .then((d) => { if (!ac.signal.aborted) setState({ state: 'ok', data: d, at: Date.now() }); })
       .catch((e: unknown) => {
         if (ac.signal.aborted) return;
         setState({ state: 'error', error: e instanceof Error ? e.message : String(e), last: null, at: null });
       });
     return () => ac.abort();
-  }, [source, id.org, id.project, id.name, path]);
+  }, [source, id.org, id.project, id.name, path, rev]);
   if (state.state === 'loading') return <p className="muted">Loading the diff for {path}…</p>;
   if (state.state === 'error') return <p className="dq dq-partial" role="note">{state.error}</p>;
   return <PatchPane diff={state.data} path={path} />;
@@ -525,7 +525,7 @@ function buildTree(files: DiffFileRow[]): DirNode {
   return root;
 }
 
-function ChangedFiles({ files, id, source }: { files: DiffResponse & { available: true }; id: FeatureId; source: ViewerDataSource }) {
+function ChangedFiles({ files, id, source, rev }: { files: DiffResponse & { available: true }; id: FeatureId; source: ViewerDataSource; rev: string | null }) {
   const [picked, setPicked] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const list = files.files;
@@ -567,6 +567,7 @@ function ChangedFiles({ files, id, source }: { files: DiffResponse & { available
           >
             <span className={`diff-status diff-status-${st.cls}`} aria-label={st.label}>{st.code}</span>
             <span className="diff-path mono">{f.path.split('/').pop()}</span>
+            <span className="diff-counts">{fileCounts(f)}</span>
           </button>
         );
       })}
@@ -585,7 +586,7 @@ function ChangedFiles({ files, id, source }: { files: DiffResponse & { available
                 <span className={`diff-status diff-status-${fileStatus(selRow.status).cls}`} aria-hidden="true">{fileStatus(selRow.status).code}</span>
                 <span className="diff-path mono">{selected}</span>
               </div>
-              <FileDiff source={source} id={id} path={selected} />
+              <FileDiff source={source} id={id} path={selected} rev={rev} />
             </>
           )}
         </div>
@@ -597,20 +598,26 @@ function ChangedFiles({ files, id, source }: { files: DiffResponse & { available
 function ChangesTab({ view, id, source }: { view: FeatureView; id: FeatureId; source: ViewerDataSource }) {
   const [commits, setCommits] = useState<Loaded<CommitsResponse>>({ state: 'loading' });
   const [files, setFiles] = useState<Loaded<DiffResponse>>({ state: 'loading' });
+  const [rev, setRev] = useState<string | null>(null);
   const mrHref = safeHref(view.mr?.url);
 
   useEffect(() => {
     const ac = new AbortController();
     setCommits({ state: 'loading' });
-    setFiles({ state: 'loading' });
     source.commits(id, ac.signal)
       .then((c) => { if (!ac.signal.aborted) setCommits({ state: 'ok', data: c, at: Date.now() }); })
       .catch((e: unknown) => { if (!ac.signal.aborted) setCommits({ state: 'error', error: e instanceof Error ? e.message : String(e), last: null, at: null }); });
-    source.diff(id, null, ac.signal)
+    return () => ac.abort();
+  }, [source, id.org, id.project, id.name]);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    setFiles({ state: 'loading' });
+    source.diff(id, null, rev, ac.signal)
       .then((d) => { if (!ac.signal.aborted) setFiles({ state: 'ok', data: d, at: Date.now() }); })
       .catch((e: unknown) => { if (!ac.signal.aborted) setFiles({ state: 'error', error: e instanceof Error ? e.message : String(e), last: null, at: null }); });
     return () => ac.abort();
-  }, [source, id.org, id.project, id.name]);
+  }, [source, id.org, id.project, id.name, rev]);
 
   return (
     <>
@@ -648,6 +655,9 @@ function ChangesTab({ view, id, source }: { view: FeatureView; id: FeatureId; so
         <p className="mission-sub" style={{ marginTop: 0 }}>
           <span className="mono">{view.baseSha ? `${view.baseSha.slice(0, 12)}..HEAD` : '—'}</span> · squashed per milestone
         </p>
+        <div className="searchrow" role="group" aria-label="which commits the diff below covers">
+          <button className={`btn ${rev === null ? 'btn-option' : ''}`} aria-pressed={rev === null} onClick={() => setRev(null)}>whole branch</button>
+        </div>
         {commits.state === 'loading' ? <Loading what="commits" />
           : commits.state === 'error' ? <div className="card"><p className="dq dq-partial" role="note">{commits.error}</p></div>
             : !commits.data.available ? <div className="card"><p className="muted" style={{ margin: 0 }}>No commits could be read — {commits.data.reason}</p></div>
@@ -657,12 +667,20 @@ function ChangesTab({ view, id, source }: { view: FeatureView; id: FeatureId; so
                 : (
                   <div className="card tbl-wrap" style={{ padding: 0 }}>
                     <table className="tbl">
-                      <thead><tr><th>SHA</th><th>When</th><th>Subject</th></tr></thead>
+                      <thead><tr><th>SHA</th><th>When</th><th>Subject</th><th aria-label="lines added and removed">±</th></tr></thead>
                       <tbody>{commits.data.commits.map((c) => (
                         <tr key={c.sha}>
-                          <td className="mono">{c.sha.slice(0, 12)}</td>
+                          <td>
+                            <button
+                              className={`btn mono ${c.sha === rev ? 'btn-option' : ''}`}
+                              aria-pressed={c.sha === rev}
+                              aria-label={`show only commit ${c.sha.slice(0, 12)}`}
+                              onClick={() => setRev(c.sha === rev ? null : c.sha)}
+                            >{c.sha.slice(0, 12)}</button>
+                          </td>
                           <td><RelTime iso={c.at} /></td>
                           <td>{c.subject}</td>
+                          <td className="diff-totals">{fileCounts(c)}</td>
                         </tr>
                       ))}</tbody>
                     </table>
@@ -677,7 +695,7 @@ function ChangesTab({ view, id, source }: { view: FeatureView; id: FeatureId; so
               : files.data.files.length === 0 ? <div className="card"><p className="muted" style={{ margin: 0 }}>
                 No file differs from the base yet — this feature is in <span className="mono">{view.stage ?? 'an unknown stage'}</span>.
               </p></div>
-                : <ChangedFiles files={files.data} id={id} source={source} />}
+                : <ChangedFiles files={files.data} id={id} source={source} rev={rev} />}
       </Section>
     </>
   );

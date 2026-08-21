@@ -29,6 +29,8 @@
   --neutral-fg: #64748b; --neutral-bg: #eef1f5;
   --console-bg: #0e1420; --console-fg: #d8e0ec;
   --radius-lg: 14px; --radius-md: 10px;
+  /* Measured height of the sticky topbar: what anything else pinned to the top has to clear. */
+  --topbar-h: 3.75rem;
   --shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 24px rgba(15, 23, 42, 0.05);
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
   color-scheme: light;
@@ -294,7 +296,7 @@ button { font: inherit; }
 
 /* ---- MR-review split: file tree left, one diff right ---- */
 .diff-layout { display: flex; gap: 0.9rem; align-items: flex-start; }
-.diff-tree { flex: 0 0 250px; max-width: 40%; position: sticky; top: 0.75rem; max-height: 80vh; overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--border); padding-right: 0.5rem; }
+.diff-tree { flex: 0 0 250px; max-width: 40%; position: sticky; top: calc(var(--topbar-h) + 0.75rem); max-height: calc(80vh - var(--topbar-h)); overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--border); padding-right: 0.5rem; }
 .diff-content { flex: 1 1 auto; min-width: 0; }
 .diff-content-head { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0 0.5rem; overflow-wrap: anywhere; }
 .difftree-dir, .difftree-file { display: flex; align-items: center; gap: 0.45rem; width: 100%; padding: 0.22rem 0.2rem; background: none; border: 0; border-radius: var(--radius-md); color: var(--text); cursor: pointer; text-align: left; font: inherit; font-size: 0.85rem; }
@@ -319,6 +321,7 @@ button { font: inherit; }
 
 /* ---- compact shell: nothing may force the document wider than the viewport ---- */
 @media (max-width: 700px) {
+  :root { --topbar-h: 6rem; } /* the bar wraps its nav onto a second row here */
   .topbar { flex-wrap: wrap; gap: 0.5rem; row-gap: 0.35rem; padding: 0.5rem 0.75rem; }
   .nav { order: 10; flex-basis: 100%; margin-left: 0; overflow-x: auto; }
   .nav a { white-space: nowrap; }
@@ -330,7 +333,8 @@ button { font: inherit; }
   .kv > div { flex-direction: column; gap: 0; }
   .kv dt { min-width: 0; }
   .diff-layout { flex-direction: column; }
-  .diff-tree { flex-basis: auto; max-width: 100%; width: 100%; position: static; max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--border); padding-right: 0; padding-bottom: 0.5rem; }
+  /* Stacked by design, still pinned: the diff scrolls under it, hence a background of its own. */
+  .diff-tree { flex-basis: auto; max-width: 100%; width: 100%; top: calc(var(--topbar-h) + 0.5rem); max-height: 40vh; background: var(--surface); border-right: 0; border-bottom: 1px solid var(--border); padding-right: 0; padding-bottom: 0.5rem; }
   .act-kind { width: auto; }
   .scenario-bar { padding: 0.35rem 0.75rem; }
   .sect-head { flex-wrap: wrap; }

@@ -283,15 +283,22 @@ export interface ActivityResponse {
   unreadable: UnreadableRow[]; population: Population;
 }
 
-export interface Commit { sha: string; at: string; subject: string }
+/** `added`/`deleted` are git's `--numstat` totals — NULL for a merge, which git counts no lines for,
+ * and null under `binary`, where every file git saw was one it counts no lines in. */
+export interface Commit {
+  sha: string; at: string; subject: string; parents: string[];
+  added: number | null; deleted: number | null; binary: boolean;
+}
 export type CommitsResponse =
   | { v: number; available: true; commits: Commit[]; head?: string; baseSha?: string }
   | { v: number; available: false; reason: string; commits: Commit[]; head?: string };
 
-export interface DiffFileRow { status: string; path: string }
+export interface DiffFileRow {
+  status: string; path: string; added: number | null; deleted: number | null; binary: boolean;
+}
 export type DiffResponse =
-  | { v: number; available: true; baseSha: string; head: string; files: DiffFileRow[]; file: string | null; diff: string }
-  | { v: number; available: false; reason: string; files: DiffFileRow[]; diff: null; file: string | null };
+  | { v: number; available: true; baseSha: string; head: string; rev: string | null; files: DiffFileRow[]; file: string | null; diff: string }
+  | { v: number; available: false; reason: string; rev: string | null; files: DiffFileRow[]; diff: null; file: string | null };
 
 /** THE stats formula's output, rendered VERBATIM (VIEWER-REVIEW H01). The client computes no
  * number of its own from it — not a percentage, not an average, not a ratio. */
@@ -324,7 +331,7 @@ export interface ViewerDataSource {
   feature(id: FeatureId, signal?: AbortSignal): Promise<FeatureResponse>;
   activity(limit: number, signal?: AbortSignal): Promise<ActivityResponse>;
   commits(id: FeatureId, signal?: AbortSignal): Promise<CommitsResponse>;
-  diff(id: FeatureId, file: string | null, signal?: AbortSignal): Promise<DiffResponse>;
+  diff(id: FeatureId, file: string | null, rev: string | null, signal?: AbortSignal): Promise<DiffResponse>;
   insights(signal?: AbortSignal): Promise<InsightsResponse>;
   /** dossier-relative artifact text; rejects with the server's own message */
   artifactText(id: FeatureId, path: string, signal?: AbortSignal): Promise<string>;

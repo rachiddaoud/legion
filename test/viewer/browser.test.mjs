@@ -190,6 +190,11 @@ function buildWorld() {
   writeFileSync(join(w, 'src', 'index.mjs'), `${readFileSync(join(w, 'src', 'index.mjs'), 'utf8')}export const step1 = 1;\n`);
   git(w, 'add', '-A');
   git(w, 'commit', '-m', 'feat: the visible change');
+  // A SECOND commit on a SECOND path, long enough to outgrow the viewport: nothing to narrow when
+  // every commit touched one file, and a page that cannot scroll cannot witness A10.
+  writeFileSync(join(w, 'src', 'long.mjs'), `${Array.from({ length: 240 }, (_, i) => `export const line${i} = ${i};`).join('\n')}\n`);
+  git(w, 'add', '-A');
+  git(w, 'commit', '-m', 'feat: a long file');
   const head = git(w, 'rev-parse', 'HEAD');
   // A REAL receipt, earned: the fixture's gate policy is the empty scaffold, so `gate run --boundary`
   // produces `declaredCommands: 0` — a real but TIER-0-ONLY certificate. Nothing is forged here.
@@ -444,6 +449,71 @@ test('FeatureDetail/Changes: a real diff from the scratch repo, and the weak rec
     // Code coloring (c13b): the lazy hljs chunk loads over the real CSP and marks `export`/`const`
     // as keywords. The TEXT above already asserted exactness — the spans are additive.
     await pane.locator('.hljs-keyword').first().waitFor({ timeout: 15_000 });
+  });
+});
+
+test('FeatureDetail/Changes: the navigator stays pinned below the topbar while the diff is scrolled', { skip }, async () => {
+  // A10 is graded HERE because the visual reviewer captures `--full-page`, which has no scroll.
+  await withUi(detail('f-visual'), async (page) => {
+    await openTab(page, 'Changes');
+    const files = sect(page, 'Changed files');
+    await files.locator('button.difftree-file[title="src/long.mjs"]').click();
+    await page.locator('.diff-pane').first().waitFor();
+
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await page.waitForFunction(() => window.scrollY > 400);
+
+    const tree = await page.locator('nav.diff-tree').boundingBox();
+    const bar = await page.locator('.topbar').boundingBox();
+    assert.ok(tree.y >= bar.y + bar.height - 1,
+      `the navigator starts at ${tree.y}, above the sticky topbar's bottom edge at ${bar.y + bar.height} — it is occluded`);
+    assert.ok(tree.y >= 0 && tree.y + tree.height <= 801,
+      `the navigator's box (${tree.y}..${tree.y + tree.height}) left the 800px viewport`);
+    assert.ok(await files.locator('button.difftree-file').first().isVisible(), 'and it still lists its files');
+  }, { viewport: { width: 1280, height: 800 } });
+});
+
+test('FeatureDetail/Changes: one commit narrows the file list, and ± show on the selection, the commit and the file', { skip }, async () => {
+  await withUi(detail('f-visual'), async (page) => {
+    await openTab(page, 'Changes');
+    const files = sect(page, 'Changed files');
+    const commits = sect(page, 'Commits');
+    const longRow = commits.locator('tr', { hasText: 'feat: a long file' });
+    await files.locator('button.difftree-file[title="src/long.mjs"]').waitFor();
+
+    assert.match(await files.locator('.diff-totals').innerText(), /2 files changed \+241 −0/, 'the selection');
+    assert.match(await longRow.locator('.diff-totals').innerText(), /\+240 −0/, 'the commit');
+    assert.match(await files.locator('button.difftree-file[title="src/long.mjs"]').innerText(), /\+240 −0/, 'the file');
+
+    assert.equal(await commits.getByRole('columnheader', { name: 'lines added and removed' }).count(), 1, 'the ± column is a glyph nobody can hear');
+    await longRow.getByRole('button', { name: /^show only commit [0-9a-f]{12}$/ }).click();
+    await files.locator('button.difftree-file[title="src/index.mjs"]').waitFor({ state: 'detached' });
+    assert.match(await files.locator('.diff-totals').innerText(), /1 file changed \+240 −0/);
+
+    await commits.getByRole('button', { name: 'whole branch' }).click();
+    await files.locator('button.difftree-file[title="src/index.mjs"]').waitFor();
+    assert.match(await files.locator('.diff-totals').innerText(), /2 files changed \+241 −0/);
+  });
+});
+
+test('FeatureDetail/Changes: another feature opened at the same tab is the whole branch again', { skip }, async () => {
+  await withUi(`${detail('f-visual')}/changes`, async (page) => {
+    const commits = sect(page, 'Commits');
+    const files = sect(page, 'Changed files');
+    await commits.locator('tr', { hasText: 'feat: a long file' }).getByRole('button').click();
+    await files.locator('button.difftree-file[title="src/index.mjs"]').waitFor({ state: 'detached' });
+
+    const carried = [];
+    page.on('request', (r) => {
+      const u = new URL(r.url());
+      if (u.pathname === '/api/diff' && (u.searchParams.has('rev') || u.searchParams.has('file'))) carried.push(u.search);
+    });
+    // A HASH CHANGE, not a reload — the one navigation that leaves the previous screen mounted.
+    await page.evaluate(() => { window.location.hash = '#/features/default/proj/f-active/changes'; });
+
+    await files.getByText('No file differs from the base yet').waitFor();
+    assert.equal(await commits.getByRole('button', { name: 'whole branch' }).getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(carried, [], `f-visual's selection was carried into f-active's reads:\n${carried.join('\n')}`);
   });
 });
 
