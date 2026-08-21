@@ -195,6 +195,13 @@ function buildWorld() {
   writeFileSync(join(w, 'src', 'long.mjs'), `${Array.from({ length: 240 }, (_, i) => `export const line${i} = ${i}; // and a trailing remark wide enough that this line cannot fit a phone`).join('\n')}\n`);
   git(w, 'add', '-A');
   git(w, 'commit', '-m', 'feat: a long file');
+  // Forty one-liners: the HEIGHT claim below is unobservable until the list outgrows the screen.
+  mkdirSync(join(w, 'src', 'many'), { recursive: true });
+  for (let i = 0; i < 40; i += 1) {
+    writeFileSync(join(w, 'src', 'many', `f${String(i).padStart(2, '0')}.mjs`), `export const f${i} = ${i};\n`);
+  }
+  git(w, 'add', '-A');
+  git(w, 'commit', '-m', 'feat: many small files');
   const head = git(w, 'rev-parse', 'HEAD');
   // A REAL receipt, earned: the fixture's gate policy is the empty scaffold, so `gate run --boundary`
   // produces `declaredCommands: 0` — a real but TIER-0-ONLY certificate. Nothing is forged here.
@@ -502,7 +509,8 @@ test('FeatureDetail/Changes: the navigator stays pinned below the topbar while t
     await files.locator('button.difftree-file[title="src/long.mjs"]').click();
     await page.locator('.diff-pane').first().waitFor();
 
-    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    // Halfway, not to the end, where a sticky box rides up with the last screen of its container.
+    await page.evaluate(() => window.scrollTo(0, Math.round(document.body.scrollHeight / 2)));
     await page.waitForFunction(() => window.scrollY > 400);
 
     const tree = await page.locator('nav.diff-tree').boundingBox();
@@ -512,6 +520,16 @@ test('FeatureDetail/Changes: the navigator stays pinned below the topbar while t
     assert.ok(tree.y >= 0 && tree.y + tree.height <= 801,
       `the navigator's box (${tree.y}..${tree.y + tree.height}) left the 800px viewport`);
     assert.ok(await files.locator('button.difftree-file').first().isVisible(), 'and it still lists its files');
+
+    // Clearing the bar is half of it: the box must also SPEND the viewport it clears.
+    const room = tree.y - (bar.y + bar.height);
+    const box = await page.locator('nav.diff-tree').evaluate((el) => ({
+      hidden: el.scrollHeight - el.clientHeight,
+      below: window.innerHeight - el.getBoundingClientRect().bottom,
+    }));
+    assert.ok(box.hidden > 0, 'the file list already fits the viewport, so this case proves nothing about height');
+    assert.ok(box.below <= room + 1,
+      `the navigator stops ${box.below}px above the viewport bottom while hiding ${box.hidden}px of list; it keeps ${room}px below the topbar, and no more than that below itself`);
   }, { viewport: { width: 1280, height: 800 } });
 });
 
@@ -549,7 +567,7 @@ test('FeatureDetail/Changes: one commit narrows the file list, and ± show on th
     const longRow = commits.locator('tr', { hasText: 'feat: a long file' });
     await files.locator('button.difftree-file[title="src/long.mjs"]').waitFor();
 
-    assert.match(await files.locator('.diff-totals').innerText(), /2 files changed \+241 −0/, 'the selection');
+    assert.match(await files.locator('.diff-totals').innerText(), /42 files changed \+281 −0/, 'the selection');
     assert.match(await longRow.locator('.diff-totals').innerText(), /\+240 −0/, 'the commit');
     assert.match(await files.locator('button.difftree-file[title="src/long.mjs"]').innerText(), /\+240 −0/, 'the file');
 
@@ -560,7 +578,7 @@ test('FeatureDetail/Changes: one commit narrows the file list, and ± show on th
 
     await commits.getByRole('button', { name: 'whole branch' }).click();
     await files.locator('button.difftree-file[title="src/index.mjs"]').waitFor();
-    assert.match(await files.locator('.diff-totals').innerText(), /2 files changed \+241 −0/);
+    assert.match(await files.locator('.diff-totals').innerText(), /42 files changed \+281 −0/);
   });
 });
 

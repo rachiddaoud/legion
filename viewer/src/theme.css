@@ -296,7 +296,7 @@ button { font: inherit; }
 
 /* ---- MR-review split: file tree left, one diff right ---- */
 .diff-layout { display: flex; gap: 0.9rem; align-items: flex-start; }
-.diff-tree { flex: 0 0 250px; max-width: 40%; position: sticky; top: calc(var(--topbar-h) + 0.75rem); max-height: calc(80vh - var(--topbar-h)); overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--border); padding-right: 0.5rem; }
+.diff-tree { flex: 0 0 250px; max-width: 40%; position: sticky; top: calc(var(--topbar-h) + 0.75rem); max-height: calc(100vh - var(--topbar-h) - 1.5rem); overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--border); padding-right: 0.5rem; }
 .diff-content { flex: 1 1 auto; min-width: 0; }
 .diff-content-head { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0 0.5rem; overflow-wrap: anywhere; }
 .difftree-dir, .difftree-file { display: flex; align-items: center; gap: 0.45rem; width: 100%; padding: 0.22rem 0.2rem; background: none; border: 0; border-radius: var(--radius-md); color: var(--text); cursor: pointer; text-align: left; font: inherit; font-size: 0.85rem; }
