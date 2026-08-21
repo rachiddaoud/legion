@@ -31,7 +31,7 @@ import type {
 } from '../data/types';
 import { ACTIVITY_KINDS, isUnreadable, mrRef } from '../data/types';
 import {
-  AttentionRow, Empty, LifecycleNowPanel, Loading, RawStatusNote, ReceiptBadge,
+  ActivityVerdict, AttentionRow, Empty, LifecycleNowPanel, Loading, RawStatusNote, ReceiptBadge,
   ReceiptDetail, RelTime, Section, Spine, StatusPill, exactTime, fmtDuration, fmtTokens,
 } from '../components/ui';
 import { Markdown } from '../components/Markdown';
@@ -498,6 +498,9 @@ function ActivityTab({ view }: { view: FeatureView }) {
                 <span className="console-ts mono" title={exactTime(a.at)}>{shortTime(a.at)}</span>
                 <span className="chip act-kind">{a.kind}</span>
                 <span>{a.label}</span>
+                {a.model && <span className="chip">{a.model}</span>}
+                {a.reused != null && <span className="chip">{a.reused ? 'reused' : 'fresh'}</span>}
+                <ActivityVerdict verdict={a.verdict} />
               </div>
             ))}
           </div>

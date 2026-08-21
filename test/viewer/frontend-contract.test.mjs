@@ -181,9 +181,10 @@ test('the Insights screen renders, it does not compute (H01)', () => {
   assert.deepEqual(arithmetic, [], 'a server statistic is combined with something on this screen');
   assert.ok(!insights.includes('reduce('), 'no aggregation is computed on this screen');
   assert.ok(!insights.includes('Math.'), 'no arithmetic beyond rendering');
-  // COST AND TOKENS ARE NAMED NOWHERE ON THIS SCREEN — no tile, no `—` placeholder, no column and
-  // no note about their absence. A dash implies a value that could arrive, and none can (decision 9).
-  assert.ok(!/cost|token/i.test(insights), 'cost/tokens are named on this screen');
+  // NO MONEY FIGURE, AND NO PLACEHOLDER FOR ONE: no rate is recorded anywhere, so a cost is the one
+  // number this screen could only invent. Token counts arrive computed, and the scans above are what
+  // keep the rendering from deriving a fifth number out of the four.
+  assert.ok(!/\bcost\b|\bprice\b|\$[0-9]/i.test(insights), 'a money figure is rendered on a screen that has no rate');
 });
 
 test('Markdown owns its children exactly once — the memoised __html and the idempotent rewrite', () => {

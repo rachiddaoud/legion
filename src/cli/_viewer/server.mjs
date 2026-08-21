@@ -379,7 +379,7 @@ export function createViewerServer({ distDir = null, org = null, host = '127.0.0
       }
 
       if (rawPath === '/api/insights') {
-        json(res, 200, { v: 1, ...insights({ org: scoped(q) }) });
+        json(res, 200, { v: 1, ...insights({ org: scoped(q), readAgents: readFeatureAgents }) });
         return;
       }
 
@@ -402,8 +402,9 @@ export function createViewerServer({ distDir = null, org = null, host = '127.0.0
           // readCommits is the hardened seam handed INTO the projection (projection.mjs docblock):
           // one dossier read, and the git verdict rendered by the module that owns the DTO. The rows
           // themselves end in the activity fold, which reads sha/date/subject and no ± at all.
-          // readAgents is the second such seam (D6), handed in HERE and nowhere else: no other route
-          // pays for it and no projection test can reach the operator's real ~/.claude.
+          // readAgents is the second such seam (D6), handed to the two projection calls that take
+          // one — here and /api/insights — and to nothing else: no projection test can reach the
+          // operator's real ~/.claude, and the cheap routes below never pay for a transcript read.
           view = featureView({
             org: id.org,
             project: id.project,

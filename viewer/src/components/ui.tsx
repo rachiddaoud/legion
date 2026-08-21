@@ -230,6 +230,12 @@ export function ReceiptDetail({ receipt }: { receipt: Receipt }) {
   );
 }
 
+/** The pass/fail pill of an activity row. The SERVER puts `verdict` on the `review` kind alone, so
+ *  rendering wherever one arrives is what keeps the pill off every other row. */
+export const ActivityVerdict = ({ verdict }: { verdict?: string | null }) => (
+  verdict ? <span className={`verdict-badge verdict-${verdict === 'pass' ? 'pass' : 'fail'}`}>{verdict}</span> : null
+);
+
 // --- load / empty states (VF19) ----------------------------------------------------------------------
 
 export function Empty({ title, hint }: { title: string; hint?: string }) {

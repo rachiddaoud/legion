@@ -245,14 +245,24 @@ export interface ApprovalRef { at: string | null; subjectHash: string | null }
 
 export type ActivityKind =
   | 'stage-enter' | 'stage-complete' | 'task-start' | 'task-done' | 'question' | 'answer'
-  | 'review' | 'approval' | 'gate-receipt' | 'session' | 'mr' | 'commit';
+  | 'review' | 'approval' | 'gate-receipt' | 'session' | 'mr' | 'commit' | 'agent';
 
 export const ACTIVITY_KINDS: ActivityKind[] = [
   'stage-enter', 'stage-complete', 'task-start', 'task-done', 'question', 'answer',
-  'review', 'approval', 'gate-receipt', 'session', 'mr', 'commit',
+  'review', 'approval', 'gate-receipt', 'session', 'mr', 'commit', 'agent',
 ];
 
-export interface ActivityRow { at: string; kind: ActivityKind; label: string }
+/** The last four are KIND-SPECIFIC — `verdict` on a `review` row, the rest on an `agent` row — and
+ *  arrive null where nothing recorded them, so the pill is absent rather than plausible. */
+export interface ActivityRow {
+  at: string;
+  kind: ActivityKind;
+  label: string;
+  verdict?: string | null;
+  agentType?: string | null;
+  model?: string | null;
+  reused?: boolean | null;
+}
 export interface FeedRow extends ActivityRow { key: string; org: string; project: string; name: string }
 
 /** The kernel's own predicates, CALLED on this request and stored nowhere (projection.mjs
@@ -339,6 +349,23 @@ export type DiffResponse =
  * number of its own from it — not a percentage, not an average, not a ratio. */
 export interface Stats { n: number; p50Ms: number | null; p90Ms: number | null; minMs: number | null; maxMs: number | null }
 
+/** The same nearest-rank spread over TOKEN COUNTS: no `Ms` suffix — that formatter prints hours. */
+export interface TokenStats { n: number; p50: number | null; p90: number | null; min: number | null; max: number | null }
+
+/** What one task's dispatches recorded: four figures, never blended, each with its own n.
+ *  `available:false` (no reader was injected) is NAMED — an empty distribution reads as a zero. */
+export type TaskTokens =
+  | { available: false; reason: string }
+  | {
+    available: true;
+    features: number;
+    excluded: { noTranscript: number };
+    input: TokenStats;
+    output: TokenStats;
+    cacheRead: TokenStats;
+    cacheCreate: TokenStats;
+  };
+
 export interface InsightsResponse {
   v: number;
   population: Population;
@@ -351,6 +378,7 @@ export interface InsightsResponse {
     features: number; reviews: number; fixRounds: number; unresolvedFails: number;
     byFeature: { key: string; reviews: number; fixRounds: number; unresolvedFails: number }[];
   };
+  taskTokens: TaskTokens;
 }
 
 // --- the data boundary ----------------------------------------------------------------------------

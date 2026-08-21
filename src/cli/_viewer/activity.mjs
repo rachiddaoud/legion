@@ -1,18 +1,19 @@
 // activity.mjs — the derived activity feed of one feature, folded out of the timestamps the
 // kernel already recorded.
 //
-// THERE IS NO EVENT LOG HERE, AND THIS FILE DOES NOT INVENT ONE. Every entry below is a field that
-// EXISTS in feature.json/tasks.json — `at` is copied verbatim from the record it came from, never
-// synthesised, never interpolated, never back-filled from a neighbouring entry. If the kernel
-// recorded no timestamp for something, this feed has no row for it, and that silence is the
-// honest rendering: missing data is never guessed into valid-looking state.
+// THERE IS NO EVENT LOG HERE, AND THIS FILE DOES NOT INVENT ONE. Every entry below is a field some
+// file already records: feature.json/tasks.json for the kernel kinds, and — for the two INJECTED
+// kinds — git's own log and Claude Code's transcripts, which are where the model a dispatch ran on
+// and whether it had been prompted before are written down. `at` is copied verbatim from the record
+// it came from, never synthesised, never interpolated, never back-filled. If nothing recorded a
+// timestamp for something, this feed has no row for it: missing data is never guessed into state.
 //
-// PURE, AND THAT IS WHY GIT COMMITS ARE AN ARGUMENT. `git log` is the one activity source that is
-// not in a manifest, and reading it means spawning a process against a worktree that may be gone.
-// Folding that in here would make this module untestable without a repository and would put a
-// spawn inside the cheap cross-feature feed. So the caller (the server, detail view only) passes
-// `commits` in; this module never imports node:child_process and never touches the filesystem.
-// The global /api/activity feed simply passes nothing, which is exactly this manifest-only shape.
+// PURE, AND THAT IS WHY COMMITS AND AGENTS ARE ARGUMENTS. Those two are the sources that are not in
+// a manifest, and reading them means spawning a process against a worktree that may be gone and
+// walking Claude Code's home — untestable without a repository and a transcript tree, and a cost
+// inside the cheap cross-feature feed. So the caller (the server, detail view only) passes
+// `commits` and `agents` in; this module never imports node:child_process and never touches the
+// filesystem. The global /api/activity feed passes neither, which is this manifest-only shape.
 //
 // SORT ORDER: ASCENDING by `at` (oldest first) — the chronological order the lifecycle happened
 // in. The client reverses it for a newest-first feed; doing that here would make "the order the
@@ -31,7 +32,7 @@
  * silently dropped — but nothing in this module emits one. */
 export const ACTIVITY_KINDS = [
   'stage-enter', 'stage-complete', 'task-start', 'task-done', 'question', 'answer',
-  'review', 'approval', 'gate-receipt', 'session', 'mr', 'commit',
+  'review', 'approval', 'gate-receipt', 'session', 'mr', 'commit', 'agent',
 ];
 
 /** A recorded timestamp is a non-empty STRING in every manifest the kernel writes (ISO 8601 via
@@ -45,21 +46,24 @@ const epoch = (at) => {
 };
 
 /**
- * Fold ONE feature's recorded timestamps into a time-sorted [{at, kind, label}] list.
+ * Fold ONE feature's recorded timestamps into a time-sorted [{at, kind, label, …}] list, whose
+ * trailing fields belong to ONE kind each (`verdict` to a review, the dispatch facts to an agent).
  *
  *   feature  parsed feature.json (required — it carries the stage/session/MR timeline)
  *   tasks    parsed tasks.json, or null when the plan has not been imported yet (an ordinary
  *            early stage, not an error: the task/review/approval/receipt rows simply do not exist)
  *   commits  optional [{sha, at, subject}] the CALLER read through the hardened git seam. Absent
  *            ⇒ no commit rows; this module never spawns anything (header).
+ *   agents   optional [{agentType, model, at, reused}] the CALLER read through the transcript seam.
+ *            Absent ⇒ no agent rows, which is what the manifest-only feed gets.
  *
  * Every field access is defensive (`?.`, `?? []`): this is a projection over files an operator
  * can hand-edit, and a missing array must render as "nothing recorded", never as a crash that
  * takes the whole detail view down.
  */
-export function featureActivity({ feature, tasks = null, commits = [] } = {}) {
+export function featureActivity({ feature, tasks = null, commits = [], agents = [] } = {}) {
   const rows = [];
-  const push = (at, kind, label) => { if (at !== null) rows.push({ at, kind, label }); };
+  const push = (at, kind, label, extra = {}) => { if (at !== null) rows.push({ at, kind, label, ...extra }); };
 
   // --- feature.json: the stage timeline, the sessions, the recorded MR ---------------------
   for (const h of feature?.stageHistory ?? []) {
@@ -98,8 +102,10 @@ export function featureActivity({ feature, tasks = null, commits = [] } = {}) {
       push(dated(t.receipt.at), 'gate-receipt', receiptLabel(`task ${t?.id}`, t.receipt));
     }
   }
+  // The verdict is a FIELD, not part of the sentence: that is what confines a pass/fail pill to
+  // this kind, which a label a client had to parse could not do.
   for (const r of tasks?.reviews ?? []) {
-    push(dated(r?.at), 'review', `${r?.role}: ${r?.verdict} on ${r?.subject}`);
+    push(dated(r?.at), 'review', `${r?.role} on ${r?.subject}`, { verdict: r?.verdict ?? null });
   }
   // Approvals are RECORDED facts here exactly as everywhere else in this viewer: the row says one
   // was recorded at a time, and says nothing about whether it still validates (that is a hash
@@ -115,6 +121,18 @@ export function featureActivity({ feature, tasks = null, commits = [] } = {}) {
   // --- git, injected only (header) ----------------------------------------------------------
   for (const c of commits ?? []) {
     push(dated(c?.at), 'commit', `${String(c?.sha ?? '').slice(0, 8)} ${c?.subject ?? ''}`.trim());
+  }
+
+  // --- agent dispatches, injected only (header) ----------------------------------------------
+  // ONE ROW PER DISPATCH, and none for the coordinator session — no agentType, work interleaved
+  // across every task, "reused" meaningless for it — which is why the seam returns it apart from
+  // `agents`. A figure no transcript recorded stays null, and the client renders no pill at all.
+  for (const a of agents ?? []) {
+    push(dated(a?.at), 'agent', `${a?.agentType ?? 'agent'} dispatched`, {
+      agentType: typeof a?.agentType === 'string' ? a.agentType : null,
+      model: typeof a?.model === 'string' ? a.model : null,
+      reused: typeof a?.reused === 'boolean' ? a.reused : null,
+    });
   }
 
   // Stable ascending sort; unparseable dates last in insertion order (header SORT ORDER).

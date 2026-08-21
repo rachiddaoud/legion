@@ -559,9 +559,10 @@ test('Insights: every tile carries its denominator', { skip }, async () => {
     assert.match(all, /Closed in 7d/i);
     // The other populations are stated in words rather than left implicit under a percentile.
     assert.match(all, /4 tasks across 3 readable features\./);
-    // Cost and tokens have no source in legion3, so there is no tile and no placeholder for them.
+    // Money has no source and no tile stands in for one; tokens are a distribution, not a tile.
     assert.equal(await page.locator('.tile', { hasText: /cost|token/i }).count(), 0);
     assert.doesNotMatch(all, /\$[0-9]/);
+    assert.match(all, /Tokens per task/i); // the section titles render upper-cased
     // The screen opens on those numbers and ends on its last table: neither end explains to the
     // operator how the numbers were computed or why a figure they did not ask for is missing.
     assert.doesNotMatch(all, /Percentiles are nearest-rank/);

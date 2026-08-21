@@ -57,8 +57,9 @@
 // percentile is a position in a tiny sorted list, and saying `n: 3` beside it is the only honest
 // way to show one. MONEY IS ABSENT AND STAYS ABSENT: no rate is recorded anywhere, so no cost is
 // rendered, not as zero and not as a placeholder. TOKEN COUNTS ARE NOT ABSENT ANY MORE — Claude
-// Code's own transcripts record them, and `featureView` reports them from the reader its caller
-// INJECTS (transcripts.mjs), never from a read this module performs.
+// Code's own transcripts record them, and `featureView` (per task, per feature) and `insights`
+// (the fleet distribution) both report them from the reader their caller INJECTS
+// (transcripts.mjs), never from a read this module performs.
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { readJson } from '../../kernel/fsatomic.mjs';
@@ -437,7 +438,8 @@ function windowFor(atMs, windows) {
 /** THE feature's token block, reconciled into the parts its label claims (D6): the per-task column,
  * the dispatches no task window contains, the coordinator session, and the sessions left out because
  * a second registered feature records them. `byTask` is what the task rows carry, so the column and
- * the total are one arithmetic rather than two. */
+ * the total are one arithmetic rather than two, and `agents` is the same read handed on to the
+ * activity fold, so the timeline and the totals cannot describe two different sets of dispatches. */
 function tokensOf({ key, feature, dossier, tasks, readAgents }) {
   const sessions = sessionIdsOf(feature);
   const where = { worktree: feature?.worktree ?? null, dossier };
@@ -447,6 +449,7 @@ function tokensOf({ key, feature, dossier, tasks, readAgents }) {
     return {
       block: { available: false, reason: read?.reason ?? 'the transcript seam returned no verdict for this feature' },
       byTask: null,
+      agents: [],
     };
   }
   const owners = sessionOwners();
@@ -496,6 +499,7 @@ function tokensOf({ key, feature, dossier, tasks, readAgents }) {
       total,
     },
     byTask,
+    agents: read.agents ?? [],
   };
 }
 
@@ -563,10 +567,12 @@ export function featureView({
     reason: 'no transcript was read for this view (the projection never opens Claude Code transcripts; the server supplies the reader)',
   };
   let tokensByTask = null;
+  let agents = [];
   if (typeof readAgents === 'function') {
     const r = tokensOf({ key, feature, dossier, tasks, readAgents });
     tokens = r.block;
     tokensByTask = r.byTask;
+    agents = r.agents;
   }
 
   return {
@@ -598,7 +604,7 @@ export function featureView({
     commandPolicyHash: feature.commandPolicyHash ?? null,
     commandPolicy: feature.commandPolicy ?? null,
     commandPolicyHistory: feature.commandPolicyHistory ?? [],
-    activity: featureActivity({ feature, tasks, commits: rows }),
+    activity: featureActivity({ feature, tasks, commits: rows, agents }),
     lifecycleNow: lifecycleNow(feature, tasks),
     // `available:false` says the projection did not read git, and why — never a guessed commit
     // list. The SERVER fills this in when it has read commits through the seam.
@@ -919,17 +925,53 @@ function percentile(sortedAsc, p) {
   return sortedAsc[Math.min(sortedAsc.length - 1, Math.max(0, rank - 1))];
 }
 
-/** {n, p50, p90, min, max} over a list of durations in ms. n IS the denominator and travels with
- * the numbers, always — a percentile without its population is the kind of number VIEWER-REVIEW
- * H01 was written about. */
-function stats(values) {
+/** {n, p50, p90, min, max} over a list of numbers, whatever they count. n travels with them,
+ * always — a percentile without its population is the number H01 was written about. */
+function spread(values) {
   const sorted = [...values].sort((a, b) => a - b);
   return {
     n: sorted.length,
-    p50Ms: percentile(sorted, 50),
-    p90Ms: percentile(sorted, 90),
-    minMs: sorted.length > 0 ? sorted[0] : null,
-    maxMs: sorted.length > 0 ? sorted[sorted.length - 1] : null,
+    p50: percentile(sorted, 50),
+    p90: percentile(sorted, 90),
+    min: sorted.length > 0 ? sorted[0] : null,
+    max: sorted.length > 0 ? sorted[sorted.length - 1] : null,
+  };
+}
+
+/** The same spread over DURATIONS IN MS, keyed so the unit cannot be lost: the client hands these
+ * to a millisecond formatter, and a token count wearing `p50Ms` would be printed as time. */
+function stats(values) {
+  const s = spread(values);
+  return { n: s.n, p50Ms: s.p50, p90Ms: s.p90, minMs: s.min, maxMs: s.max };
+}
+
+/** Every readable feature's per-task token totals, one sample per task and per figure. A feature
+ * whose transcripts nobody could read is COUNTED, never dropped. The coordinator sessions are absent
+ * on purpose: a session is per feature, not per task (D6), and one folded in here would be a
+ * feature-sized number in a task-sized row. */
+function fleetTaskTokens(records, readAgents) {
+  if (typeof readAgents !== 'function') {
+    return {
+      available: false,
+      reason: 'no transcript was read for these statistics (the projection never opens Claude Code transcripts; the server supplies the reader)',
+    };
+  }
+  const samples = Object.fromEntries(TOKEN_FIGURES.map((f) => [f, []]));
+  let features = 0;
+  let noTranscript = 0;
+  for (const r of records) {
+    const { block, byTask } = tokensOf({
+      key: r.key, feature: r.feature, dossier: r.dossier, tasks: r.tasks, readAgents,
+    });
+    if (block.available !== true) { noTranscript += 1; continue; }
+    features += 1;
+    for (const figures of byTask.values()) for (const f of TOKEN_FIGURES) samples[f].push(figures[f]);
+  }
+  return {
+    available: true,
+    features,
+    excluded: { noTranscript },
+    ...Object.fromEntries(TOKEN_FIGURES.map((f) => [f, spread(samples[f])])),
   };
 }
 
@@ -957,12 +999,14 @@ const ms = (at) => {
  *   reviewRounds        fail → re-judged transitions per (role, subject): a `fail` followed by any
  *                       later verdict for the same key is one round; a `fail` with nothing after
  *                       it is UNRESOLVED and is reported separately rather than folded in.
- * NO COST AND NO TOKEN FIGURE IS IN THESE STATISTICS. Money has no source at all — no rate is
- * recorded anywhere. Token counts do have one, Claude Code's transcripts, but they are read through
- * an injection (see `featureView`) and nothing hands this formula a reader. Neither is rendered as
- * zero and neither is rendered as a placeholder.
+ *   taskTokens          the four token figures over per-task totals, from the INJECTED reader —
+ *                       `{available:false, reason}` when nobody injected one, which is what keeps
+ *                       this formula off the operator's ~/.claude (`featureView`, same seam).
+ * NO COST IS IN THESE STATISTICS, AND NONE CAN BE: no rate is recorded anywhere, so a money figure
+ * has no source — not as zero, not as a placeholder. Token counts do have one, and are reported as
+ * recorded: four figures, never blended into one.
  */
-export function insights({ org = null, now = Date.now() } = {}) {
+export function insights({ org = null, now = Date.now(), readAgents = null } = {}) {
   const { records, unreadable } = collect({ org, now });
 
   const outcomes = Object.fromEntries(VIEWER_STATUSES.map((s) => [s, 0]));
@@ -1064,6 +1108,7 @@ export function insights({ org = null, now = Date.now() } = {}) {
       distribution: Object.fromEntries([...attempts.entries()].sort(sortAttemptKeys)),
     },
     reviewRounds,
+    taskTokens: fleetTaskTokens(records, readAgents),
   };
 }
 

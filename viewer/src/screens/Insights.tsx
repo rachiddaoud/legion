@@ -11,12 +11,13 @@
 // the number H01 was written about. The exclusion counts are shown for the same reason: a duration
 // sample of 2 out of 6 features is honest only if the 4 that were excluded are visible.
 //
-// COST, TOKENS AND WAITING-VS-PROCESSING ARE ABSENT, WITH NO PLACEHOLDER. legion3 records none of
-// them (PLAN-V3 decision 9) and no source for them exists. A tile reading "—" would imply a value
-// that could arrive; being honest means not rendering the tile.
-import type { InsightsResponse, Stats, ViewerStatus } from '../data/types';
+// MONEY IS ABSENT AND STAYS ABSENT, WITH NO PLACEHOLDER. No rate is recorded anywhere, so a cost is
+// the one number this screen could only invent, and a tile reading "—" would imply a value that
+// could arrive. TOKEN COUNTS ARE THE OPPOSITE CASE: the transcripts record them, the server
+// distributes them over the tasks, and the four figures are four rows — never summed into one here.
+import type { InsightsResponse, Stats, TokenStats, ViewerStatus } from '../data/types';
 import { STATUS_LABELS, VIEWER_STATUSES } from '../data/types';
-import { Section, fmtDuration } from '../components/ui';
+import { Section, fmtDuration, fmtTokens } from '../components/ui';
 
 function StatsRow({ label, s }: { label: string; s: Stats }) {
   return (
@@ -27,6 +28,19 @@ function StatsRow({ label, s }: { label: string; s: Stats }) {
       <td className="mono">{fmtDuration(s.p90Ms)}</td>
       <td className="mono">{fmtDuration(s.minMs)}</td>
       <td className="mono">{fmtDuration(s.maxMs)}</td>
+    </tr>
+  );
+}
+
+function TokenStatsRow({ label, s }: { label: string; s: TokenStats }) {
+  return (
+    <tr>
+      <td className="mono">{label}</td>
+      <td className="mono">{s.n}</td>
+      <td className="mono">{fmtTokens(s.p50)}</td>
+      <td className="mono">{fmtTokens(s.p90)}</td>
+      <td className="mono">{fmtTokens(s.min)}</td>
+      <td className="mono">{fmtTokens(s.max)}</td>
     </tr>
   );
 }
@@ -120,6 +134,31 @@ export function Insights({ data }: { data: InsightsResponse }) {
               ))}</tbody>
             </table>
           </div>
+        )}
+      </Section>
+
+      <Section title="Tokens per task — what one task's dispatches recorded">
+        {!data.taskTokens.available ? (
+          <div className="card"><p className="muted" style={{ margin: 0 }}>{data.taskTokens.reason}</p></div>
+        ) : (
+          <>
+            <div className="card tbl-wrap" style={{ padding: 0 }}>
+              <table className="tbl">
+                <thead><tr><th>Figure</th><th>n</th><th>p50</th><th>p90</th><th>min</th><th>max</th></tr></thead>
+                <tbody>
+                  <TokenStatsRow label="input" s={data.taskTokens.input} />
+                  <TokenStatsRow label="output" s={data.taskTokens.output} />
+                  <TokenStatsRow label="cache read" s={data.taskTokens.cacheRead} />
+                  <TokenStatsRow label="cache write" s={data.taskTokens.cacheCreate} />
+                </tbody>
+              </table>
+            </div>
+            <p className="mission-sub">
+              Over {data.taskTokens.features} feature{data.taskTokens.features === 1 ? '' : 's'} whose transcripts were
+              read · {data.taskTokens.excluded.noTranscript} excluded, with no transcript to read. A coordinator session
+              is per feature, not per task, and is in none of these rows.
+            </p>
+          </>
         )}
       </Section>
     </>

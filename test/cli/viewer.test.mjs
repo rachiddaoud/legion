@@ -992,8 +992,11 @@ test('/api/activity is the cross-feature manifest-only feed, newest first and ho
   } finally { h.cleanup(); }
 });
 
-test('/api/insights carries its denominators and never a cost or token number', async () => {
+test('/api/insights carries its denominators, and its token block is the injected read', async () => {
   const h = fixture({ project: 'proj', feature: 'f1' });
+  // Same pin as /api/feature above: served IN PROCESS, the reader's root is the operator's own.
+  const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(h.sandbox, 'claude');
   try {
     await withHome(h.home, async () => {
       const s = await serve({});
@@ -1001,18 +1004,29 @@ test('/api/insights carries its denominators and never a cost or token number', 
         const r = await getJson(s.base, '/api/insights');
         assert.equal(r.status, 200);
         assert.deepEqual(r.body.population, { features: 1, readable: 1, unreadable: 0, org: null, tasks: 0 });
-        for (const k of ['outcomes', 'recentOutcomes', 'featureDuration', 'stageDuration', 'attempts', 'reviewRounds']) {
+        for (const k of ['outcomes', 'recentOutcomes', 'featureDuration', 'stageDuration', 'attempts', 'reviewRounds', 'taskTokens']) {
           assert.ok(k in r.body, `insights is missing ${k}`);
         }
         assert.equal(r.body.featureDuration.n, 0);
         assert.equal(r.body.featureDuration.p50Ms, null); // empty is empty, never a smoothed zero
-        assert.ok(!/cost|token/i.test(JSON.stringify(r.body)));
+        // NO MONEY FIGURE ON ANY ROUTE: no rate is recorded anywhere, so a cost would be invented.
+        assert.ok(!/cost|price|\$[0-9]/i.test(JSON.stringify(r.body)));
+        // THE READER IS INJECTED BY THIS SERVER, so the block is a read verdict rather than the
+        // "nobody handed me one" value: this feature's transcripts are nowhere, and it is COUNTED.
+        assert.equal(r.body.taskTokens.available, true);
+        assert.equal(r.body.taskTokens.features, 0);
+        assert.deepEqual(r.body.taskTokens.excluded, { noTranscript: 1 });
+        assert.deepEqual(r.body.taskTokens.input, { n: 0, p50: null, p90: null, min: null, max: null });
         // The scoped read reports the org it was scoped to, so a thin denominator is legible.
         const scoped = await getJson(s.base, '/api/insights?org=default');
         assert.equal(scoped.body.population.org, 'default');
       } finally { await s.close(); }
     });
-  } finally { h.cleanup(); }
+  } finally {
+    if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
+    h.cleanup();
+  }
 });
 
 test('the recorded/valid distinction survives the wire: no endpoint ever calls an approval valid', async () => {
