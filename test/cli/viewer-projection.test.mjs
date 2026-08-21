@@ -878,7 +878,8 @@ test('a figure no transcript recorded is null on the row, never a plausible one 
     const readAgents = fakeAgents({ agents: [{ at: at(1), agentType: 'legion:builder', tokens: figures(1, 2, 3, 4) }] });
     const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1', readAgents }));
     const [row] = v.activity.filter((a) => a.kind === 'agent');
-    // An unrecorded reuse must not read as `fresh`: the client renders no pill for a null.
+    // Neither may read as a measurement: the client says the model was not recorded, in the pill's
+    // own place, and renders no reuse pill at all for a null.
     assert.equal(row.model, null);
     assert.equal(row.reused, null);
   } finally { h.cleanup(); }
@@ -962,7 +963,15 @@ test('the fleet distribution is four figures over per-task totals, each with its
 
     assert.equal(out.taskTokens.available, true);
     assert.equal(out.taskTokens.features, 2);
-    assert.deepEqual(out.taskTokens.excluded, { noTranscript: 0 });
+    // T3 never started and T4's open window contains no dispatch: two of these five tasks are out of
+    // the sample, and the block says so in TASKS — the screen prints `n` under "5 tasks across 2".
+    assert.deepEqual(out.taskTokens.excluded, { noTranscript: 0, noTranscriptTasks: 0, noDispatch: 2 });
+    assert.equal(out.population.tasks, 5);
+    assert.equal(
+      out.taskTokens.input.n + out.taskTokens.excluded.noTranscriptTasks + out.taskTokens.excluded.noDispatch,
+      out.population.tasks,
+      'a task is missing from both the sample and the exclusions',
+    );
     // Three task totals: T1 = 10+20, T2 = 5, S1 = 100. Nearest-rank over three, no interpolation.
     assert.deepEqual(out.taskTokens.input, { n: 3, p50: 30, p90: 100, min: 5, max: 100 });
     assert.deepEqual(out.taskTokens.output, { n: 3, p50: 5, p90: 50, min: 3, max: 50 });
@@ -990,7 +999,14 @@ test('a feature whose transcripts nobody could read is COUNTED, and the sample s
     // f2 is registered and readable; only its TRANSCRIPTS are missing, which is the exclusion.
     const out = withHome(h.home, () => insights({ readAgents: fakeFleet({ [a]: answer }) }));
     assert.equal(out.taskTokens.features, 1);
-    assert.deepEqual(out.taskTokens.excluded, { noTranscript: 1 });
+    // The unread feature's task leaves under ITS reason: "no dispatch" would blame the window for a
+    // transcript nobody could open.
+    assert.deepEqual(out.taskTokens.excluded, { noTranscript: 1, noTranscriptTasks: 1, noDispatch: 2 });
+    assert.equal(
+      out.taskTokens.input.n + out.taskTokens.excluded.noTranscriptTasks + out.taskTokens.excluded.noDispatch,
+      out.population.tasks,
+      'a task is missing from both the sample and the exclusions',
+    );
     assert.deepEqual(out.taskTokens.input, { n: 2, p50: 5, p90: 30, min: 5, max: 30 });
     assert.deepEqual(out.taskTokens.cacheCreate, { n: 2, p50: 500, p90: 3000, min: 500, max: 3000 });
 
@@ -999,7 +1015,7 @@ test('a feature whose transcripts nobody could read is COUNTED, and the sample s
       readAgents: fakeFleet({ [a]: answer, [dossierOf(h, 'f2')]: { available: true, agents: [{ at: at(7), tokens: figures(100, 50, 1000, 10) }], session: null } }),
     }));
     assert.equal(whole.taskTokens.features, 2);
-    assert.deepEqual(whole.taskTokens.excluded, { noTranscript: 0 });
+    assert.deepEqual(whole.taskTokens.excluded, { noTranscript: 0, noTranscriptTasks: 0, noDispatch: 2 });
     assert.equal(whole.taskTokens.input.n, 3);
   } finally { h.cleanup(); }
 });

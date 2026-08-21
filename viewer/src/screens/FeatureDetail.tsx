@@ -498,7 +498,7 @@ function ActivityTab({ view }: { view: FeatureView }) {
                 <span className="console-ts mono" title={exactTime(a.at)}>{shortTime(a.at)}</span>
                 <span className="chip act-kind">{a.kind}</span>
                 <span>{a.label}</span>
-                {a.model && <span className="chip">{a.model}</span>}
+                {a.kind === 'agent' && <span className="chip">{a.model ?? 'model not recorded'}</span>}
                 {a.reused != null && <span className="chip">{a.reused ? 'reused' : 'fresh'}</span>}
                 <ActivityVerdict verdict={a.verdict} />
               </div>

@@ -948,7 +948,11 @@ function stats(values) {
 /** Every readable feature's per-task token totals, one sample per task and per figure. A feature
  * whose transcripts nobody could read is COUNTED, never dropped. The coordinator sessions are absent
  * on purpose: a session is per feature, not per task (D6), and one folded in here would be a
- * feature-sized number in a task-sized row. */
+ * feature-sized number in a task-sized row.
+ *
+ * EVERY TASK IS EITHER A SAMPLE OR AN EXCLUSION WITH A NAME: `noTranscript` counts features, the
+ * other two the tasks each reason left out, and `n + noTranscriptTasks + noDispatch` is every task
+ * of every readable feature — so `n` reconciles with the `population.tasks` the same screen prints. */
 function fleetTaskTokens(records, readAgents) {
   if (typeof readAgents !== 'function') {
     return {
@@ -959,18 +963,22 @@ function fleetTaskTokens(records, readAgents) {
   const samples = Object.fromEntries(TOKEN_FIGURES.map((f) => [f, []]));
   let features = 0;
   let noTranscript = 0;
+  let noTranscriptTasks = 0;
+  let noDispatch = 0;
   for (const r of records) {
+    const tasks = (r.tasks?.tasks ?? []).length;
     const { block, byTask } = tokensOf({
       key: r.key, feature: r.feature, dossier: r.dossier, tasks: r.tasks, readAgents,
     });
-    if (block.available !== true) { noTranscript += 1; continue; }
+    if (block.available !== true) { noTranscript += 1; noTranscriptTasks += tasks; continue; }
     features += 1;
+    noDispatch += tasks - byTask.size;
     for (const figures of byTask.values()) for (const f of TOKEN_FIGURES) samples[f].push(figures[f]);
   }
   return {
     available: true,
     features,
-    excluded: { noTranscript },
+    excluded: { noTranscript, noTranscriptTasks, noDispatch },
     ...Object.fromEntries(TOKEN_FIGURES.map((f) => [f, spread(samples[f])])),
   };
 }

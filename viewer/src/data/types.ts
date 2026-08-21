@@ -253,7 +253,8 @@ export const ACTIVITY_KINDS: ActivityKind[] = [
 ];
 
 /** The last four are KIND-SPECIFIC — `verdict` on a `review` row, the rest on an `agent` row — and
- *  arrive null where nothing recorded them, so the pill is absent rather than plausible. */
+ *  arrive null where nothing recorded them: never a plausible value, and for the model never a
+ *  missing pill either, since an absent pill is indistinguishable from a dropped one. */
 export interface ActivityRow {
   at: string;
   kind: ActivityKind;
@@ -359,7 +360,7 @@ export type TaskTokens =
   | {
     available: true;
     features: number;
-    excluded: { noTranscript: number };
+    excluded: { noTranscript: number; noTranscriptTasks: number; noDispatch: number };
     input: TokenStats;
     output: TokenStats;
     cacheRead: TokenStats;

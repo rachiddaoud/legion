@@ -95,6 +95,13 @@ export function isRealPrompt(record) {
   return typeof body === 'string' && body.length > 0;
 }
 
+/** A model name, as opposed to the harness's marker for a record no model produced: Claude Code
+ * writes `<synthetic>` where the model goes on an API-error envelope and on a "No response
+ * requested." stub, both with all-zero usage. A marker in a model's slot is not a model, so it is
+ * skipped and the next assistant record decides — 5 dispatches here open on one, none of the five
+ * recorded a model at all, and their `null` is what the viewer says out loud. */
+const isModelName = (value) => typeof value === 'string' && value.length > 0 && value !== '<synthetic>';
+
 function noTokens() {
   return { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
 }
@@ -140,7 +147,7 @@ function readDigest(file) {
     if (out.at === null && typeof record?.timestamp === 'string') out.at = record.timestamp;
     if (out.agentId === null && typeof record?.agentId === 'string') out.agentId = record.agentId;
     if (record?.type === 'assistant') {
-      if (out.model === null && typeof record?.message?.model === 'string') out.model = record.message.model;
+      if (out.model === null && isModelName(record?.message?.model)) out.model = record.message.model;
       const id = record?.message?.id;
       if (typeof id === 'string' && id.length > 0) usagePerMessage.set(id, record?.message?.usage);
       else addUsage(out.tokens, record?.message?.usage);

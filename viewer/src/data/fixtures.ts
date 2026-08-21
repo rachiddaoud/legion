@@ -337,7 +337,7 @@ function world(
       taskTokens: {
         available: true,
         features: 2,
-        excluded: { noTranscript: 1 },
+        excluded: { noTranscript: 1, noTranscriptTasks: 1, noDispatch: 1 },
         input: { n: 5, p50: 412, p90: 1_206, min: 108, max: 1_206 },
         output: { n: 5, p50: 58_213, p90: 91_004, min: 12_004, max: 91_004 },
         cacheRead: { n: 5, p50: 3_104_882, p90: 6_220_115, min: 901_233, max: 6_220_115 },

@@ -126,7 +126,8 @@ export function featureActivity({ feature, tasks = null, commits = [], agents = 
   // --- agent dispatches, injected only (header) ----------------------------------------------
   // ONE ROW PER DISPATCH, and none for the coordinator session — no agentType, work interleaved
   // across every task, "reused" meaningless for it — which is why the seam returns it apart from
-  // `agents`. A figure no transcript recorded stays null, and the client renders no pill at all.
+  // `agents`. A model no transcript recorded stays null here, and the client says so in the pill's
+  // own place: a dropped pill would let the next one slide in and be read as the model.
   for (const a of agents ?? []) {
     push(dated(a?.at), 'agent', `${a?.agentType ?? 'agent'} dispatched`, {
       agentType: typeof a?.agentType === 'string' ? a.agentType : null,

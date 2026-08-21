@@ -205,6 +205,23 @@ function buildWorld() {
     mr: { iid: 7, url: 'https://gitlab.invalid/acme/x/-/merge_requests/7', targetBranch: f.baseBranch, headSha: head, at: NOW },
   }));
 
+  // Claude Code's transcripts, forged where the reader looks: two dispatches of the session f-visual
+  // recorded, naming its worktree as feature.json spells it. One ran on a model; one has only the
+  // harness's placeholder, which is not one.
+  const worktreeRecorded = JSON.parse(readFileSync(join(dossierOf('f-visual'), 'feature.json'), 'utf8')).worktree;
+  const dispatch = (id, agentType, model) => {
+    const dir = join(h.sandbox, 'claude', 'projects', '-forged-proj', 'sess-c13-t42', 'subagents', 'workflows', `wf_${id}`);
+    mkdirSync(dir, { recursive: true });
+    const records = [
+      { type: 'user', timestamp: NOW, agentId: id, message: { role: 'user', content: `Build it in ${worktreeRecorded}\n` } },
+      { type: 'assistant', timestamp: NOW, agentId: id, message: { model, usage: { output_tokens: 3 } } },
+    ];
+    writeFileSync(join(dir, `agent-${id}.jsonl`), `${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
+    writeFileSync(join(dir, `agent-${id}.meta.json`), `${JSON.stringify({ agentType, spawnDepth: 1 })}\n`);
+  };
+  dispatch('a1', 'legion:builder', 'claude-opus-5');
+  dispatch('a2', 'legion:code-reviewer', '<synthetic>');
+
   // f-broken — one corrupt dossier, which must cost the inventory exactly one row (H06).
   writeFileSync(join(dossierOf('f-broken'), 'feature.json'), '{ this is not json\n');
 
@@ -213,9 +230,19 @@ function buildWorld() {
   return { h, empty };
 }
 
-before(() => { if (!skip) world = buildWorld(); });
+/** The transcript reader resolves its root from the environment, and this file serves IN PROCESS,
+ * where HOME is still the operator's — so it is pinned at the forged tree for the whole file. */
+let savedClaudeDir;
+before(() => {
+  if (skip) return;
+  world = buildWorld();
+  savedClaudeDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(world.h.sandbox, 'claude');
+});
 after(async () => {
   if (browser) await browser.close();
+  if (savedClaudeDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = savedClaudeDir;
   if (world) {
     world.h.cleanup();
     rmSync(world.empty, { recursive: true, force: true });
@@ -367,6 +394,21 @@ test('FeatureDetail/Overview: the spine, the RECORDED approvals, and session pre
     assert.match(now, /Stage\s*spec/);
     assert.match(now, /not satisfied/);
     assert.doesNotMatch(now, /Next unsatisfied/);
+  });
+});
+
+test('FeatureDetail/Activity: an agent row names the model that ran it, or says none was recorded', { skip }, async () => {
+  await withUi(detail('f-visual'), async (page) => {
+    await openTab(page, 'Activity');
+    const row = (label) => page.locator('.feed-line').filter({ hasText: label });
+    // THE PILLS ARE POSITIONAL, which is the whole claim: a row whose model nobody recorded keeps
+    // the model's place and says so, so the reuse pill can never slide into it and read as one.
+    assert.deepEqual(await row('legion:builder dispatched').locator('.chip').allInnerTexts(),
+      ['agent', 'claude-opus-5', 'fresh']);
+    assert.deepEqual(await row('legion:code-reviewer dispatched').locator('.chip').allInnerTexts(),
+      ['agent', 'model not recorded', 'fresh']);
+    // `<synthetic>` is the harness's marker for a record no model produced. It reaches no operator.
+    assert.doesNotMatch(await bodyText(page), /synthetic/i);
   });
 });
 
@@ -563,6 +605,10 @@ test('Insights: every tile carries its denominator', { skip }, async () => {
     assert.equal(await page.locator('.tile', { hasText: /cost|token/i }).count(), 0);
     assert.doesNotMatch(all, /\$[0-9]/);
     assert.match(all, /Tokens per task/i); // the section titles render upper-cased
+    // AND ITS POPULATION RECONCILES with the task count two sections above (0 + 2 + 2 = 4), so the
+    // gap between "4 tasks" and `n` cannot read as tasks the screen lost.
+    assert.match(await sect(page, 'Tokens per task').innerText(),
+      /Excluded: 2 with no transcript to read, holding 2 tasks · 2 tasks with no dispatch attributable to a recorded window\./);
     // The screen opens on those numbers and ends on its last table: neither end explains to the
     // operator how the numbers were computed or why a figure they did not ask for is missing.
     assert.doesNotMatch(all, /Percentiles are nearest-rank/);

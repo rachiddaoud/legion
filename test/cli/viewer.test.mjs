@@ -1015,7 +1015,7 @@ test('/api/insights carries its denominators, and its token block is the injecte
         // "nobody handed me one" value: this feature's transcripts are nowhere, and it is COUNTED.
         assert.equal(r.body.taskTokens.available, true);
         assert.equal(r.body.taskTokens.features, 0);
-        assert.deepEqual(r.body.taskTokens.excluded, { noTranscript: 1 });
+        assert.deepEqual(r.body.taskTokens.excluded, { noTranscript: 1, noTranscriptTasks: 0, noDispatch: 0 });
         assert.deepEqual(r.body.taskTokens.input, { n: 0, p50: null, p90: null, min: null, max: null });
         // The scoped read reports the org it was scoped to, so a thin denominator is legible.
         const scoped = await getJson(s.base, '/api/insights?org=default');

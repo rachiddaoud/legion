@@ -338,6 +338,8 @@ button { font: inherit; }
   .diff-tree { flex-basis: auto; max-width: 100%; width: 100%; top: calc(var(--topbar-h) + 0.5rem); max-height: 40vh; background: var(--surface); border-right: 0; border-bottom: 1px solid var(--border); padding-right: 0; padding-bottom: 0.5rem; }
   /* Five chips on one feed line overflow 390px, and an unwrapped flex row takes the DOCUMENT sideways with it. */
   .feed-line { flex-wrap: wrap; }
+  /* A wrapped entry has no left edge of its own, so where one ends and the next begins is drawn. */
+  .feed-line + .feed-line { border-top: 1px solid var(--border); }
   .act-kind { width: auto; }
   .scenario-bar { padding: 0.35rem 0.75rem; }
   .sect-head { flex-wrap: wrap; }

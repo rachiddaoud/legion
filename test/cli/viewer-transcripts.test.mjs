@@ -175,6 +175,45 @@ test('tokens, model and role are read off the records, and the session is return
   } finally { t.cleanup(); }
 });
 
+/** Verbatim from the five dispatches here that open on one: an assistant record nobody's model
+ * produced — the API errored, or no response was asked for — with `<synthetic>` where the model
+ * name goes. */
+const placeholderReply = () => ({
+  type: 'assistant',
+  timestamp: AT,
+  agentId: 'a1',
+  isApiErrorMessage: true,
+  message: {
+    role: 'assistant',
+    model: '<synthetic>',
+    content: [{ type: 'text', text: 'No response requested.' }],
+    usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+  },
+});
+
+test('a dispatch whose only assistant record is the harness placeholder recorded no model', () => {
+  const t = forge().session().coordinator([reply()])
+    .dispatch({ records: [brief(), placeholderReply()] });
+  try {
+    const out = t.read();
+    assert.equal(out.agents.length, 1, 'the dispatch itself is still read — only its model is missing');
+    // A marker forwarded to the timeline is rendered as the model that ran a builder dispatch.
+    assert.equal(out.agents[0].model, null);
+  } finally { t.cleanup(); }
+});
+
+test('a placeholder ahead of the real model is skipped, not taken for the model', () => {
+  const t = forge().session().coordinator([reply()])
+    .dispatch({ records: [brief(), placeholderReply(), reply({ output_tokens: 12 })] });
+  try {
+    const out = t.read();
+    // The marker sits on ONE record; the next assistant record is a different one and decides. No
+    // dispatch on this machine has recovered a model this way — which is why it is pinned here.
+    assert.equal(out.agents[0].model, 'claude-opus-5');
+    assert.equal(out.agents[0].tokens.output, 12);
+  } finally { t.cleanup(); }
+});
+
 test('one message written as several records is counted once, not once per record', () => {
   const streamed = (output) => reply(
     { input_tokens: 4, output_tokens: output, cache_read_input_tokens: 900, cache_creation_input_tokens: 60 },
