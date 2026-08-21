@@ -190,9 +190,9 @@ function buildWorld() {
   writeFileSync(join(w, 'src', 'index.mjs'), `${readFileSync(join(w, 'src', 'index.mjs'), 'utf8')}export const step1 = 1;\n`);
   git(w, 'add', '-A');
   git(w, 'commit', '-m', 'feat: the visible change');
-  // A SECOND commit on a SECOND path, long enough to outgrow the viewport: nothing to narrow when
-  // every commit touched one file, and a page that cannot scroll cannot witness A10.
-  writeFileSync(join(w, 'src', 'long.mjs'), `${Array.from({ length: 240 }, (_, i) => `export const line${i} = ${i};`).join('\n')}\n`);
+  // A SECOND commit on a SECOND path, outgrowing the viewport BOTH WAYS: nothing to narrow when every
+  // commit touched one file, no scroll witnesses A10, and a diff under 390px wide witnesses no overflow.
+  writeFileSync(join(w, 'src', 'long.mjs'), `${Array.from({ length: 240 }, (_, i) => `export const line${i} = ${i}; // and a trailing remark wide enough that this line cannot fit a phone`).join('\n')}\n`);
   git(w, 'add', '-A');
   git(w, 'commit', '-m', 'feat: a long file');
   const head = git(w, 'rev-parse', 'HEAD');
@@ -471,6 +471,32 @@ test('FeatureDetail/Changes: the navigator stays pinned below the topbar while t
       `the navigator's box (${tree.y}..${tree.y + tree.height}) left the 800px viewport`);
     assert.ok(await files.locator('button.difftree-file').first().isVisible(), 'and it still lists its files');
   }, { viewport: { width: 1280, height: 800 } });
+});
+
+test('FeatureDetail/Changes: at 390 the diff scrolls inside its pane, never the document', { skip }, async () => {
+  await withUi(`${detail('f-visual')}/changes`, async (page) => {
+    const files = sect(page, 'Changed files');
+    await files.locator('button.difftree-file[title="src/long.mjs"]').click();
+    await page.locator('.diff-pane').first().waitFor();
+
+    const m = await page.evaluate(() => {
+      const pane = document.querySelector('.diff-pane');
+      return {
+        doc: document.documentElement.scrollWidth,
+        view: window.innerWidth,
+        content: pane.scrollWidth,
+        pane: Math.round(pane.getBoundingClientRect().width),
+        widest: [...document.querySelectorAll('*')]
+          .map((e) => [e.className?.baseVal ?? e.className, Math.round(e.getBoundingClientRect().right)])
+          .filter(([, right]) => right > window.innerWidth)
+          .sort((a, b) => b[1] - a[1])[0] ?? null,
+      };
+    });
+    assert.ok(m.doc <= m.view,
+      `the document is ${m.doc}px wide in a ${m.view}px viewport; widest overflow: ${JSON.stringify(m.widest)}`);
+    assert.ok(m.content > m.pane,
+      `the pane (${m.pane}px) already fits its ${m.content}px of diff, so this case proves nothing`);
+  }, { viewport: { width: 390, height: 844 } });
 });
 
 test('FeatureDetail/Changes: one commit narrows the file list, and ± show on the selection, the commit and the file', { skip }, async () => {
