@@ -501,7 +501,7 @@ test('FeatureDetail/Changes: a real diff from the scratch repo, and the weak rec
   });
 });
 
-test('FeatureDetail/Changes: the navigator stays pinned below the topbar while the diff is scrolled', { skip }, async () => {
+test('FeatureDetail/Changes: the navigator stays pinned below the topbar, and the diff scrolls under it, not over it', { skip }, async () => {
   // A10 is graded HERE because the visual reviewer captures `--full-page`, which has no scroll.
   await withUi(detail('f-visual'), async (page) => {
     await openTab(page, 'Changes');
@@ -531,6 +531,35 @@ test('FeatureDetail/Changes: the navigator stays pinned below the topbar while t
     assert.ok(box.below <= room + 1,
       `the navigator stops ${box.below}px above the viewport bottom while hiding ${box.hidden}px of list; it keeps ${room}px below the topbar, and no more than that below itself`);
   }, { viewport: { width: 1280, height: 800 } });
+
+  // Where the box IS is half of it; that the box is what you can READ there is the other half — at
+  // 390 the layout stacks, so the diff really does pass behind the navigator's opaque background.
+  await withUi(`${detail('f-visual')}/changes`, async (page) => {
+    const files = sect(page, 'Changed files');
+    await files.locator('button.difftree-file[title="src/long.mjs"]').click();
+    await page.locator('.diff-pane').first().waitFor();
+    await page.evaluate(() => window.scrollTo(0, Math.round(document.body.scrollHeight / 2)));
+    await page.waitForFunction(() => window.scrollY > 400);
+
+    const paint = await page.evaluate(() => {
+      const nav = document.querySelector('nav.diff-tree');
+      const r = nav.getBoundingClientRect();
+      const behind = [...document.querySelectorAll('.diff-ln')]
+        .map((el) => el.getBoundingClientRect())
+        .filter((b) => b.top < r.bottom && b.bottom > r.top && b.left < r.right && b.right > r.left);
+      const over = behind.map((b) => {
+        const x = Math.round((Math.max(b.left, r.left) + Math.min(b.right, r.right)) / 2);
+        const y = Math.round((Math.max(b.top, r.top) + Math.min(b.bottom, r.bottom)) / 2);
+        const hit = document.elementFromPoint(x, y);
+        return nav.contains(hit) ? null : `${x},${y} -> ${hit ? `${hit.tagName}.${hit.className}` : 'nothing'}`;
+      }).filter(Boolean);
+      return { behind: behind.length, over, scrollY: window.scrollY };
+    });
+    assert.ok(paint.behind > 0,
+      `no diff line is behind the navigator at scrollY ${paint.scrollY}, so this case proves nothing about what is painted there`);
+    assert.deepEqual(paint.over, [],
+      `the diff is the topmost element at ${paint.over.length} of ${paint.behind} points behind the pinned navigator`);
+  }, { viewport: { width: 390, height: 844 } });
 });
 
 test('FeatureDetail/Changes: at 390 the diff scrolls inside its pane, never the document', { skip }, async () => {
