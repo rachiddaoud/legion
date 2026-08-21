@@ -156,8 +156,9 @@ export function Insights({ data }: { data: InsightsResponse }) {
             <p className="mission-sub">
               Over {data.taskTokens.features} feature{data.taskTokens.features === 1 ? '' : 's'} whose transcripts were
               read. Excluded: {data.taskTokens.excluded.noTranscript} with no transcript to
-              read, holding {data.taskTokens.excluded.noTranscriptTasks} tasks
-              · {data.taskTokens.excluded.noDispatch} tasks with no dispatch attributable to a recorded window. A
+              read, holding {data.taskTokens.excluded.noTranscriptTasks} task
+              {data.taskTokens.excluded.noTranscriptTasks === 1 ? '' : 's'} · {data.taskTokens.excluded.noDispatch} task
+              {data.taskTokens.excluded.noDispatch === 1 ? '' : 's'} with no dispatch attributable to a recorded window. A
               coordinator session is per feature, not per task, and is in none of these rows.
             </p>
           </>

@@ -13,9 +13,9 @@
 //
 // THE SERVER IS THE REAL ONE. `createViewerServer` from src/cli/_viewer/server.mjs, bound on port 0
 // (any free port, so parallel test FILES never collide), serving the real `viewer/dist`. There is no
-// mock API and no fixture data source: `?fixtures` exists in the app for the component gallery and
-// is deliberately NOT what this file exercises — a browser test against fabricated data proves the
-// fabricator works.
+// mock API, and every claim about the DATA is made against that home — a browser test against
+// fabricated data proves the fabricator works. `?fixtures` is opened once, and only for a claim
+// about the RENDERING: a count of one, which the forged home holds no feature able to produce.
 //
 // THE WORLD IS BUILT ONCE. `buildWorld()` runs the real `bin/legion.mjs` a couple of dozen times
 // (project init, four `feature start`s, a plan import, a gate run, real commits); that is ~30s, and
@@ -613,6 +613,15 @@ test('Insights: every tile carries its denominator', { skip }, async () => {
     // operator how the numbers were computed or why a figure they did not ask for is missing.
     assert.doesNotMatch(all, /Percentiles are nearest-rank/);
     assert.doesNotMatch(all, /Cost, token counts and a waiting-versus-processing split are not shown/);
+  });
+});
+
+test('Insights: a single excluded task is "1 task", not "1 tasks"', { skip }, async () => {
+  await withUi('/?fixtures#/insights', async (page) => {
+    const tokens = sect(page, 'Tokens per task');
+    await tokens.locator('.mission-sub').waitFor();
+    assert.match(await tokens.innerText(),
+      /Excluded: 1 with no transcript to read, holding 1 task \u00b7 1 task with no dispatch attributable to a recorded window\./);
   });
 });
 
