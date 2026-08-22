@@ -16,8 +16,13 @@
 //
 // THE SERVER DERIVES NOTHING. Every JSON body below is a projection call rendered verbatim
 // (featureSummaries / featureView / activityFeed / insights). There is no status vocabulary here,
-// no attention rule, no statistic, no cache and no cross-request memory: the process is STATELESS
-// and recomputes per request, so freshness is the client's polling interval and nothing else.
+// no attention rule and no statistic. IT RECOMPUTES PER REQUEST, with ONE exception, and the
+// exception is deliberately not a cache of an answer: transcripts.mjs memoises each transcript
+// file's digest on that file's OWN IDENTITY (mtimeMs + size), so a changed file is re-read and a
+// stale digest cannot outlive its bytes. It buys the read that would otherwise be paid on every
+// poll — 174 ms cold against 10 ms warm for one feature's 63 transcripts, measured in that file's
+// header, against a 3 s detail poll. Nothing else here remembers anything between requests, so
+// freshness is the client's polling interval and nothing else.
 // The two things the server DOES own are the two the projection deliberately refuses: HTTP, and
 // the hardened git reads (the projection never spawns — activity.mjs's header says why), which
 // travel back INTO the projection through its `readCommits` injection so even the git verdict is
@@ -59,6 +64,7 @@ import { featureDir, legionHome, safeSegment } from '../../kernel/paths.mjs';
 import {
   ACTIVITY_FEED_LIMIT, activityFeed, featureSummaries, featureView, insights,
 } from './projection.mjs';
+import { readFeatureAgents } from './transcripts.mjs';
 
 /** THE route table, exhaustive and EXPORTED so the prohibition test can walk it programmatically
  * rather than re-typing a list that would drift. Order is irrelevant (exact-match dispatch); the
@@ -147,6 +153,9 @@ const DIFF_FORMAT = [
   '--no-ext-diff', '--no-textconv', '--no-color', '--no-renames', '--src-prefix=a/', '--dst-prefix=b/',
 ];
 
+/** One `--numstat` row. A BINARY file prints `-` for both counts — a third value, never a zero. */
+const NUMSTAT_ROW = /^(\d+|-)\t(\d+|-)\t(.*)$/;
+
 // --- response helpers ---------------------------------------------------------------------------
 
 const BASE_HEADERS = { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
@@ -170,8 +179,10 @@ function readGit(args, cwd, opts) {
  * EVERY unavailable branch NAMES ITS REASON: an absent worktree is the ordinary aftermath of
  * `legion feature clean`, a missing baseSha is a pre-start manifest, and a failed range is usually
  * a base commit that no longer exists after a rebase. Guessing "no commits" for any of them would
- * render an empty Changes tab that looks like a feature which changed nothing. */
-export function readFeatureCommits({ worktree, baseSha } = {}) {
+ * render an empty Changes tab that looks like a feature which changed nothing.
+ * `counts:false` drops the `--numstat` half — measured on this repo's own 33-commit range, 0.03s
+ * against 0.34-0.94s — for the callers that never read a ±. */
+export function readFeatureCommits({ worktree, baseSha } = {}, { counts = true } = {}) {
   const none = (reason) => ({ available: false, reason, commits: [] });
   if (typeof worktree !== 'string' || worktree.length === 0) {
     return none('feature.json records no worktree path, so there is no checkout to read git in');
@@ -188,31 +199,90 @@ export function readFeatureCommits({ worktree, baseSha } = {}) {
   }
   // %x1f (unit separator) cannot occur in a sha or an ISO date and is vanishingly unlikely in a
   // subject; a subject that did contain one loses only the tail of its own row.
-  const r = readGit(['log', '--format=%H%x1f%aI%x1f%s', `${baseSha}..HEAD`], worktree, { maxBuffer: DIFF_MAX_BUFFER });
+  const numstat = counts ? ['--numstat', ...DIFF_FORMAT] : [];
+  const r = readGit(['log', '--format=%H%x1f%aI%x1f%P%x1f%s', ...numstat, `${baseSha}..HEAD`], worktree, { maxBuffer: DIFF_MAX_BUFFER });
   if (!r.ok) return { ...none(`the range ${baseSha}..HEAD could not be read: ${r.why}`), head };
-  const commits = r.out.split('\n').filter(Boolean).map((line) => {
-    const [sha, at, ...rest] = line.split('\x1f');
-    return { sha, at, subject: rest.join('\x1f') };
-  });
+  // A MERGE prints no `--numstat` rows (git shows no diff for one), hence %P: its ± stay null.
+  const commits = [];
+  const countable = new Map(); // commit → the numstat rows git printed a NUMBER for; a `-` is not one
+  for (const line of r.out.split('\n')) {
+    const cells = line.split('\x1f');
+    if (cells.length >= 4) {
+      const [sha, at, lineage, ...rest] = cells;
+      const parents = lineage.split(' ').filter(Boolean);
+      const unmeasured = parents.length > 1 || !counts;
+      const c = { sha, at, subject: rest.join('\x1f'), parents, added: unmeasured ? null : 0, deleted: unmeasured ? null : 0, binary: false };
+      commits.push(c);
+      countable.set(c, 0);
+      continue;
+    }
+    const row = NUMSTAT_ROW.exec(line);
+    if (row === null) continue;
+    const into = commits.at(-1);
+    if (row[1] === '-') { into.binary = true; continue; }
+    countable.set(into, countable.get(into) + 1);
+    into.added += Number(row[1]);
+    into.deleted += Number(row[2]);
+  }
+  // `binary` is the WHOLE commit's verdict, so it survives only where git counted no line at all:
+  // that commit has no ±, rather than the `+0 −0` it would otherwise be sitting on. A MIXED one
+  // keeps the text counts, with its binary files left out of them exactly as git left them.
+  for (const c of commits) {
+    if (!c.binary) continue;
+    if (countable.get(c) > 0) { c.binary = false; continue; }
+    c.added = null;
+    c.deleted = null;
+  }
   return { available: true, commits, head, baseSha };
 }
 
 /** The per-file (or whole-range) diff, same seam and same typed degradation. `file` is passed
- * AFTER `--` so a path can never be read as an option. */
-function readFeatureDiff({ worktree, baseSha }, file) {
-  const base = readFeatureCommits({ worktree, baseSha });
-  if (!base.available) return { available: false, reason: base.reason, files: [], diff: null, file: file ?? null };
+ * AFTER `--` so a path can never be read as an option. `rev` narrows the read to ONE commit and is
+ * validated by MEMBERSHIP of the range above, never by shape alone; it is read with `git show`
+ * because `git diff <rev>^ <rev>` DIES on a root commit, and `git show` in turn prints nothing for a
+ * MERGE, which would read as a merge that changed no file. The ± need their own read: `--numstat`
+ * and `--name-status` cannot share one invocation, the last flag silently wins. */
+function readFeatureDiff({ worktree, baseSha }, file, rev = null) {
+  const nothing = (reason, files = []) => ({ available: false, reason, files, diff: null, file: file ?? null, rev: rev ?? null });
+  const base = readFeatureCommits({ worktree, baseSha }, { counts: false });
+  if (!base.available) return nothing(base.reason);
   const range = `${baseSha}..HEAD`;
-  const names = readGit(['diff', ...DIFF_FORMAT, '--name-status', range], worktree, { maxBuffer: DIFF_MAX_BUFFER });
-  if (!names.ok) return { available: false, reason: `\`git diff --name-status ${range}\` failed: ${names.why}`, files: [], diff: null, file: file ?? null };
+  let scope = ['diff', ...DIFF_FORMAT];
+  let target = [range];
+  let what = `git diff ${range}`;
+  if (rev !== null) {
+    const picked = SHA_RE.test(rev) ? base.commits.find((c) => c.sha === rev) : undefined;
+    if (picked === undefined) {
+      return nothing(`${JSON.stringify(rev)} is not one of the ${base.commits.length} commit(s) in ${range}, so there is no commit here to show`);
+    }
+    if (picked.parents.length > 1) {
+      return nothing(`${rev.slice(0, 12)} is a merge commit, and \`git show\` prints no diff for one — an empty file list would read as a merge that changed nothing`);
+    }
+    scope = ['show', '--format=', ...DIFF_FORMAT];
+    target = [rev];
+    what = `git show ${rev.slice(0, 12)}`;
+  }
+  const names = readGit([...scope, '--name-status', ...target], worktree, { maxBuffer: DIFF_MAX_BUFFER });
+  if (!names.ok) return nothing(`\`${what} --name-status\` failed: ${names.why}`);
+  const nums = readGit([...scope, '--numstat', ...target], worktree, { maxBuffer: DIFF_MAX_BUFFER });
+  if (!nums.ok) return nothing(`\`${what} --numstat\` failed: ${nums.why}`);
+  const counted = new Map();
+  for (const line of nums.out.split('\n')) {
+    const row = NUMSTAT_ROW.exec(line);
+    if (row === null) continue;
+    counted.set(row[3], row[1] === '-'
+      ? { added: null, deleted: null, binary: true }
+      : { added: Number(row[1]), deleted: Number(row[2]), binary: false });
+  }
   const files = names.out.split('\n').filter(Boolean).map((line) => {
     const [status, ...rest] = line.split('\t');
-    return { status, path: rest.join('\t') };
+    const path = rest.join('\t');
+    return { status, path, ...(counted.get(path) ?? { added: null, deleted: null, binary: false }) };
   });
-  const argv = ['diff', ...DIFF_FORMAT, range, ...(file == null ? [] : ['--', file])];
+  const argv = [...scope, ...target, ...(file == null ? [] : ['--', file])];
   const body = readGit(argv, worktree, { maxBuffer: DIFF_MAX_BUFFER });
-  if (!body.ok) return { available: false, reason: `\`git ${argv.join(' ')}\` failed: ${body.why}`, files, diff: null, file: file ?? null };
-  return { available: true, baseSha, head: base.head, files, file: file ?? null, diff: body.out };
+  if (!body.ok) return nothing(`\`git ${argv.join(' ')}\` failed: ${body.why}`, files);
+  return { available: true, baseSha, head: base.head, rev: rev ?? null, files, file: file ?? null, diff: body.out };
 }
 
 // --- request parsing ------------------------------------------------------------------------------
@@ -309,7 +379,7 @@ export function createViewerServer({ distDir = null, org = null, host = '127.0.0
       }
 
       if (rawPath === '/api/insights') {
-        json(res, 200, { v: 1, ...insights({ org: scoped(q) }) });
+        json(res, 200, { v: 1, ...insights({ org: scoped(q), readAgents: readFeatureAgents }) });
         return;
       }
 
@@ -330,8 +400,18 @@ export function createViewerServer({ distDir = null, org = null, host = '127.0.0
         let view;
         try {
           // readCommits is the hardened seam handed INTO the projection (projection.mjs docblock):
-          // one dossier read, and the git verdict rendered by the module that owns the DTO.
-          view = featureView({ org: id.org, project: id.project, name: id.name, readCommits: readFeatureCommits });
+          // one dossier read, and the git verdict rendered by the module that owns the DTO. The rows
+          // themselves end in the activity fold, which reads sha/date/subject and no ± at all.
+          // readAgents is the second such seam (D6), handed to the two projection calls that take
+          // one — here and /api/insights — and to nothing else: no projection test can reach the
+          // operator's real ~/.claude, and the cheap routes below never pay for a transcript read.
+          view = featureView({
+            org: id.org,
+            project: id.project,
+            name: id.name,
+            readCommits: (w) => readFeatureCommits(w, { counts: false }),
+            readAgents: readFeatureAgents,
+          });
         } catch (err) {
           // A feature that does not exist is a caller error — 404 naming what was asked. A feature
           // that exists but cannot be READ never reaches here: the projection returns the
@@ -360,7 +440,9 @@ export function createViewerServer({ distDir = null, org = null, host = '127.0.0
           return;
         }
         const file = q.get('file');
-        json(res, 200, { v: 1, ...readFeatureDiff(where, file == null || file === '' ? null : file) });
+        const rev = q.get('rev');
+        const asked = (v) => (v == null || v === '' ? null : v);
+        json(res, 200, { v: 1, ...readFeatureDiff(where, asked(file), asked(rev)) });
         return;
       }
 

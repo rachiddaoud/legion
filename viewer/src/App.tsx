@@ -25,12 +25,13 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState, type Reac
 import { FixtureDataSource } from './data/FixtureDataSource';
 import { LegionDataSource } from './data/LegionDataSource';
 import type {
-  ActivityResponse, FeatureId, FeatureResponse, FeaturesResponse, Health, InsightsResponse, Loaded,
+  ActivityResponse, FeatureResponse, FeaturesResponse, Health, InsightsResponse, Loaded,
   ViewerDataSource,
 } from './data/types';
 import { keyOfId, loadedData } from './data/types';
 import { SCENARIOS } from './data/fixtures';
 import { ErrorStrip, Loading } from './components/ui';
+import { connState, parseRoute, routeHash } from './lib/shell.mjs';
 import { Operations } from './screens/Operations';
 import { Features } from './screens/Features';
 import { FeatureDetail } from './screens/FeatureDetail';
@@ -115,8 +116,6 @@ function useHash() {
 }
 
 const nav = (to: string) => { window.location.hash = to; };
-const detailHash = (id: FeatureId) =>
-  `#/features/${encodeURIComponent(id.org)}/${encodeURIComponent(id.project)}/${encodeURIComponent(id.name)}`;
 
 /** One screen crashing must not take down the shell — the boundary resets on navigation. */
 class ScreenBoundary extends Component<{ resetKey: string; children: ReactNode }, { err: Error | null }> {
@@ -157,23 +156,7 @@ export default function App() {
     localStorage.setItem('legion-viewer-theme', theme);
   }, [theme]);
 
-  const route = useMemo(() => {
-    const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-    if (parts[0] === 'features' && parts.length >= 4) {
-      return {
-        screen: 'detail' as const,
-        id: {
-          org: decodeURIComponent(parts[1]),
-          project: decodeURIComponent(parts[2]),
-          name: decodeURIComponent(parts[3]),
-        },
-      };
-    }
-    if (['operations', 'features', 'insights', 'gallery'].includes(parts[0])) {
-      return { screen: parts[0] as 'operations' | 'features' | 'insights' | 'gallery', id: null };
-    }
-    return { screen: 'operations' as const, id: null };
-  }, [hash]);
+  const route = useMemo(() => parseRoute(hash), [hash]);
 
   const sourceKey = `${source.mode}:${scenario}`;
 
@@ -191,6 +174,8 @@ export default function App() {
     `insights:${sourceKey}`, (s) => source.insights(s), FEATURES_POLL_MS,
     route.screen === 'insights',
   );
+  // The poll key AND the detail screen's React key: a selected commit, file or artifact belongs to
+  // the feature it was picked in, and none of it may survive a hop to another feature's screen.
   const detailKey = route.id ? keyOfId(route.id) : '';
   const routeId = route.id;
   const [detail, retryDetail] = usePoll<FeatureResponse>(
@@ -200,6 +185,7 @@ export default function App() {
     routeId !== null,
   );
 
+  const conn = connState(source.mode, health.state);
   const featuresData = loadedData(features);
   const detailData = loadedData(detail);
   const attention = featuresData
@@ -229,10 +215,8 @@ export default function App() {
         <button className="btn btn-ghost" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} aria-label="toggle theme">
           {theme === 'light' ? '◐' : '◑'}<span className="theme-label"> {theme === 'light' ? 'dark' : 'light'}</span>
         </button>
-        <span className="conn" title={health.state === 'ok' ? `legion home ${health.data.legionHome}` : undefined}>
-          {source.mode === 'fixture'
-            ? 'fixtures'
-            : health.state === 'ok' ? 'read-only · loopback' : health.state === 'loading' ? 'connecting…' : 'unreachable'}
+        <span className="conn" role="status" aria-label={conn.label} title={health.state === 'ok' ? `legion home ${health.data.legionHome}` : undefined}>
+          <span aria-hidden="true">{conn.glyph}</span> {conn.label}
         </span>
       </header>
 
@@ -263,12 +247,12 @@ export default function App() {
             )
               : route.screen === 'detail' ? (
                 detail.state === 'loading' ? <Loading what={detailKey} />
-                  : detailData ? <FeatureDetail view={detailData.feature} id={route.id!} source={source} onBack={() => nav('#/operations')} />
+                  : detailData ? <FeatureDetail key={detailKey} view={detailData.feature} id={route.id!} tab={route.tab} onTab={(t) => nav(routeHash(route.id!, t))} source={source} onBack={() => nav('#/operations')} />
                     : <Loading what={detailKey} />
               )
                 : featuresData === null ? <Loading what="the feature inventory" />
-                  : route.screen === 'features' ? <Features features={featuresData} onOpen={(id) => nav(detailHash(id))} />
-                    : <Operations features={featuresData} activity={loadedData(activity)} onOpen={(id) => nav(detailHash(id))} />}
+                  : route.screen === 'features' ? <Features features={featuresData} onOpen={(id) => nav(routeHash(id))} />
+                    : <Operations features={featuresData} activity={loadedData(activity)} onOpen={(id) => nav(routeHash(id))} />}
         </ScreenBoundary>
       </main>
     </div>

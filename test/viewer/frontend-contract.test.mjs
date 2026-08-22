@@ -24,16 +24,17 @@
 //      the tree passes `method: 'GET'`. A POST would have to appear as a literal to work; there is
 //      no route to send it to either, and test/cli/viewer.test.mjs walks the server side.
 //
-//   4. THE CAVEAT AND THE STATS FORMULA ARE NOT RE-WORDED OR RE-DERIVED. The approvals caveat is
-//      shipped IN the DTO, so the client must not carry its own copy of the sentence; the insights
-//      screen must not contain arithmetic over the population (H01).
+//   4. THE DELETED SENTENCES STAY DELETED, AND THE STATS FORMULA IS NOT RE-DERIVED. The screens
+//      that explained legion to its own author render the state instead; a sentence re-typed into
+//      a component is the same screen back. And the insights screen must not contain arithmetic
+//      over the population (H01).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, extname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ACTIVITY_KINDS } from '../../src/cli/_viewer/activity.mjs';
-import { APPROVALS_CAVEAT, ATTENTION_KINDS, VIEWER_STATUSES } from '../../src/cli/_viewer/projection.mjs';
+import { ATTENTION_KINDS, VIEWER_STATUSES } from '../../src/cli/_viewer/projection.mjs';
 import { STAGES } from '../../src/kernel/state.mjs';
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url)))); // test/viewer/x -> repo root
@@ -152,19 +153,22 @@ test('every fetch in the frontend is a GET — there is no other method literal 
   assert.equal(fetches, gets, `every one of the ${fetches} fetch call(s) states method: 'GET' explicitly`);
 });
 
-test('the approvals caveat is the SERVER string — the client carries no second wording', () => {
-  // The DTO ships `approvalsCaveat`; components render it. A copy of the sentence in the client
-  // would be a second wording of "recorded is not valid" that drifts the day the server's changes.
-  // fixtures.ts is exempt for the same reason it is exempt from the stage scan: in fixture mode the
-  // fixture IS the server, so it must be able to state what the server would have sent.
-  const distinctive = APPROVALS_CAVEAT.slice(0, 40);
-  for (const { rel, text } of sources()) {
-    if (rel === 'viewer/src/data/fixtures.ts') continue;
-    assert.ok(!text.includes(distinctive), `${rel} hardcodes the approvals caveat — render the server's string`);
+test('no client file renders a sentence about how legion works — the screens show the state', () => {
+  // The approvals table's last column answers "does this still bind" per row, from the kernel asked
+  // on this request; the initiative identifiers are the operator's own link; the statistics screen
+  // opens on its tiles and ends on its last table. No component may re-type any of it — including
+  // fixtures.ts, which is exempt from the stage scan but has nothing left to state here. The scan
+  // is over CODE, so a header stays free to record what was removed and why.
+  const gone = [
+    /ApprovalsCaveat/, /approvalsCaveat/, /recorded != valid/i, /Recorded, not valid/,
+    /view\.initiative/, /title="Initiative"/,
+    /Percentiles are nearest-rank/, /waiting-versus-processing/i,
+  ];
+  for (const { rel, code } of sources()) {
+    for (const pattern of gone) {
+      assert.equal(pattern.test(code), false, `${rel} renders ${pattern} — that sentence is deleted, not moved`);
+    }
   }
-  // ...and something does render it: the caveat component takes it as a prop.
-  const ui = readFileSync(join(SRC, 'components', 'ui.tsx'), 'utf8');
-  assert.match(ui, /ApprovalsCaveat\(\{ caveat \}/, 'the caveat arrives as data, not as a literal');
 });
 
 test('the Insights screen renders, it does not compute (H01)', () => {
@@ -177,10 +181,10 @@ test('the Insights screen renders, it does not compute (H01)', () => {
   assert.deepEqual(arithmetic, [], 'a server statistic is combined with something on this screen');
   assert.ok(!insights.includes('reduce('), 'no aggregation is computed on this screen');
   assert.ok(!insights.includes('Math.'), 'no arithmetic beyond rendering');
-  // COST AND TOKENS APPEAR ONLY IN THE SENTENCE SAYING THEY ARE NOT SHOWN — no tile, no `—`
-  // placeholder, no column. A dash implies a value that could arrive, and none can (decision 9).
-  const withoutTheDisclaimer = insights.replace(/Cost, token counts[\s\S]*?render\./, '');
-  assert.ok(!/cost|token/i.test(withoutTheDisclaimer), 'cost/tokens are named nowhere but in their own absence note');
+  // NO MONEY FIGURE, AND NO PLACEHOLDER FOR ONE: no rate is recorded anywhere, so a cost is the one
+  // number this screen could only invent. Token counts arrive computed, and the scans above are what
+  // keep the rendering from deriving a fifth number out of the four.
+  assert.ok(!/\bcost\b|\bprice\b|\$[0-9]/i.test(insights), 'a money figure is rendered on a screen that has no rate');
 });
 
 test('Markdown owns its children exactly once — the memoised __html and the idempotent rewrite', () => {

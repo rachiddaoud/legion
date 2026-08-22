@@ -10,8 +10,8 @@
 // are not in the DTO, the mutation methods are not on the data source, and the routes do not exist
 // on the server. Orchestration lives in the session (PLAN-V3 decision 12a).
 //
-// APPROVALS RENDER AS RECORDED. The panel shows `{at, subjectHash}` — what tasks.json stores — under
-// the server's own caveat string, and beside it, separately labelled, the kernel's LIVE verdict from
+// APPROVALS RENDER AS RECORDED. The panel shows `{at, subjectHash}` — what tasks.json stores — and
+// beside it, separately labelled, the kernel's LIVE verdict from
 // `lifecycleNow.approvalsValidNow`, which was computed by CALLING approvalValid on this request. The
 // two are never merged into one green tick: a recorded approval is a fact about a hash at a moment,
 // and whether it still binds is a comparison the kernel performs at the moment of use.
@@ -27,20 +27,20 @@
 import { useEffect, useMemo, useState } from 'react';
 import type {
   ActivityKind, CommitsResponse, DiffFileRow, DiffResponse, FeatureId, FeatureDetailView, FeatureView,
-  Loaded, TaskDetail, UnreadableRow, ViewerDataSource,
+  Loaded, TaskDetail, TokenBlock, TokenFigures, UnreadableRow, ViewerDataSource,
 } from '../data/types';
 import { ACTIVITY_KINDS, isUnreadable, mrRef } from '../data/types';
 import {
-  ApprovalsCaveat, AttentionRow, Empty, LifecycleNowPanel, Loading, RawStatusNote, ReceiptBadge,
-  ReceiptDetail, RelTime, Section, Spine, StatusPill, exactTime,
+  ActivityVerdict, AttentionRow, Empty, LifecycleNowPanel, Loading, RawStatusNote, ReceiptBadge,
+  ReceiptDetail, RelTime, Section, Spine, StatusPill, exactTime, fmtDuration, fmtTokens,
 } from '../components/ui';
 import { Markdown } from '../components/Markdown';
 import { artifactUrl, isHtml, isMarkdown, isServableImage, resolveArtifactPath } from '../lib/artifact-url.mjs';
-import { clipNote, clipRows, diffSummary, fileStatus, parsePatch } from '../lib/diff-view.mjs';
+import { clipNote, clipRows, diffSummary, fileCounts, fileStatus, parsePatch } from '../lib/diff-view.mjs';
 import { getHighlighter, langOfPath } from '../lib/highlight';
 import { safeHref } from '../lib/safe-href.mjs';
+import { TABS } from '../lib/shell.mjs';
 
-const TABS = ['Overview', 'Artifacts', 'Activity', 'Changes'] as const;
 type Tab = (typeof TABS)[number];
 
 /** A dossier that would not parse still gets a page — the same honest "here is why" the inventory
@@ -95,6 +95,75 @@ function policyPins(pins: FeatureView['commandPolicyHash']): string {
       return `${tier} ${h.length > 16 ? `${h.slice(0, 16)}…` : h}`;
     })
     .join(' · ');
+}
+
+/** Nothing attributed ⇒ "not recorded", which is a different statement from a zero. */
+function TaskTokens({ figures }: { figures: TokenFigures | null }) {
+  if (figures === null) return <span className="muted">not recorded</span>;
+  return (
+    <>
+      <span className="mono">{fmtTokens(figures.input)} / {fmtTokens(figures.output)}</span>
+      <p className="mission-sub" style={{ margin: 0 }}>
+        cache {fmtTokens(figures.cacheRead)} r / {fmtTokens(figures.cacheCreate)} w
+      </p>
+    </>
+  );
+}
+
+function TokenRow({ what, figures }: { what: string; figures: TokenFigures | undefined }) {
+  return (
+    <tr>
+      <td>{what}</td>
+      <td className="mono">{fmtTokens(figures?.input)}</td>
+      <td className="mono">{fmtTokens(figures?.output)}</td>
+      <td className="mono">{fmtTokens(figures?.cacheRead)}</td>
+      <td className="mono">{fmtTokens(figures?.cacheCreate)}</td>
+    </tr>
+  );
+}
+
+/** THE RECONCILIATION, rendered so the arithmetic is visible: the total claims the whole feature,
+ * so every part it is made of gets a row — a session that was not read and one a second feature also
+ * records (counted for neither) included. */
+function TokenTable({ tokens }: { tokens: TokenBlock }) {
+  if (!tokens.available) {
+    return <p className="muted" style={{ margin: 0 }}>{tokens.reason ?? 'no transcript was read for this feature.'}</p>;
+  }
+  return (
+    <>
+      {typeof tokens.dispatches === 'number' && (
+        <p className="mission-sub" style={{ marginTop: 0 }}>{tokens.dispatches} dispatch(es) read for this feature.</p>
+      )}
+      <div className="tbl-wrap">
+        <table className="tbl">
+          <thead><tr><th>What</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th></tr></thead>
+          <tbody>
+            <TokenRow what="dispatches inside a task window" figures={tokens.tasks} />
+            <TokenRow what="dispatches inside no task window" figures={tokens.unattributed} />
+            {tokens.session
+              ? <TokenRow what={`the coordinator session ${tokens.sessionId ?? ''}`.trim()} figures={tokens.session} />
+              : (
+                <tr>
+                  <td>the coordinator session</td>
+                  <td colSpan={4} className="muted">
+                    {tokens.sessionReason ?? 'was not counted — see the exclusion below.'}
+                  </td>
+                </tr>
+              )}
+            {(tokens.excluded ?? []).map((e) => (
+              <tr key={e.sessionId}>
+                <td>session <span className="mono">{e.sessionId}</span>, excluded</td>
+                <td colSpan={4} className="muted">
+                  also recorded by {e.alsoRecordedBy.join(', ')}, so its tokens count for neither feature
+                </td>
+              </tr>
+            ))}
+            <TokenRow what="the whole feature" figures={tokens.total} />
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
 }
 
 function OverviewTab({ view }: { view: FeatureView }) {
@@ -165,7 +234,7 @@ function OverviewTab({ view }: { view: FeatureView }) {
             </div>
             <div className="tbl-wrap">
               <table className="tbl">
-                <thead><tr><th>Task</th><th>Status</th><th>Attempt</th><th>Depends on</th><th>Gate receipt</th><th>Done</th></tr></thead>
+                <thead><tr><th>Task</th><th>Status</th><th>Attempt</th><th>Depends on</th><th>Gate receipt</th><th>Duration</th><th>Tokens in / out</th></tr></thead>
                 <tbody>
                   {view.tasksDetail.filter((t) => t.milestone === m.id).map((t) => (
                     <tr key={String(t.id)}>
@@ -174,7 +243,8 @@ function OverviewTab({ view }: { view: FeatureView }) {
                       <td className="mono">{t.attempt ?? '—'}</td>
                       <td className="mono">{t.depends_on.length ? t.depends_on.join(', ') : '—'}</td>
                       <td><ReceiptBadge receipt={t.receipt} what={`task ${t.id}`} /></td>
-                      <td><RelTime iso={t.doneAt} /></td>
+                      <td className="mono" title={t.doneAt ? `done ${exactTime(t.doneAt)}` : undefined}>{fmtDuration(t.durationMs)}</td>
+                      <td><TaskTokens figures={t.tokens} /></td>
                     </tr>
                   ))}
                 </tbody>
@@ -184,9 +254,12 @@ function OverviewTab({ view }: { view: FeatureView }) {
         ))}
       </Section>
 
+      <Section title="Token cost — every dispatch, plus the coordinator session">
+        <div className="card"><TokenTable tokens={view.tokens} /></div>
+      </Section>
+
       <Section title="Approvals — recorded">
         <div className="card">
-          <ApprovalsCaveat caveat={view.approvalsCaveat} />
           {approvalKinds.length === 0 ? <p className="muted" style={{ margin: 0 }}>No approval is recorded for this feature.</p> : (
             <div className="tbl-wrap">
               <table className="tbl">
@@ -224,18 +297,6 @@ function OverviewTab({ view }: { view: FeatureView }) {
           </dl>
         </div>
       </Section>
-
-      {view.initiative && (
-        <Section title="Initiative">
-          <div className="card">
-            <dl className="kv">
-              <div><dt>id</dt><dd className="mono">{view.initiative.id}</dd></div>
-              {view.initiative.role && <div><dt>role</dt><dd className="mono">{String(view.initiative.role)}</dd></div>}
-              {view.initiative.primary && <div><dt>primary</dt><dd className="mono">{String(view.initiative.primary)}</dd></div>}
-            </dl>
-          </div>
-        </Section>
-      )}
     </>
   );
 }
@@ -437,6 +498,9 @@ function ActivityTab({ view }: { view: FeatureView }) {
                 <span className="console-ts mono" title={exactTime(a.at)}>{shortTime(a.at)}</span>
                 <span className="chip act-kind">{a.kind}</span>
                 <span>{a.label}</span>
+                {a.kind === 'agent' && <span className="chip">{a.model ?? 'model not recorded'}</span>}
+                {a.reused != null && <span className="chip">{a.reused ? 'reused' : 'fresh'}</span>}
+                <ActivityVerdict verdict={a.verdict} />
               </div>
             ))}
           </div>
@@ -499,19 +563,19 @@ function PatchPane({ diff, path }: { diff: DiffResponse; path: string }) {
   );
 }
 
-function FileDiff({ source, id, path }: { source: ViewerDataSource; id: FeatureId; path: string }) {
+function FileDiff({ source, id, path, rev }: { source: ViewerDataSource; id: FeatureId; path: string; rev: string | null }) {
   const [state, setState] = useState<Loaded<DiffResponse>>({ state: 'loading' });
   useEffect(() => {
     const ac = new AbortController();
     setState({ state: 'loading' });
-    source.diff(id, path, ac.signal)
+    source.diff(id, path, rev, ac.signal)
       .then((d) => { if (!ac.signal.aborted) setState({ state: 'ok', data: d, at: Date.now() }); })
       .catch((e: unknown) => {
         if (ac.signal.aborted) return;
         setState({ state: 'error', error: e instanceof Error ? e.message : String(e), last: null, at: null });
       });
     return () => ac.abort();
-  }, [source, id.org, id.project, id.name, path]);
+  }, [source, id.org, id.project, id.name, path, rev]);
   if (state.state === 'loading') return <p className="muted">Loading the diff for {path}…</p>;
   if (state.state === 'error') return <p className="dq dq-partial" role="note">{state.error}</p>;
   return <PatchPane diff={state.data} path={path} />;
@@ -538,7 +602,7 @@ function buildTree(files: DiffFileRow[]): DirNode {
   return root;
 }
 
-function ChangedFiles({ files, id, source }: { files: DiffResponse & { available: true }; id: FeatureId; source: ViewerDataSource }) {
+function ChangedFiles({ files, id, source, rev }: { files: DiffResponse & { available: true }; id: FeatureId; source: ViewerDataSource; rev: string | null }) {
   const [picked, setPicked] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const list = files.files;
@@ -580,6 +644,7 @@ function ChangedFiles({ files, id, source }: { files: DiffResponse & { available
           >
             <span className={`diff-status diff-status-${st.cls}`} aria-label={st.label}>{st.code}</span>
             <span className="diff-path mono">{f.path.split('/').pop()}</span>
+            <span className="diff-counts">{fileCounts(f)}</span>
           </button>
         );
       })}
@@ -598,7 +663,7 @@ function ChangedFiles({ files, id, source }: { files: DiffResponse & { available
                 <span className={`diff-status diff-status-${fileStatus(selRow.status).cls}`} aria-hidden="true">{fileStatus(selRow.status).code}</span>
                 <span className="diff-path mono">{selected}</span>
               </div>
-              <FileDiff source={source} id={id} path={selected} />
+              <FileDiff source={source} id={id} path={selected} rev={rev} />
             </>
           )}
         </div>
@@ -610,20 +675,26 @@ function ChangedFiles({ files, id, source }: { files: DiffResponse & { available
 function ChangesTab({ view, id, source }: { view: FeatureView; id: FeatureId; source: ViewerDataSource }) {
   const [commits, setCommits] = useState<Loaded<CommitsResponse>>({ state: 'loading' });
   const [files, setFiles] = useState<Loaded<DiffResponse>>({ state: 'loading' });
+  const [rev, setRev] = useState<string | null>(null);
   const mrHref = safeHref(view.mr?.url);
 
   useEffect(() => {
     const ac = new AbortController();
     setCommits({ state: 'loading' });
-    setFiles({ state: 'loading' });
     source.commits(id, ac.signal)
       .then((c) => { if (!ac.signal.aborted) setCommits({ state: 'ok', data: c, at: Date.now() }); })
       .catch((e: unknown) => { if (!ac.signal.aborted) setCommits({ state: 'error', error: e instanceof Error ? e.message : String(e), last: null, at: null }); });
-    source.diff(id, null, ac.signal)
+    return () => ac.abort();
+  }, [source, id.org, id.project, id.name]);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    setFiles({ state: 'loading' });
+    source.diff(id, null, rev, ac.signal)
       .then((d) => { if (!ac.signal.aborted) setFiles({ state: 'ok', data: d, at: Date.now() }); })
       .catch((e: unknown) => { if (!ac.signal.aborted) setFiles({ state: 'error', error: e instanceof Error ? e.message : String(e), last: null, at: null }); });
     return () => ac.abort();
-  }, [source, id.org, id.project, id.name]);
+  }, [source, id.org, id.project, id.name, rev]);
 
   return (
     <>
@@ -661,6 +732,9 @@ function ChangesTab({ view, id, source }: { view: FeatureView; id: FeatureId; so
         <p className="mission-sub" style={{ marginTop: 0 }}>
           <span className="mono">{view.baseSha ? `${view.baseSha.slice(0, 12)}..HEAD` : '—'}</span> · squashed per milestone
         </p>
+        <div className="searchrow" role="group" aria-label="which commits the diff below covers">
+          <button className={`btn ${rev === null ? 'btn-option' : ''}`} aria-pressed={rev === null} onClick={() => setRev(null)}>whole branch</button>
+        </div>
         {commits.state === 'loading' ? <Loading what="commits" />
           : commits.state === 'error' ? <div className="card"><p className="dq dq-partial" role="note">{commits.error}</p></div>
             : !commits.data.available ? <div className="card"><p className="muted" style={{ margin: 0 }}>No commits could be read — {commits.data.reason}</p></div>
@@ -670,12 +744,20 @@ function ChangesTab({ view, id, source }: { view: FeatureView; id: FeatureId; so
                 : (
                   <div className="card tbl-wrap" style={{ padding: 0 }}>
                     <table className="tbl">
-                      <thead><tr><th>SHA</th><th>When</th><th>Subject</th></tr></thead>
+                      <thead><tr><th>SHA</th><th>When</th><th>Subject</th><th aria-label="lines added and removed">±</th></tr></thead>
                       <tbody>{commits.data.commits.map((c) => (
                         <tr key={c.sha}>
-                          <td className="mono">{c.sha.slice(0, 12)}</td>
+                          <td>
+                            <button
+                              className={`btn mono ${c.sha === rev ? 'btn-option' : ''}`}
+                              aria-pressed={c.sha === rev}
+                              aria-label={`show only commit ${c.sha.slice(0, 12)}`}
+                              onClick={() => setRev(c.sha === rev ? null : c.sha)}
+                            >{c.sha.slice(0, 12)}</button>
+                          </td>
                           <td><RelTime iso={c.at} /></td>
                           <td>{c.subject}</td>
+                          <td className="diff-totals">{fileCounts(c)}</td>
                         </tr>
                       ))}</tbody>
                     </table>
@@ -690,7 +772,7 @@ function ChangesTab({ view, id, source }: { view: FeatureView; id: FeatureId; so
               : files.data.files.length === 0 ? <div className="card"><p className="muted" style={{ margin: 0 }}>
                 No file differs from the base yet — this feature is in <span className="mono">{view.stage ?? 'an unknown stage'}</span>.
               </p></div>
-                : <ChangedFiles files={files.data} id={id} source={source} />}
+                : <ChangedFiles files={files.data} id={id} source={source} rev={rev} />}
       </Section>
     </>
   );
@@ -698,13 +780,14 @@ function ChangesTab({ view, id, source }: { view: FeatureView; id: FeatureId; so
 
 // --- the screen ---------------------------------------------------------------------------------------
 
-export function FeatureDetail({ view, id, source, onBack }: {
+export function FeatureDetail({ view, id, tab, source, onTab, onBack }: {
   view: FeatureDetailView;
   id: FeatureId;
+  tab: Tab;
   source: ViewerDataSource;
+  onTab: (t: Tab) => void;
   onBack: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>('Overview');
   if (isUnreadable(view)) return <UnreadablePage row={view} onBack={onBack} />;
 
   const onTabKey = (e: React.KeyboardEvent, i: number) => {
@@ -715,7 +798,7 @@ export function FeatureDetail({ view, id, source, onBack }: {
           : e.key === 'End' ? n - 1 : -1;
     if (j < 0) return;
     e.preventDefault();
-    setTab(TABS[j]);
+    onTab(TABS[j]);
   };
 
   return (
@@ -743,7 +826,7 @@ export function FeatureDetail({ view, id, source, onBack }: {
             aria-controls="detail-panel"
             tabIndex={tab === t ? 0 : -1}
             onKeyDown={(e) => onTabKey(e, i)}
-            onClick={() => setTab(t)}
+            onClick={() => onTab(t)}
           >
             {t}
           </button>

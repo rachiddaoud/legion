@@ -186,6 +186,36 @@ export interface Receipt {
 
 export interface Answer { question: string | null; answer: string | null; at: string | null }
 
+/** The four counts Claude Code's transcripts record, never blended into one number. A figure the
+ *  transcript did not carry stays null — never a zero standing in for a count nobody wrote down. */
+export interface TokenFigures {
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheCreate: number | null;
+}
+
+/** A coordinator session that more than one registered feature records. Its tokens count for
+ *  NEITHER — splitting them would need a rule nothing records — and the screen names it. */
+export interface ExcludedSession { sessionId: string; alsoRecordedBy: string[] }
+
+/** What the whole feature cost, in the parts that reconcile to the total (projection.mjs D6): the
+ *  per-task column, the dispatches no task window contains, and the coordinator session — null, with
+ *  a reason, when that transcript could not be read or was excluded. `available:false` carries no
+ *  figure at all rather than a zero. */
+export interface TokenBlock {
+  available: boolean;
+  reason?: string;
+  dispatches?: number;
+  tasks?: TokenFigures;
+  unattributed?: TokenFigures;
+  session?: TokenFigures | null;
+  sessionId?: string | null;
+  sessionReason?: string | null;
+  excluded?: ExcludedSession[];
+  total?: TokenFigures;
+}
+
 export interface TaskDetail {
   id: string | null;
   title: string | null;
@@ -195,6 +225,10 @@ export interface TaskDetail {
   depends_on: string[];
   startedAt: string | null;
   doneAt: string | null;
+  /** `doneAt − startedAt`, SUBTRACTED BY THE SERVER; null while a task is still running. */
+  durationMs: number | null;
+  /** The dispatches inside this task's recorded window; null — never zero — where there was none. */
+  tokens: TokenFigures | null;
   /** `answer === null` IS the open question (projection.mjs / hooks/session-start.mjs) */
   answers: Answer[];
   receipt: Receipt;
@@ -205,19 +239,31 @@ export interface TaskDetail {
  *  hash and at are null, and nothing about its bytes is claimed. */
 export interface ArtifactRef { path: string | null; inside: boolean; hash: string | null; at: string | null; recorded: boolean }
 
-/** RECORDED, never valid. There is deliberately no `valid` key — see `approvalsCaveat`. */
+/** RECORDED, never valid. There is deliberately no `valid` key: whether an approval still binds
+ *  is the kernel's live answer, and it arrives per kind in `lifecycleNow.approvalsValidNow`. */
 export interface ApprovalRef { at: string | null; subjectHash: string | null }
 
 export type ActivityKind =
   | 'stage-enter' | 'stage-complete' | 'task-start' | 'task-done' | 'question' | 'answer'
-  | 'review' | 'approval' | 'gate-receipt' | 'session' | 'mr' | 'commit';
+  | 'review' | 'approval' | 'gate-receipt' | 'session' | 'mr' | 'commit' | 'agent';
 
 export const ACTIVITY_KINDS: ActivityKind[] = [
   'stage-enter', 'stage-complete', 'task-start', 'task-done', 'question', 'answer',
-  'review', 'approval', 'gate-receipt', 'session', 'mr', 'commit',
+  'review', 'approval', 'gate-receipt', 'session', 'mr', 'commit', 'agent',
 ];
 
-export interface ActivityRow { at: string; kind: ActivityKind; label: string }
+/** The last four are KIND-SPECIFIC — `verdict` on a `review` row, the rest on an `agent` row — and
+ *  arrive null where nothing recorded them: never a plausible value, and for the model never a
+ *  missing pill either, since an absent pill is indistinguishable from a dropped one. */
+export interface ActivityRow {
+  at: string;
+  kind: ActivityKind;
+  label: string;
+  verdict?: string | null;
+  agentType?: string | null;
+  model?: string | null;
+  reused?: boolean | null;
+}
 export interface FeedRow extends ActivityRow { key: string; org: string; project: string; name: string }
 
 /** The kernel's own predicates, CALLED on this request and stored nowhere (projection.mjs
@@ -250,8 +296,6 @@ export interface FeatureView extends FeatureSummary {
   tasksDetail: TaskDetail[];
   artifacts: Record<string, ArtifactRef>;
   approvals: Record<string, ApprovalRef>;
-  /** shipped IN the DTO so no client can render an approval without it (projection.mjs) */
-  approvalsCaveat: string;
   reviews: Review[];
   boundaryReceipt: Receipt;
   /** TIER-KEYED, and NOT a string: `feature start` pins one hash PER GATE TIER
@@ -268,6 +312,7 @@ export interface FeatureView extends FeatureSummary {
   activity: ActivityRow[];
   lifecycleNow: LifecycleNow;
   git: GitBlock;
+  tokens: TokenBlock;
 }
 
 export type FeatureDetailView = FeatureView | UnreadableRow;
@@ -284,19 +329,43 @@ export interface ActivityResponse {
   unreadable: UnreadableRow[]; population: Population;
 }
 
-export interface Commit { sha: string; at: string; subject: string }
+/** `added`/`deleted` are git's `--numstat` totals — NULL for a merge, which git counts no lines for,
+ * and null under `binary`, where every file git saw was one it counts no lines in. */
+export interface Commit {
+  sha: string; at: string; subject: string; parents: string[];
+  added: number | null; deleted: number | null; binary: boolean;
+}
 export type CommitsResponse =
   | { v: number; available: true; commits: Commit[]; head?: string; baseSha?: string }
   | { v: number; available: false; reason: string; commits: Commit[]; head?: string };
 
-export interface DiffFileRow { status: string; path: string }
+export interface DiffFileRow {
+  status: string; path: string; added: number | null; deleted: number | null; binary: boolean;
+}
 export type DiffResponse =
-  | { v: number; available: true; baseSha: string; head: string; files: DiffFileRow[]; file: string | null; diff: string }
-  | { v: number; available: false; reason: string; files: DiffFileRow[]; diff: null; file: string | null };
+  | { v: number; available: true; baseSha: string; head: string; rev: string | null; files: DiffFileRow[]; file: string | null; diff: string }
+  | { v: number; available: false; reason: string; rev: string | null; files: DiffFileRow[]; diff: null; file: string | null };
 
 /** THE stats formula's output, rendered VERBATIM (VIEWER-REVIEW H01). The client computes no
  * number of its own from it — not a percentage, not an average, not a ratio. */
 export interface Stats { n: number; p50Ms: number | null; p90Ms: number | null; minMs: number | null; maxMs: number | null }
+
+/** The same nearest-rank spread over TOKEN COUNTS: no `Ms` suffix — that formatter prints hours. */
+export interface TokenStats { n: number; p50: number | null; p90: number | null; min: number | null; max: number | null }
+
+/** What one task's dispatches recorded: four figures, never blended, each with its own n.
+ *  `available:false` (no reader was injected) is NAMED — an empty distribution reads as a zero. */
+export type TaskTokens =
+  | { available: false; reason: string }
+  | {
+    available: true;
+    features: number;
+    excluded: { noTranscript: number; noTranscriptTasks: number; noDispatch: number };
+    input: TokenStats;
+    output: TokenStats;
+    cacheRead: TokenStats;
+    cacheCreate: TokenStats;
+  };
 
 export interface InsightsResponse {
   v: number;
@@ -310,6 +379,7 @@ export interface InsightsResponse {
     features: number; reviews: number; fixRounds: number; unresolvedFails: number;
     byFeature: { key: string; reviews: number; fixRounds: number; unresolvedFails: number }[];
   };
+  taskTokens: TaskTokens;
 }
 
 // --- the data boundary ----------------------------------------------------------------------------
@@ -325,7 +395,7 @@ export interface ViewerDataSource {
   feature(id: FeatureId, signal?: AbortSignal): Promise<FeatureResponse>;
   activity(limit: number, signal?: AbortSignal): Promise<ActivityResponse>;
   commits(id: FeatureId, signal?: AbortSignal): Promise<CommitsResponse>;
-  diff(id: FeatureId, file: string | null, signal?: AbortSignal): Promise<DiffResponse>;
+  diff(id: FeatureId, file: string | null, rev: string | null, signal?: AbortSignal): Promise<DiffResponse>;
   insights(signal?: AbortSignal): Promise<InsightsResponse>;
   /** dossier-relative artifact text; rejects with the server's own message */
   artifactText(id: FeatureId, path: string, signal?: AbortSignal): Promise<string>;

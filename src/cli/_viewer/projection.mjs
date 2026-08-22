@@ -25,10 +25,9 @@
 // this kernel knows is a feature this projection cannot place, and saying so is the answer.
 //
 // RECORDED IS NOT VALID, EVERYWHERE. `approvals` renders {at, subjectHash} — the facts tasks.json
-// stores — and carries APPROVALS_CAVEAT so no client can render an approval without the caveat
-// hooks/session-start.mjs already prints. Validity is a HASH COMPARISON the kernel performs at
-// the moment of use, so where this file needs it (the informational next-unsatisfied line) it
-// CALLS approvalValid/stageSatisfied/unsatisfiedPrefix from src/kernel/state.mjs, live, on this
+// stores — and nothing more. Validity is a HASH COMPARISON the kernel performs at the moment of
+// use, so where this file needs it (the informational next-unsatisfied line) it CALLS
+// approvalValid/stageSatisfied/unsatisfiedPrefix from src/kernel/state.mjs, live, on this
 // request, under `lifecycleNow` — a block named for the fact that it is computed now and stored
 // nowhere. Re-implementing any of those three here would be the drift the kernel's own header
 // forbids: two definitions of "satisfied" is one definition too many. A DRAFT is one step
@@ -56,8 +55,11 @@
 // its numbers verbatim and computes none of its own. Counts and denominators travel WITH every
 // statistic, and nothing is smoothed, interpolated or extrapolated: over a dozen features a
 // percentile is a position in a tiny sorted list, and saying `n: 3` beside it is the only honest
-// way to show one. Cost and tokens are absent because no source for them exists (decision 9) —
-// not rendered as zero, not rendered as a placeholder.
+// way to show one. MONEY IS ABSENT AND STAYS ABSENT: no rate is recorded anywhere, so no cost is
+// rendered, not as zero and not as a placeholder. TOKEN COUNTS ARE NOT ABSENT ANY MORE — Claude
+// Code's own transcripts record them, and `featureView` (per task, per feature) and `insights`
+// (the fleet distribution) both report them from the reader their caller INJECTS
+// (transcripts.mjs), never from a read this module performs.
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { readJson } from '../../kernel/fsatomic.mjs';
@@ -95,13 +97,6 @@ export const QUIET_AFTER_HOURS = 24;
 
 /** The "recent outcomes" window Operations and Insights both report over. */
 export const RECENT_OUTCOME_DAYS = 7;
-
-/** The caveat every approval rendering carries, worded as hooks/session-start.mjs words it (the
- * tone precedent named by the kickoff). Shipped IN the DTO so a client cannot render approvals
- * without it and cannot invent a second wording. */
-export const APPROVALS_CAVEAT =
-  'recorded != valid — an artifact edit invalidates deterministically; the kernel decides at use '
-  + 'time, and its refusal is the answer.';
 
 /** Conventional DRAFT filenames, per kind — a viewer display convention, deliberately NOT a
  * kernel export: `artifact-record` accepts any path and enforces no filename, so the kernel must
@@ -376,6 +371,138 @@ export function featureSummaries({ org = null, now = Date.now() } = {}) {
   };
 }
 
+// --- the transcript block: what a feature's dispatches and its coordinator session cost (D6) ----
+
+const TOKEN_FIGURES = ['input', 'output', 'cacheRead', 'cacheCreate'];
+
+const noFigures = () => ({ input: 0, output: 0, cacheRead: 0, cacheCreate: 0 });
+
+function addFigures(into, more) {
+  for (const f of TOKEN_FIGURES) into[f] += Number(more?.[f]) || 0;
+  return into;
+}
+
+/** The session ids one feature RECORDED, DE-DUPLICATED: a feature that recorded the same session
+ * twice names it once, and counting the entries instead is what once reported a shared session that
+ * did not exist. */
+function sessionIdsOf(feature) {
+  const ids = [...(feature?.sessionHistory ?? []).map((s) => s?.sessionId), feature?.currentSession];
+  return [...new Set(ids.filter((id) => typeof id === 'string' && id.length > 0))];
+}
+
+/** Which registered features name each session id, ACROSS EVERY ORG: a terminal session belongs to
+ * the operator, not to an org — `/legion:start` on feature B in the session that just finished
+ * feature A puts one id in two manifests — so a same-org check would miss the case this map exists
+ * to find. feature.json only; collect() would open every tasks.json for facts nobody here reads. */
+function sessionOwners() {
+  const owners = new Map();
+  const indexPath = projectsIndexPath();
+  if (!existsSync(indexPath)) return owners; // nothing is registered (header)
+  for (const o of orgsToScan(null, readJson(indexPath))) {
+    for (const row of scanRegisteredFeatures({ org: o }).rows) {
+      const key = `${row.org}/${row.project}/${row.name}`;
+      for (const id of sessionIdsOf(row.f)) {
+        if (!owners.has(id)) owners.set(id, new Set());
+        owners.get(id).add(key);
+      }
+    }
+  }
+  return owners;
+}
+
+/** The recorded window of each task, `[startedAt, doneAt]` — THE task key (D6). A task id parsed out
+ * of a dispatch's brief is not one: a milestone-close reviewer's brief lists every task of its
+ * milestone. A task still running has no closing timestamp, so its window stays open. */
+function taskWindows(tasks) {
+  const out = [];
+  for (const t of tasks?.tasks ?? []) {
+    const from = Date.parse(t?.startedAt ?? '');
+    if (Number.isNaN(from)) continue;
+    const to = Date.parse(t?.doneAt ?? '');
+    out.push({ id: t?.id ?? null, from, to: Number.isNaN(to) ? Infinity : to });
+  }
+  return out;
+}
+
+/** The window a dispatch belongs to, or null. Where an open window overlaps a later one the dispatch
+ * counts for the task that started LAST, so it is counted once and for the task that was running. */
+function windowFor(atMs, windows) {
+  let best = null;
+  for (const w of windows) {
+    if (!(atMs >= w.from && atMs <= w.to)) continue;
+    if (best === null || w.from > best.from) best = w;
+  }
+  return best;
+}
+
+/** THE feature's token block, reconciled into the parts its label claims (D6): the per-task column,
+ * the dispatches no task window contains, the coordinator session, and the sessions left out because
+ * a second registered feature records them. `byTask` is what the task rows carry, so the column and
+ * the total are one arithmetic rather than two, and `agents` is the same read handed on to the
+ * activity fold, so the timeline and the totals cannot describe two different sets of dispatches. */
+function tokensOf({ key, feature, dossier, tasks, readAgents }) {
+  const sessions = sessionIdsOf(feature);
+  const where = { worktree: feature?.worktree ?? null, dossier };
+  const read = readAgents({ sessions, ...where });
+  if (read?.available !== true) {
+    // A reader that returned nothing usable is NOT rendered as "nothing was spent" (H02).
+    return {
+      block: { available: false, reason: read?.reason ?? 'the transcript seam returned no verdict for this feature' },
+      byTask: null,
+      agents: [],
+    };
+  }
+  const owners = sessionOwners();
+  const excluded = sessions
+    .map((sessionId) => ({ sessionId, alsoRecordedBy: [...(owners.get(sessionId) ?? [])].filter((k) => k !== key) }))
+    .filter((e) => e.alsoRecordedBy.length > 0);
+
+  const windows = taskWindows(tasks);
+  const byTask = new Map();
+  const unattributed = noFigures();
+  let dispatches = 0;
+  for (const a of read.agents ?? []) {
+    dispatches += 1;
+    const w = windowFor(Date.parse(a?.at ?? ''), windows);
+    if (w === null) { addFigures(unattributed, a?.tokens); continue; }
+    if (!byTask.has(w.id)) byTask.set(w.id, noFigures());
+    addFigures(byTask.get(w.id), a?.tokens);
+  }
+  const attributed = noFigures();
+  for (const figures of byTask.values()) addFigures(attributed, figures);
+
+  let session = read.session ?? null;
+  let sessionReason = read.sessionReason ?? null;
+  if (excluded.length > 0) {
+    // The seam SUMS the coordinator transcripts it is given, so asking it again about the sessions
+    // no second feature records is the only way to leave one of several out.
+    const countable = sessions.filter((id) => !excluded.some((e) => e.sessionId === id));
+    const narrowed = countable.length === 0
+      ? { available: true, session: null, sessionReason: null }
+      : readAgents({ sessions: countable, ...where });
+    const usable = narrowed?.available === true;
+    session = usable ? (narrowed.session ?? null) : null;
+    sessionReason = usable ? (narrowed.sessionReason ?? null) : (narrowed?.reason ?? null);
+  }
+
+  const total = addFigures(addFigures(addFigures(noFigures(), attributed), unattributed), session?.tokens);
+  return {
+    block: {
+      available: true,
+      dispatches,
+      tasks: attributed,
+      unattributed,
+      session: session?.tokens ?? null,
+      sessionId: session?.sessionId ?? null,
+      sessionReason,
+      excluded,
+      total,
+    },
+    byTask,
+    agents: read.agents ?? [],
+  };
+}
+
 // --- FeatureView -------------------------------------------------------------------------------
 
 /**
@@ -401,8 +528,15 @@ export function featureSummaries({ org = null, now = Date.now() } = {}) {
  * `{available, reason?, commits}`. THIS MODULE STILL SPAWNS NOTHING: the callback is the server's
  * hardened-seam read, and `git` below is its verdict verbatim, so a pruned worktree renders the
  * real reason instead of the generic "no commits were supplied" one. The array form is unchanged.
+ *
+ * `readAgents` IS THE SAME INJECTION over Claude Code's transcripts (D6), for the same ordering
+ * reason: the sessions and paths a dispatch must name to belong to this feature are in the manifest
+ * this function reads. Absent ⇒ `tokens` says no transcript was read, which is what keeps this
+ * module off the operator's ~/.claude.
  */
-export function featureView({ org, project, name, now = Date.now(), commits = [], readCommits = null } = {}) {
+export function featureView({
+  org, project, name, now = Date.now(), commits = [], readCommits = null, readAgents = null,
+} = {}) {
   const key = `${org}/${project}/${name}`;
   const d = loadDossier(org, project, name);
   if (!d.ok && d.missing) throw new Error(`no such feature '${key}' — ${d.why}`);
@@ -427,6 +561,20 @@ export function featureView({ org, project, name, now = Date.now(), commits = []
       : { available: false, reason: r?.reason ?? 'the git seam returned no verdict for this feature' };
   }
 
+  // THE TRANSCRIPT BLOCK, from whichever reader the caller injected. No reader means no read.
+  let tokens = {
+    available: false,
+    reason: 'no transcript was read for this view (the projection never opens Claude Code transcripts; the server supplies the reader)',
+  };
+  let tokensByTask = null;
+  let agents = [];
+  if (typeof readAgents === 'function') {
+    const r = tokensOf({ key, feature, dossier, tasks, readAgents });
+    tokens = r.block;
+    tokensByTask = r.byTask;
+    agents = r.agents;
+  }
+
   return {
     ...summary,
     dossier,
@@ -446,10 +594,9 @@ export function featureView({ org, project, name, now = Date.now(), commits = []
     sessions: { current: feature.currentSession ?? null, history: feature.sessionHistory ?? [] },
     intakeRepos: feature.intakeRepos ?? [],
     milestones: milestonesOf(tasks),
-    tasksDetail: tasksDetailOf(tasks),
+    tasksDetail: tasksDetailOf(tasks, tokensByTask),
     artifacts: artifactsOf(tasks, dossier),
     approvals: approvalsOf(tasks),
-    approvalsCaveat: APPROVALS_CAVEAT,
     reviews: (tasks?.reviews ?? []).map((r) => ({
       role: r?.role ?? null, verdict: r?.verdict ?? null, subject: r?.subject ?? null, at: r?.at ?? null,
     })),
@@ -457,11 +604,12 @@ export function featureView({ org, project, name, now = Date.now(), commits = []
     commandPolicyHash: feature.commandPolicyHash ?? null,
     commandPolicy: feature.commandPolicy ?? null,
     commandPolicyHistory: feature.commandPolicyHistory ?? [],
-    activity: featureActivity({ feature, tasks, commits: rows }),
+    activity: featureActivity({ feature, tasks, commits: rows, agents }),
     lifecycleNow: lifecycleNow(feature, tasks),
     // `available:false` says the projection did not read git, and why — never a guessed commit
     // list. The SERVER fills this in when it has read commits through the seam.
     git: gitBlock,
+    tokens,
   };
 }
 
@@ -495,11 +643,20 @@ function milestonesOf(tasks) {
   });
 }
 
+function durationOf(startedAt, doneAt) {
+  const from = Date.parse(startedAt ?? '');
+  const to = Date.parse(doneAt ?? '');
+  return Number.isNaN(from) || Number.isNaN(to) ? null : to - from;
+}
+
 /** Per-task detail. `answers` carries the Q&A verbatim — `answer: null` IS the open question and
  * the client renders it as one. The receipt is reduced to {present, declaredCommands, weak, ...}
  * rather than shipped whole: results[] can be large, and the only questions a reader asks of it
- * here are "did a gate run" and "was it a full certificate or a tier-0 one". */
-function tasksDetailOf(tasks) {
+ * here are "did a gate run" and "was it a full certificate or a tier-0 one".
+ * `durationMs` IS SUBTRACTED HERE so the client derives no number; a task still running has no
+ * closing timestamp and therefore no duration. `tokens` is null — never zero — wherever no dispatch
+ * was attributed to the task or no transcript was read at all. */
+function tasksDetailOf(tasks, tokensByTask = null) {
   return (tasks?.tasks ?? []).map((t) => ({
     id: t?.id ?? null,
     title: t?.title ?? null,
@@ -509,6 +666,8 @@ function tasksDetailOf(tasks) {
     depends_on: t?.depends_on ?? [],
     startedAt: t?.startedAt ?? null,
     doneAt: t?.doneAt ?? null,
+    durationMs: durationOf(t?.startedAt, t?.doneAt),
+    tokens: tokensByTask?.get(t?.id ?? null) ?? null,
     answers: (t?.answers ?? []).map((a) => ({ question: a?.question ?? null, answer: a?.answer ?? null, at: a?.at ?? null })),
     receipt: receiptShape(t?.receipt),
   }));
@@ -766,17 +925,61 @@ function percentile(sortedAsc, p) {
   return sortedAsc[Math.min(sortedAsc.length - 1, Math.max(0, rank - 1))];
 }
 
-/** {n, p50, p90, min, max} over a list of durations in ms. n IS the denominator and travels with
- * the numbers, always — a percentile without its population is the kind of number VIEWER-REVIEW
- * H01 was written about. */
-function stats(values) {
+/** {n, p50, p90, min, max} over a list of numbers, whatever they count. n travels with them,
+ * always — a percentile without its population is the number H01 was written about. */
+function spread(values) {
   const sorted = [...values].sort((a, b) => a - b);
   return {
     n: sorted.length,
-    p50Ms: percentile(sorted, 50),
-    p90Ms: percentile(sorted, 90),
-    minMs: sorted.length > 0 ? sorted[0] : null,
-    maxMs: sorted.length > 0 ? sorted[sorted.length - 1] : null,
+    p50: percentile(sorted, 50),
+    p90: percentile(sorted, 90),
+    min: sorted.length > 0 ? sorted[0] : null,
+    max: sorted.length > 0 ? sorted[sorted.length - 1] : null,
+  };
+}
+
+/** The same spread over DURATIONS IN MS, keyed so the unit cannot be lost: the client hands these
+ * to a millisecond formatter, and a token count wearing `p50Ms` would be printed as time. */
+function stats(values) {
+  const s = spread(values);
+  return { n: s.n, p50Ms: s.p50, p90Ms: s.p90, minMs: s.min, maxMs: s.max };
+}
+
+/** Every readable feature's per-task token totals, one sample per task and per figure. A feature
+ * whose transcripts nobody could read is COUNTED, never dropped. The coordinator sessions are absent
+ * on purpose: a session is per feature, not per task (D6), and one folded in here would be a
+ * feature-sized number in a task-sized row.
+ *
+ * EVERY TASK IS EITHER A SAMPLE OR AN EXCLUSION WITH A NAME: `noTranscript` counts features, the
+ * other two the tasks each reason left out, and `n + noTranscriptTasks + noDispatch` is every task
+ * of every readable feature — so `n` reconciles with the `population.tasks` the same screen prints. */
+function fleetTaskTokens(records, readAgents) {
+  if (typeof readAgents !== 'function') {
+    return {
+      available: false,
+      reason: 'no transcript was read for these statistics (the projection never opens Claude Code transcripts; the server supplies the reader)',
+    };
+  }
+  const samples = Object.fromEntries(TOKEN_FIGURES.map((f) => [f, []]));
+  let features = 0;
+  let noTranscript = 0;
+  let noTranscriptTasks = 0;
+  let noDispatch = 0;
+  for (const r of records) {
+    const tasks = (r.tasks?.tasks ?? []).length;
+    const { block, byTask } = tokensOf({
+      key: r.key, feature: r.feature, dossier: r.dossier, tasks: r.tasks, readAgents,
+    });
+    if (block.available !== true) { noTranscript += 1; noTranscriptTasks += tasks; continue; }
+    features += 1;
+    noDispatch += tasks - byTask.size;
+    for (const figures of byTask.values()) for (const f of TOKEN_FIGURES) samples[f].push(figures[f]);
+  }
+  return {
+    available: true,
+    features,
+    excluded: { noTranscript, noTranscriptTasks, noDispatch },
+    ...Object.fromEntries(TOKEN_FIGURES.map((f) => [f, spread(samples[f])])),
   };
 }
 
@@ -804,10 +1007,14 @@ const ms = (at) => {
  *   reviewRounds        fail → re-judged transitions per (role, subject): a `fail` followed by any
  *                       later verdict for the same key is one round; a `fail` with nothing after
  *                       it is UNRESOLVED and is reported separately rather than folded in.
- * COST AND TOKENS ARE ABSENT because nothing records them (PLAN-V3 decision 9). They are not
- * rendered as zero and not rendered as a placeholder: being honest means not rendering them.
+ *   taskTokens          the four token figures over per-task totals, from the INJECTED reader —
+ *                       `{available:false, reason}` when nobody injected one, which is what keeps
+ *                       this formula off the operator's ~/.claude (`featureView`, same seam).
+ * NO COST IS IN THESE STATISTICS, AND NONE CAN BE: no rate is recorded anywhere, so a money figure
+ * has no source — not as zero, not as a placeholder. Token counts do have one, and are reported as
+ * recorded: four figures, never blended into one.
  */
-export function insights({ org = null, now = Date.now() } = {}) {
+export function insights({ org = null, now = Date.now(), readAgents = null } = {}) {
   const { records, unreadable } = collect({ org, now });
 
   const outcomes = Object.fromEntries(VIEWER_STATUSES.map((s) => [s, 0]));
@@ -909,6 +1116,7 @@ export function insights({ org = null, now = Date.now() } = {}) {
       distribution: Object.fromEntries([...attempts.entries()].sort(sortAttemptKeys)),
     },
     reviewRounds,
+    taskTokens: fleetTaskTokens(records, readAgents),
   };
 }
 

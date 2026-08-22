@@ -13,9 +13,9 @@
 //
 // THE SERVER IS THE REAL ONE. `createViewerServer` from src/cli/_viewer/server.mjs, bound on port 0
 // (any free port, so parallel test FILES never collide), serving the real `viewer/dist`. There is no
-// mock API and no fixture data source: `?fixtures` exists in the app for the component gallery and
-// is deliberately NOT what this file exercises — a browser test against fabricated data proves the
-// fabricator works.
+// mock API, and every claim about the DATA is made against that home — a browser test against
+// fabricated data proves the fabricator works. `?fixtures` is opened once, and only for a claim
+// about the RENDERING: a count of one, which the forged home holds no feature able to produce.
 //
 // THE WORLD IS BUILT ONCE. `buildWorld()` runs the real `bin/legion.mjs` a couple of dozen times
 // (project init, four `feature start`s, a plan import, a gate run, real commits); that is ~30s, and
@@ -53,7 +53,6 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { fixture, planTask, NOW } from '../helpers/fixture.mjs';
 import { createViewerServer } from '../../src/cli/_viewer/server.mjs';
-import { APPROVALS_CAVEAT } from '../../src/cli/_viewer/projection.mjs';
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url)))); // test/viewer/x -> repo root
 const DIST = join(ROOT, 'viewer', 'dist');
@@ -191,6 +190,18 @@ function buildWorld() {
   writeFileSync(join(w, 'src', 'index.mjs'), `${readFileSync(join(w, 'src', 'index.mjs'), 'utf8')}export const step1 = 1;\n`);
   git(w, 'add', '-A');
   git(w, 'commit', '-m', 'feat: the visible change');
+  // A SECOND commit on a SECOND path, outgrowing the viewport BOTH WAYS: nothing to narrow when every
+  // commit touched one file, no scroll witnesses A10, and a diff under 390px wide witnesses no overflow.
+  writeFileSync(join(w, 'src', 'long.mjs'), `${Array.from({ length: 240 }, (_, i) => `export const line${i} = ${i}; // and a trailing remark wide enough that this line cannot fit a phone`).join('\n')}\n`);
+  git(w, 'add', '-A');
+  git(w, 'commit', '-m', 'feat: a long file');
+  // Forty one-liners: the HEIGHT claim below is unobservable until the list outgrows the screen.
+  mkdirSync(join(w, 'src', 'many'), { recursive: true });
+  for (let i = 0; i < 40; i += 1) {
+    writeFileSync(join(w, 'src', 'many', `f${String(i).padStart(2, '0')}.mjs`), `export const f${i} = ${i};\n`);
+  }
+  git(w, 'add', '-A');
+  git(w, 'commit', '-m', 'feat: many small files');
   const head = git(w, 'rev-parse', 'HEAD');
   // A REAL receipt, earned: the fixture's gate policy is the empty scaffold, so `gate run --boundary`
   // produces `declaredCommands: 0` — a real but TIER-0-ONLY certificate. Nothing is forged here.
@@ -201,6 +212,23 @@ function buildWorld() {
     mr: { iid: 7, url: 'https://gitlab.invalid/acme/x/-/merge_requests/7', targetBranch: f.baseBranch, headSha: head, at: NOW },
   }));
 
+  // Claude Code's transcripts, forged where the reader looks: two dispatches of the session f-visual
+  // recorded, naming its worktree as feature.json spells it. One ran on a model; one has only the
+  // harness's placeholder, which is not one.
+  const worktreeRecorded = JSON.parse(readFileSync(join(dossierOf('f-visual'), 'feature.json'), 'utf8')).worktree;
+  const dispatch = (id, agentType, model) => {
+    const dir = join(h.sandbox, 'claude', 'projects', '-forged-proj', 'sess-c13-t42', 'subagents', 'workflows', `wf_${id}`);
+    mkdirSync(dir, { recursive: true });
+    const records = [
+      { type: 'user', timestamp: NOW, agentId: id, message: { role: 'user', content: `Build it in ${worktreeRecorded}\n` } },
+      { type: 'assistant', timestamp: NOW, agentId: id, message: { model, usage: { output_tokens: 3 } } },
+    ];
+    writeFileSync(join(dir, `agent-${id}.jsonl`), `${records.map((r) => JSON.stringify(r)).join('\n')}\n`);
+    writeFileSync(join(dir, `agent-${id}.meta.json`), `${JSON.stringify({ agentType, spawnDepth: 1 })}\n`);
+  };
+  dispatch('a1', 'legion:builder', 'claude-opus-5');
+  dispatch('a2', 'legion:code-reviewer', '<synthetic>');
+
   // f-broken — one corrupt dossier, which must cost the inventory exactly one row (H06).
   writeFileSync(join(dossierOf('f-broken'), 'feature.json'), '{ this is not json\n');
 
@@ -209,9 +237,19 @@ function buildWorld() {
   return { h, empty };
 }
 
-before(() => { if (!skip) world = buildWorld(); });
+/** The transcript reader resolves its root from the environment, and this file serves IN PROCESS,
+ * where HOME is still the operator's — so it is pinned at the forged tree for the whole file. */
+let savedClaudeDir;
+before(() => {
+  if (skip) return;
+  world = buildWorld();
+  savedClaudeDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(world.h.sandbox, 'claude');
+});
 after(async () => {
   if (browser) await browser.close();
+  if (savedClaudeDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = savedClaudeDir;
   if (world) {
     world.h.cleanup();
     rmSync(world.empty, { recursive: true, force: true });
@@ -326,7 +364,7 @@ test('Features: all four are listed, and the unreadable one renders distinctly w
   });
 });
 
-test('FeatureDetail/Overview: the spine, the RECORDED approval caveat, and session presence as a recorded fact', { skip }, async () => {
+test('FeatureDetail/Overview: the spine, the RECORDED approvals, and session presence as a recorded fact', { skip }, async () => {
   await withUi(detail('f-visual'), async (page) => {
     await page.locator('ol.spine').waitFor();
     const spine = await page.locator('ol.spine').innerText();
@@ -335,13 +373,6 @@ test('FeatureDetail/Overview: the spine, the RECORDED approval caveat, and sessi
     assert.match(spine, /completed/); // intake was really completed by the kernel op
     assert.match(spine, /current/);
 
-    // THE CAVEAT IS THE SERVER'S SENTENCE, rendered verbatim under a heading that says RECORDED.
-    const caveat = page.locator('p.caveat').first();
-    await caveat.waitFor();
-    const caveatText = await caveat.innerText();
-    assert.match(caveatText, /Recorded, not valid\./);
-    assert.ok(caveatText.includes(APPROVALS_CAVEAT), 'the rendered caveat is not the projection\'s string');
-
     // RECORDED and VALID-NOW are two columns, never one green tick. The recorded row carries a time
     // and a subject hash; the kernel's live answer sits beside it, labelled as asked just now.
     const approvals = sect(page, 'Approvals — recorded');
@@ -349,8 +380,10 @@ test('FeatureDetail/Overview: the spine, the RECORDED approval caveat, and sessi
     assert.match(approvalsText, /intake/);
     assert.match(approvalsText, /The kernel, asked just now/i); // the th is text-transform: uppercase
     assert.match(approvalsText, /still binds/);
-    // The word "valid" appears in the caveat and NOWHERE as a verdict on a recorded row.
+    // "valid" is that column's business and nothing else's: no verdict on a recorded row, and no
+    // preamble paragraph above the table saying in prose what the column says per row.
     assert.doesNotMatch(approvalsText, /\bapproved\b/i);
+    assert.equal(await approvals.locator('p.caveat').count(), 0);
 
     // Session presence, as RECORDED: the id and the manifest-write facts, with no liveness claim
     // anywhere on the panel (the c13b prose trim removed the explainer; the ABSENCE of "running"/
@@ -361,11 +394,28 @@ test('FeatureDetail/Overview: the spine, the RECORDED approval caveat, and sessi
     assert.match(sessionsText, /last manifest write/i);
     assert.doesNotMatch(sessionsText, /\b(running|working|live)\b/i);
 
-    // The kernel's live verdict is a panel of ITS OWN, and it names the next unsatisfied stage the
-    // kernel picked — not one this client ordered.
+    // The kernel's live verdict is a panel of ITS OWN, and it gives that verdict ONCE. The stage
+    // the kernel picked as next unsatisfied IS this feature's stage, so a second paragraph would
+    // print the reason already beside it, word for word.
     const now = await page.locator('.lifecycle-now').innerText();
-    assert.match(now, /satisfied/);
-    assert.match(now, /Next unsatisfied:\s*spec/);
+    assert.match(now, /Stage\s*spec/);
+    assert.match(now, /not satisfied/);
+    assert.doesNotMatch(now, /Next unsatisfied/);
+  });
+});
+
+test('FeatureDetail/Activity: an agent row names the model that ran it, or says none was recorded', { skip }, async () => {
+  await withUi(detail('f-visual'), async (page) => {
+    await openTab(page, 'Activity');
+    const row = (label) => page.locator('.feed-line').filter({ hasText: label });
+    // THE PILLS ARE POSITIONAL, which is the whole claim: a row whose model nobody recorded keeps
+    // the model's place and says so, so the reuse pill can never slide into it and read as one.
+    assert.deepEqual(await row('legion:builder dispatched').locator('.chip').allInnerTexts(),
+      ['agent', 'claude-opus-5', 'fresh']);
+    assert.deepEqual(await row('legion:code-reviewer dispatched').locator('.chip').allInnerTexts(),
+      ['agent', 'model not recorded', 'fresh']);
+    // `<synthetic>` is the harness's marker for a record no model produced. It reaches no operator.
+    assert.doesNotMatch(await bodyText(page), /synthetic/i);
   });
 });
 
@@ -451,6 +501,137 @@ test('FeatureDetail/Changes: a real diff from the scratch repo, and the weak rec
   });
 });
 
+test('FeatureDetail/Changes: the navigator stays pinned below the topbar, and the diff scrolls under it, not over it', { skip }, async () => {
+  // A10 is graded HERE because the visual reviewer captures `--full-page`, which has no scroll.
+  await withUi(detail('f-visual'), async (page) => {
+    await openTab(page, 'Changes');
+    const files = sect(page, 'Changed files');
+    await files.locator('button.difftree-file[title="src/long.mjs"]').click();
+    await page.locator('.diff-pane').first().waitFor();
+
+    // Halfway, not to the end, where a sticky box rides up with the last screen of its container.
+    await page.evaluate(() => window.scrollTo(0, Math.round(document.body.scrollHeight / 2)));
+    await page.waitForFunction(() => window.scrollY > 400);
+
+    const tree = await page.locator('nav.diff-tree').boundingBox();
+    const bar = await page.locator('.topbar').boundingBox();
+    assert.ok(tree.y >= bar.y + bar.height - 1,
+      `the navigator starts at ${tree.y}, above the sticky topbar's bottom edge at ${bar.y + bar.height} — it is occluded`);
+    assert.ok(tree.y >= 0 && tree.y + tree.height <= 801,
+      `the navigator's box (${tree.y}..${tree.y + tree.height}) left the 800px viewport`);
+    assert.ok(await files.locator('button.difftree-file').first().isVisible(), 'and it still lists its files');
+
+    // Clearing the bar is half of it: the box must also SPEND the viewport it clears.
+    const room = tree.y - (bar.y + bar.height);
+    const box = await page.locator('nav.diff-tree').evaluate((el) => ({
+      hidden: el.scrollHeight - el.clientHeight,
+      below: window.innerHeight - el.getBoundingClientRect().bottom,
+    }));
+    assert.ok(box.hidden > 0, 'the file list already fits the viewport, so this case proves nothing about height');
+    assert.ok(box.below <= room + 1,
+      `the navigator stops ${box.below}px above the viewport bottom while hiding ${box.hidden}px of list; it keeps ${room}px below the topbar, and no more than that below itself`);
+  }, { viewport: { width: 1280, height: 800 } });
+
+  // Where the box IS is half of it; that the box is what you can READ there is the other half — at
+  // 390 the layout stacks, so the diff really does pass behind the navigator's opaque background.
+  await withUi(`${detail('f-visual')}/changes`, async (page) => {
+    const files = sect(page, 'Changed files');
+    await files.locator('button.difftree-file[title="src/long.mjs"]').click();
+    await page.locator('.diff-pane').first().waitFor();
+    await page.evaluate(() => window.scrollTo(0, Math.round(document.body.scrollHeight / 2)));
+    await page.waitForFunction(() => window.scrollY > 400);
+
+    const paint = await page.evaluate(() => {
+      const nav = document.querySelector('nav.diff-tree');
+      const r = nav.getBoundingClientRect();
+      const behind = [...document.querySelectorAll('.diff-ln')]
+        .map((el) => el.getBoundingClientRect())
+        .filter((b) => b.top < r.bottom && b.bottom > r.top && b.left < r.right && b.right > r.left);
+      const over = behind.map((b) => {
+        const x = Math.round((Math.max(b.left, r.left) + Math.min(b.right, r.right)) / 2);
+        const y = Math.round((Math.max(b.top, r.top) + Math.min(b.bottom, r.bottom)) / 2);
+        const hit = document.elementFromPoint(x, y);
+        return nav.contains(hit) ? null : `${x},${y} -> ${hit ? `${hit.tagName}.${hit.className}` : 'nothing'}`;
+      }).filter(Boolean);
+      return { behind: behind.length, over, scrollY: window.scrollY };
+    });
+    assert.ok(paint.behind > 0,
+      `no diff line is behind the navigator at scrollY ${paint.scrollY}, so this case proves nothing about what is painted there`);
+    assert.deepEqual(paint.over, [],
+      `the diff is the topmost element at ${paint.over.length} of ${paint.behind} points behind the pinned navigator`);
+  }, { viewport: { width: 390, height: 844 } });
+});
+
+test('FeatureDetail/Changes: at 390 the diff scrolls inside its pane, never the document', { skip }, async () => {
+  await withUi(`${detail('f-visual')}/changes`, async (page) => {
+    const files = sect(page, 'Changed files');
+    await files.locator('button.difftree-file[title="src/long.mjs"]').click();
+    await page.locator('.diff-pane').first().waitFor();
+
+    const m = await page.evaluate(() => {
+      const pane = document.querySelector('.diff-pane');
+      return {
+        doc: document.documentElement.scrollWidth,
+        view: window.innerWidth,
+        content: pane.scrollWidth,
+        pane: Math.round(pane.getBoundingClientRect().width),
+        widest: [...document.querySelectorAll('*')]
+          .map((e) => [e.className?.baseVal ?? e.className, Math.round(e.getBoundingClientRect().right)])
+          .filter(([, right]) => right > window.innerWidth)
+          .sort((a, b) => b[1] - a[1])[0] ?? null,
+      };
+    });
+    assert.ok(m.doc <= m.view,
+      `the document is ${m.doc}px wide in a ${m.view}px viewport; widest overflow: ${JSON.stringify(m.widest)}`);
+    assert.ok(m.content > m.pane,
+      `the pane (${m.pane}px) already fits its ${m.content}px of diff, so this case proves nothing`);
+  }, { viewport: { width: 390, height: 844 } });
+});
+
+test('FeatureDetail/Changes: one commit narrows the file list, and ± show on the selection, the commit and the file', { skip }, async () => {
+  await withUi(detail('f-visual'), async (page) => {
+    await openTab(page, 'Changes');
+    const files = sect(page, 'Changed files');
+    const commits = sect(page, 'Commits');
+    const longRow = commits.locator('tr', { hasText: 'feat: a long file' });
+    await files.locator('button.difftree-file[title="src/long.mjs"]').waitFor();
+
+    assert.match(await files.locator('.diff-totals').innerText(), /42 files changed \+281 −0/, 'the selection');
+    assert.match(await longRow.locator('.diff-totals').innerText(), /\+240 −0/, 'the commit');
+    assert.match(await files.locator('button.difftree-file[title="src/long.mjs"]').innerText(), /\+240 −0/, 'the file');
+
+    assert.equal(await commits.getByRole('columnheader', { name: 'lines added and removed' }).count(), 1, 'the ± column is a glyph nobody can hear');
+    await longRow.getByRole('button', { name: /^show only commit [0-9a-f]{12}$/ }).click();
+    await files.locator('button.difftree-file[title="src/index.mjs"]').waitFor({ state: 'detached' });
+    assert.match(await files.locator('.diff-totals').innerText(), /1 file changed \+240 −0/);
+
+    await commits.getByRole('button', { name: 'whole branch' }).click();
+    await files.locator('button.difftree-file[title="src/index.mjs"]').waitFor();
+    assert.match(await files.locator('.diff-totals').innerText(), /42 files changed \+281 −0/);
+  });
+});
+
+test('FeatureDetail/Changes: another feature opened at the same tab is the whole branch again', { skip }, async () => {
+  await withUi(`${detail('f-visual')}/changes`, async (page) => {
+    const commits = sect(page, 'Commits');
+    const files = sect(page, 'Changed files');
+    await commits.locator('tr', { hasText: 'feat: a long file' }).getByRole('button').click();
+    await files.locator('button.difftree-file[title="src/index.mjs"]').waitFor({ state: 'detached' });
+
+    const carried = [];
+    page.on('request', (r) => {
+      const u = new URL(r.url());
+      if (u.pathname === '/api/diff' && (u.searchParams.has('rev') || u.searchParams.has('file'))) carried.push(u.search);
+    });
+    // A HASH CHANGE, not a reload — the one navigation that leaves the previous screen mounted.
+    await page.evaluate(() => { window.location.hash = '#/features/default/proj/f-active/changes'; });
+
+    await files.getByText('No file differs from the base yet').waitFor();
+    assert.equal(await commits.getByRole('button', { name: 'whole branch' }).getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(carried, [], `f-visual's selection was carried into f-active's reads:\n${carried.join('\n')}`);
+  });
+});
+
 test('Insights: every tile carries its denominator', { skip }, async () => {
   await withUi('/#/insights', async (page) => {
     await page.locator('.tiles').waitFor();
@@ -467,11 +648,27 @@ test('Insights: every tile carries its denominator', { skip }, async () => {
     assert.match(all, /Closed in 7d/i);
     // The other populations are stated in words rather than left implicit under a percentile.
     assert.match(all, /4 tasks across 3 readable features\./);
-    // Cost and tokens have no source in legion3, so there is no tile and no placeholder for them —
-    // only a sentence saying they are absent and why. The absence is the claim under test.
+    // Money has no source and no tile stands in for one; tokens are a distribution, not a tile.
     assert.equal(await page.locator('.tile', { hasText: /cost|token/i }).count(), 0);
-    assert.match(all, /Cost, token counts and a waiting-versus-processing split are not shown/);
     assert.doesNotMatch(all, /\$[0-9]/);
+    assert.match(all, /Tokens per task/i); // the section titles render upper-cased
+    // AND ITS POPULATION RECONCILES with the task count two sections above (0 + 2 + 2 = 4), so the
+    // gap between "4 tasks" and `n` cannot read as tasks the screen lost.
+    assert.match(await sect(page, 'Tokens per task').innerText(),
+      /Excluded: 2 with no transcript to read, holding 2 tasks · 2 tasks with no dispatch attributable to a recorded window\./);
+    // The screen opens on those numbers and ends on its last table: neither end explains to the
+    // operator how the numbers were computed or why a figure they did not ask for is missing.
+    assert.doesNotMatch(all, /Percentiles are nearest-rank/);
+    assert.doesNotMatch(all, /Cost, token counts and a waiting-versus-processing split are not shown/);
+  });
+});
+
+test('Insights: a single excluded task is "1 task", not "1 tasks"', { skip }, async () => {
+  await withUi('/?fixtures#/insights', async (page) => {
+    const tokens = sect(page, 'Tokens per task');
+    await tokens.locator('.mission-sub').waitFor();
+    assert.match(await tokens.innerText(),
+      /Excluded: 1 with no transcript to read, holding 1 task \u00b7 1 task with no dispatch attributable to a recorded window\./);
   });
 });
 
@@ -486,7 +683,9 @@ test('the empty home renders the honest All-clear, not an error and not a spinne
     assert.equal(await page.locator('[role="alert"]').count(), 0);
     assert.doesNotMatch(text, /Loading /);
     // …and the connection is healthy, which is what distinguishes "empty" from "unreachable".
-    assert.match(await page.locator('.conn').innerText(), /read-only · loopback/);
+    const conn = await page.locator('.conn').innerText();
+    assert.match(conn, /connected/);
+    assert.doesNotMatch(conn, /loopback|read-only/);
   }, { home: world.empty });
 });
 
@@ -508,6 +707,10 @@ test('the unreachable server is NAMED, the last good read is kept, and nothing s
     // empty world that would read as "you have no features".
     await page.getByRole('button', { name: 'default/proj/f-active' }).first().waitFor();
     assert.doesNotMatch(await bodyText(page), /Loading the feature inventory/);
+
+    // Health is polled every 30s, and a re-focused tab re-reads immediately (App's header).
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.locator('.conn', { hasText: 'unreachable' }).waitFor({ timeout: 15_000 });
   });
 });
 
