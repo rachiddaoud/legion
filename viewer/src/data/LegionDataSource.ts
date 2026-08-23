@@ -79,9 +79,10 @@ export class LegionDataSource implements ViewerDataSource {
     return this.get<CommitsResponse>(`/api/commits?${idParams(id)}`, signal);
   }
 
-  diff(id: FeatureId, file: string | null, signal?: AbortSignal) {
+  diff(id: FeatureId, file: string | null, rev: string | null, signal?: AbortSignal) {
     const p = idParams(id);
     if (file != null && file !== '') p.set('file', file);
+    if (rev != null && rev !== '') p.set('rev', rev);
     return this.get<DiffResponse>(`/api/diff?${p}`, signal);
   }
 

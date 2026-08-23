@@ -36,13 +36,14 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { delimiter, dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixture, planTask, NOW } from '../helpers/fixture.mjs';
 import { DEFAULT_HOST, DEFAULT_PORT, bundleStale, distRefusal, staleWarning, viewerCore } from '../../src/cli/viewer.mjs';
 import { STAMP_FILE, computeSourceDigest } from '../../src/cli/_viewer-bundle.mjs';
 import { ALLOWED_METHODS, ROUTES, createViewerServer, readFeatureCommits } from '../../src/cli/_viewer/server.mjs';
 import { featureSummaries, featureView } from '../../src/cli/_viewer/projection.mjs';
+import { readFeatureAgents } from '../../src/cli/_viewer/transcripts.mjs';
 
 const ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url)))); // test/cli/x -> repo root
 const BIN = join(ROOT, 'bin', 'legion.mjs');
@@ -322,6 +323,7 @@ test('PROHIBITION: viewer code imports no state-mutating machinery and names no 
     join(ROOT, 'src', 'cli', '_viewer', 'server.mjs'),
     join(ROOT, 'src', 'cli', '_viewer', 'projection.mjs'),
     join(ROOT, 'src', 'cli', '_viewer', 'activity.mjs'),
+    join(ROOT, 'src', 'cli', '_viewer', 'transcripts.mjs'),
   ];
   for (const f of files) assert.ok(existsSync(f), `${f} is missing`);
 
@@ -663,6 +665,11 @@ test('/api/features renders the inventory including the unreadable row (H06)', a
 
 test('/api/feature is T39\'s projection verbatim — the server derives nothing', async () => {
   const h = fixture({ project: 'proj', feature: 'f1' });
+  // The transcript reader resolves its root from the environment, and this suite calls the
+  // projection IN PROCESS, where HOME is still the operator's. Pinned at a sandbox path that does
+  // not exist, both calls below get the same "nowhere to look" verdict and neither walks ~/.claude.
+  const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(h.sandbox, 'claude');
   try {
     h.seedPlan([planTask('T1', { milestone: 'M1' })]);
     assert.equal(h.legion('state', 'task-start', 'T1').code, 0);
@@ -673,17 +680,21 @@ test('/api/feature is T39\'s projection verbatim — the server derives nothing'
       try {
         const r = await getJson(s.base, '/api/feature?org=default&project=proj&name=f1');
         assert.equal(r.status, 200);
-        // The SAME projection call the server makes, with the SAME injected git seam. Only
-        // `ageHours` may differ (the two calls are milliseconds apart).
-        const direct = featureView({ org: 'default', project: 'proj', name: 'f1', readCommits: readFeatureCommits });
+        // The SAME projection call the server makes, with the SAME injected git and transcript
+        // seams. Only `ageHours` may differ (the two calls are milliseconds apart).
+        const direct = featureView({
+          org: 'default', project: 'proj', name: 'f1',
+          readCommits: readFeatureCommits, readAgents: readFeatureAgents,
+        });
         const strip = (v) => { const { ageHours, ...rest } = v; return rest; };
         assert.deepEqual(strip(r.body.feature), strip(direct));
         assert.equal(typeof r.body.feature.ageHours, 'number');
         // The git block is the SEAM's verdict, and the commit rows reached the activity feed.
         assert.equal(r.body.feature.git.available, true);
         assert.ok(r.body.feature.activity.some((a) => a.kind === 'commit' && /work one/.test(a.label)));
-        // Approvals are RECORDED, never valid — the rule the whole viewer exists to obey.
-        assert.match(r.body.feature.approvalsCaveat, /recorded != valid/);
+        // Approvals are RECORDED, never valid — the rule the whole viewer exists to obey. The
+        // body carries the stored facts and the kernel's live answer, and no prose about either.
+        assert.ok(!('approvalsCaveat' in r.body.feature));
 
         // A feature that does not exist is a 404 that names what was asked.
         const gone = await getJson(s.base, '/api/feature?org=default&project=proj&name=nope');
@@ -696,7 +707,11 @@ test('/api/feature is T39\'s projection verbatim — the server derives nothing'
         assert.match(bad.body.error, /missing required query parameter 'project'/);
       } finally { await s.close(); }
     });
-  } finally { h.cleanup(); }
+  } finally {
+    if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
+    h.cleanup();
+  }
 });
 
 test('an unreadable dossier is a 200 unreadable ROW on the detail endpoint, never a 500', async () => {
@@ -742,7 +757,7 @@ test('/api/commits and /api/diff read a real repo through the seam, and degrade 
 
         const d = await getJson(s.base, `/api/diff?${id}`);
         assert.equal(d.body.available, true);
-        assert.deepEqual(d.body.files, [{ status: 'M', path: 'src/index.mjs' }]);
+        assert.deepEqual(d.body.files, [{ status: 'M', path: 'src/index.mjs', added: 2, deleted: 0, binary: false }]);
         assert.match(d.body.diff, /^diff --git a\/src\/index\.mjs b\/src\/index\.mjs$/m);
         assert.equal(d.body.file, null);
 
@@ -767,6 +782,155 @@ test('/api/commits and /api/diff read a real repo through the seam, and degrade 
         const v = await getJson(s.base, `/api/feature?${id}`);
         assert.equal(v.body.feature.git.available, false);
         assert.match(v.body.feature.git.reason, /is absent — pruned/);
+      } finally { await s.close(); }
+    });
+  } finally { h.cleanup(); }
+});
+
+test('/api/diff narrows to ONE commit through `rev`, and refuses a sha outside the range', async () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    h.commit('work one');
+    // commit() always appends to src/index.mjs; narrowing is only observable on a SECOND path.
+    const git = (...args) => {
+      const r = spawnSync('git', ['-c', 'user.email=test@example.invalid', '-c', 'user.name=legion test', ...args], {
+        cwd: h.worktree, encoding: 'utf8', env: h.env,
+      });
+      assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`);
+      return r.stdout.trim();
+    };
+    writeFileSync(join(h.worktree, 'src', 'second.mjs'), 'export const second = 2;\n');
+    git('add', '-A');
+    git('commit', '-m', 'work two');
+    const second = h.head();
+    const outside = git('rev-parse', 'HEAD~2'); // the recorded base itself — a real sha, not in the range
+
+    await withHome(h.home, async () => {
+      const s = await serve({});
+      const id = 'org=default&project=proj&name=f1';
+      try {
+        const whole = await getJson(s.base, `/api/diff?${id}`);
+        assert.equal(whole.body.rev, null);
+        assert.deepEqual(whole.body.files.map((f) => f.path), ['src/index.mjs', 'src/second.mjs']);
+
+        const one = await getJson(s.base, `/api/diff?${id}&rev=${second}`);
+        assert.equal(one.body.available, true);
+        assert.equal(one.body.rev, second);
+        assert.deepEqual(one.body.files.map((f) => f.path), ['src/second.mjs'],
+          'one commit is a strictly smaller file list than the whole branch');
+        assert.match(one.body.diff, /^\+export const second = 2;$/m);
+        assert.ok(!one.body.diff.includes('src/index.mjs'), "the other commit's file is not in this commit's body");
+
+        assert.deepEqual((await getJson(s.base, `/api/diff?${id}`)).body.files, whole.body.files);
+
+        assert.deepEqual(one.body.files[0], { status: 'A', path: 'src/second.mjs', added: 1, deleted: 0, binary: false });
+        const c = await getJson(s.base, `/api/commits?${id}`);
+        assert.deepEqual(c.body.commits.map((x) => [x.subject, x.added, x.deleted]), [['work two', 1, 0], ['work one', 1, 0]]);
+        assert.deepEqual(c.body.commits[1].parents, [outside]);
+
+        const off = await getJson(s.base, `/api/diff?${id}&rev=${outside}`);
+        assert.equal(off.status, 200);
+        assert.equal(off.body.available, false);
+        assert.match(off.body.reason, /is not one of the 2 commit\(s\)/, 'membership, not shape: it is never resolved against the repository');
+        assert.deepEqual(off.body.files, []);
+        const injected = await getJson(s.base, `/api/diff?${id}&rev=${encodeURIComponent('--upload-pack=touch /tmp/pwned')}`);
+        assert.equal(injected.body.available, false);
+      } finally { await s.close(); }
+    });
+  } finally { h.cleanup(); }
+});
+
+test('a commit git counted no line in is `binary`, never a +0 −0 git never printed', async () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    const git = (...args) => {
+      const r = spawnSync('git', ['-c', 'user.email=test@example.invalid', '-c', 'user.name=legion test', ...args], {
+        cwd: h.worktree, encoding: 'utf8', env: h.env,
+      });
+      assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`);
+      return r.stdout.trim();
+    };
+    // git calls a file binary by its CONTENT (a NUL in the first 8000 bytes), never by its name.
+    const blob = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x1a, 0x0a, 0x00]);
+    writeFileSync(join(h.worktree, 'logo.png'), blob);
+    git('add', '-A');
+    git('commit', '-m', 'add a logo only');
+    const onlyBinary = h.head();
+    writeFileSync(join(h.worktree, 'icon.png'), Buffer.concat([blob, Buffer.from([0x01])]));
+    writeFileSync(join(h.worktree, 'src', 'third.mjs'), 'export const third = 3;\n');
+    git('add', '-A');
+    git('commit', '-m', 'a logo and a line');
+
+    await withHome(h.home, async () => {
+      const s = await serve({});
+      const id = 'org=default&project=proj&name=f1';
+      try {
+        const c = await getJson(s.base, `/api/commits?${id}`);
+        assert.deepEqual(c.body.commits.map((x) => [x.subject, x.added, x.deleted, x.binary]), [
+          ['a logo and a line', 1, 0, false],
+          ['add a logo only', null, null, true],
+        ], 'a mixed commit keeps the text counts git printed; a binary-only one has none to keep');
+
+        const one = await getJson(s.base, `/api/diff?${id}&rev=${onlyBinary}`);
+        assert.deepEqual(one.body.files, [{ status: 'A', path: 'logo.png', added: null, deleted: null, binary: true }],
+          'and the file row says the same thing as the commit row');
+      } finally { await s.close(); }
+    });
+  } finally { h.cleanup(); }
+});
+
+test('the range read drops its `--numstat` half for a caller that reads no ±', async () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    h.commit('work one');
+    const where = { worktree: h.worktree, baseSha: h.readFeature().baseSha };
+    const counted = readFeatureCommits(where);
+    const cheap = readFeatureCommits(where, { counts: false });
+    // What `/api/diff` reads this for — the lineage `rev` is checked for membership of — survives.
+    assert.deepEqual(cheap.commits.map((c) => [c.sha, c.parents]), counted.commits.map((c) => [c.sha, c.parents]));
+    assert.deepEqual(counted.commits.map((c) => [c.added, c.deleted]), [[1, 0]]);
+    assert.deepEqual(cheap.commits.map((c) => [c.added, c.deleted]), [[null, null]], 'an unread count is not a zero');
+  } finally { h.cleanup(); }
+});
+
+/** The real git, resolved before any shim exists on PATH — the shim execs it by absolute path, never itself. */
+const REAL_GIT = (() => {
+  const r = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' });
+  const path = (r.stdout ?? '').trim();
+  assert.ok(path.length > 0, 'no git on PATH — this suite drives real git');
+  return path;
+})();
+
+/** The argv recorder of test/cli/feature-clean.test.mjs, for a server that runs IN THIS PROCESS: a
+ * `git` shim first on PATH logs every token it is handed, then execs the real git, so the request
+ * behaves normally. This process's own PATH decides — kernel/git.mjs purges GIT_*, never PATH. */
+async function gitArgvOf(h, name, fn) {
+  const dir = join(h.sandbox, `git-recorder-${name}`);
+  mkdirSync(dir, { recursive: true });
+  const log = join(dir, 'argv.log');
+  writeFileSync(join(dir, 'git'), `#!/bin/sh\nfor a in "$@"; do echo "$a"; done >> '${log}'\nexec '${REAL_GIT}' "$@"\n`);
+  chmodSync(join(dir, 'git'), 0o755);
+  const saved = process.env.PATH;
+  process.env.PATH = dir + delimiter + saved;
+  try { await fn(); } finally { process.env.PATH = saved; }
+  return existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : [];
+}
+
+test('/api/feature reads the range without `--numstat`: no ± of its rows reaches the DTO', async () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    h.commit('work one');
+    await withHome(h.home, async () => {
+      const s = await serve({});
+      const id = 'org=default&project=proj&name=f1';
+      try {
+        const detail = await gitArgvOf(h, 'detail', () => getJson(s.base, `/api/feature?${id}`));
+        assert.ok(detail.includes('log'), 'the recorder captured no `git log` at all, so this case proves nothing');
+        assert.ok(!detail.includes('--numstat'),
+          `the detail view folds sha/date/subject into its activity and ships no ±, so the 3s poll must not pay for one: ${detail.join(' ')}`);
+        // The endpoint that DOES render ± still asks for them: a shim that intercepted nothing would read as a pass above.
+        const changes = await gitArgvOf(h, 'changes', () => getJson(s.base, `/api/commits?${id}`));
+        assert.ok(changes.includes('--numstat'), `/api/commits carries per-commit ±: ${changes.join(' ')}`);
       } finally { await s.close(); }
     });
   } finally { h.cleanup(); }
@@ -828,8 +992,11 @@ test('/api/activity is the cross-feature manifest-only feed, newest first and ho
   } finally { h.cleanup(); }
 });
 
-test('/api/insights carries its denominators and never a cost or token number', async () => {
+test('/api/insights carries its denominators, and its token block is the injected read', async () => {
   const h = fixture({ project: 'proj', feature: 'f1' });
+  // Same pin as /api/feature above: served IN PROCESS, the reader's root is the operator's own.
+  const savedConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(h.sandbox, 'claude');
   try {
     await withHome(h.home, async () => {
       const s = await serve({});
@@ -837,18 +1004,29 @@ test('/api/insights carries its denominators and never a cost or token number', 
         const r = await getJson(s.base, '/api/insights');
         assert.equal(r.status, 200);
         assert.deepEqual(r.body.population, { features: 1, readable: 1, unreadable: 0, org: null, tasks: 0 });
-        for (const k of ['outcomes', 'recentOutcomes', 'featureDuration', 'stageDuration', 'attempts', 'reviewRounds']) {
+        for (const k of ['outcomes', 'recentOutcomes', 'featureDuration', 'stageDuration', 'attempts', 'reviewRounds', 'taskTokens']) {
           assert.ok(k in r.body, `insights is missing ${k}`);
         }
         assert.equal(r.body.featureDuration.n, 0);
         assert.equal(r.body.featureDuration.p50Ms, null); // empty is empty, never a smoothed zero
-        assert.ok(!/cost|token/i.test(JSON.stringify(r.body)));
+        // NO MONEY FIGURE ON ANY ROUTE: no rate is recorded anywhere, so a cost would be invented.
+        assert.ok(!/cost|price|\$[0-9]/i.test(JSON.stringify(r.body)));
+        // THE READER IS INJECTED BY THIS SERVER, so the block is a read verdict rather than the
+        // "nobody handed me one" value: this feature's transcripts are nowhere, and it is COUNTED.
+        assert.equal(r.body.taskTokens.available, true);
+        assert.equal(r.body.taskTokens.features, 0);
+        assert.deepEqual(r.body.taskTokens.excluded, { noTranscript: 1, noTranscriptTasks: 0, noDispatch: 0 });
+        assert.deepEqual(r.body.taskTokens.input, { n: 0, p50: null, p90: null, min: null, max: null });
         // The scoped read reports the org it was scoped to, so a thin denominator is legible.
         const scoped = await getJson(s.base, '/api/insights?org=default');
         assert.equal(scoped.body.population.org, 'default');
       } finally { await s.close(); }
     });
-  } finally { h.cleanup(); }
+  } finally {
+    if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = savedConfigDir;
+    h.cleanup();
+  }
 });
 
 test('the recorded/valid distinction survives the wire: no endpoint ever calls an approval valid', async () => {

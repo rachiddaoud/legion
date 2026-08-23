@@ -21,7 +21,7 @@
 // facts), the per-row Answer form, and the cost column.
 import type { ActivityResponse, Attention, FeatureId, FeatureRow, FeaturesResponse } from '../data/types';
 import { idOfKey, isActionable, isUnreadable, mrRef } from '../data/types';
-import { AttentionRow, Empty, RelTime, Section, StatusPill } from '../components/ui';
+import { ActivityVerdict, AttentionRow, Empty, RelTime, Section, StatusPill } from '../components/ui';
 
 const closedAtOf = (r: FeatureRow) => (isUnreadable(r) ? null : r.closedAt);
 
@@ -134,6 +134,7 @@ export function Operations({ features, activity, onOpen }: {
                     ? <button className="mission-name" onClick={() => onOpen(id)}>{a.key}</button>
                     : <span className="mission-name mission-name-dead">{a.key}</span>}
                   <span>{a.label}</span>
+                  <ActivityVerdict verdict={a.verdict} />
                 </div>
               );
             })}

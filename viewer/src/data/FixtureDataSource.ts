@@ -64,10 +64,12 @@ export class FixtureDataSource implements ViewerDataSource {
 
   commits(): Promise<CommitsResponse> { return this.ok(() => this.world().commits); }
 
-  diff(_id: FeatureId, file: string | null): Promise<DiffResponse> {
+  diff(_id: FeatureId, file: string | null, rev: string | null): Promise<DiffResponse> {
     return this.ok(() => {
       const d = this.world().diff;
-      return d.available ? { ...d, file } : d;
+      if (!d.available) return { ...d, rev };
+      const files = rev === null ? d.files : d.files.slice(1);
+      return { ...d, file, rev, files };
     });
   }
 

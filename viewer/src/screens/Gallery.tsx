@@ -8,7 +8,7 @@
 import type { FeatureView, Receipt } from '../data/types';
 import { WORLDS } from '../data/fixtures';
 import {
-  ApprovalsCaveat, AttentionRow, Empty, ErrorStrip, LifecycleNowPanel, Loading, RawStatusNote,
+  AttentionRow, Empty, ErrorStrip, LifecycleNowPanel, Loading, RawStatusNote,
   ReceiptBadge, ReceiptDetail, Section, Spine, StatusPill,
 } from '../components/ui';
 import { VIEWER_STATUSES } from '../data/types';
@@ -71,7 +71,6 @@ export function Gallery() {
       <Section title="Honest absences — never a guess">
         <div className="card">
           <RawStatusNote viewerStatus="unknown" kernelStatus="in_review" stage="qa" stageKnown={false} />
-          <ApprovalsCaveat caveat={active.approvalsCaveat} />
           <div className="unreadable-why mono">{unreadable.why}</div>
         </div>
         <ErrorStrip error="cannot reach the legion viewer server (/api/features)" at={Date.now() - 90_000} />

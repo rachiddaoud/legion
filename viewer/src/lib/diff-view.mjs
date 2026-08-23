@@ -7,11 +7,12 @@
 // unified diff is a unified diff. What changed is everything AROUND it, because legion2's engine
 // (`src/git/diff.mjs`) returned a STRUCTURED per-file object carrying `{additions, deletions,
 // binary, truncated, patch}`, and legion3's server returns what git itself printed: a
-// `--name-status` file list and one raw `git diff` body (src/cli/_viewer/server.mjs). So:
+// `--name-status` file list, its `--numstat` counts, and one raw diff body
+// (src/cli/_viewer/server.mjs). So:
 //
-//   - `fileCounts`/`diffSummary` no longer report ± totals. Nothing records them, and counting them
-//     here would be arithmetic the client invented about a diff it may only have partially loaded.
-//     The file list reports its length and its status letters, which is what git gave us.
+//   - `fileCounts`/`diffSummary` report the ± git itself printed: `/api/diff` joins a `--numstat`
+//     read onto the `--name-status` list, so the numbers cover the WHOLE selection rather than the
+//     one patch body loaded. A binary — `-` on both sides — says so instead of reading as `+0 −0`.
 //   - THE TRUNCATION CONTRACT MOVED, IT DID NOT DISAPPEAR. legion2 clipped server-side and shipped
 //     `truncated: true`; legion3's server clips nothing (it raises maxBuffer instead, gate.mjs's
 //     precedent), so an enormous file would be handed to the DOM whole and the tab would hang. The
@@ -93,10 +94,28 @@ export function fileStatus(status) {
     : { code: code || '?', label: 'unrecognised status', cls: 'unknown' };
 }
 
-/** The totals line for a file list. Files only: the server sends no ± counts and this module does
- * not invent them (header). */
+/** One row's ± cell — a file's or a commit's. `+n −m` only where both numbers are git's own. */
+export function fileCounts(row) {
+  if (row?.binary === true) return 'binary';
+  if (!Number.isFinite(row?.added) || !Number.isFinite(row?.deleted)) return '—';
+  return `+${row.added} −${row.deleted}`;
+}
+
+/** The totals line for a file list: the ± of the CURRENT SELECTION, whole branch or one commit.
+ * A row git counted no lines in is left out of the sum rather than added to it as a zero. */
 export function diffSummary(diff) {
   const files = Array.isArray(diff?.files) ? diff.files : [];
-  const range = diff?.baseSha && diff?.head ? ` in ${String(diff.baseSha).slice(0, 8)}..${String(diff.head).slice(0, 8)}` : '';
-  return `${files.length} file${files.length === 1 ? '' : 's'} changed${range}`;
+  let added = 0;
+  let deleted = 0;
+  let counted = 0;
+  for (const f of files) {
+    if (!Number.isFinite(f?.added) || !Number.isFinite(f?.deleted)) continue;
+    added += f.added;
+    deleted += f.deleted;
+    counted += 1;
+  }
+  const totals = counted === 0 ? '' : ` +${added} −${deleted}`;
+  const where = diff?.rev ? ` in ${String(diff.rev).slice(0, 8)}`
+    : diff?.baseSha && diff?.head ? ` in ${String(diff.baseSha).slice(0, 8)}..${String(diff.head).slice(0, 8)}` : '';
+  return `${files.length} file${files.length === 1 ? '' : 's'} changed${totals}${where}`;
 }

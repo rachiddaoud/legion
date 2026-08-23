@@ -5,10 +5,17 @@
 // WHAT WAS DELETED FROM legion2's VERSION, and why it could not be ported: `QuestionCard` (a form
 // that POSTed an answer), `GateEvidencePanel` (the approve/reject consequence table a human gate
 // rendered above two buttons), `SimulatedBanner`'s "every control transitions fixtures only" copy,
-// and `fmtCost`/`fmtTokens`. The first three are the orchestration surface decision 12a deletes
-// outright. The last two are honesty: legion3 records no cost and no token count anywhere
-// (decision 9), so there is no `—` placeholder for them either — a dash implies a number that
-// could arrive, and none can.
+// and `fmtCost`. The first three are the orchestration surface decision 12a deletes outright.
+// `fmtCost` is honesty: no rate is recorded anywhere, so a money figure has no source and there is
+// no `—` placeholder for one either — a dash implies a number that could arrive, and none can.
+// `fmtTokens` IS BACK, because that last sentence was never true of token counts: Claude Code's
+// transcripts record them per dispatch, the projection reports them per task and per feature, and
+// what a formatter owes them is the "not recorded" this one prints where nothing was attributed.
+//
+// `ApprovalsCaveat` IS GONE THE SAME WAY, and the fact it carried is not: it rendered a paragraph
+// warning that a recorded approval may no longer bind, above a table whose last column answers
+// exactly that, per row, from the kernel asked on this request. A preamble that repeats a column
+// is space the rows were owed.
 //
 // NOTHING HERE DERIVES LIFECYCLE STATE. Every component takes recorded facts and renders them.
 // The spine in particular is built from `stageHistory` / `completedStages` / the current `stage` /
@@ -22,6 +29,7 @@ import type {
   Attention, FeatureView, LifecycleNow, Receipt, ViewerStatus,
 } from '../data/types';
 import { STATUS_CLASS, STATUS_LABELS } from '../data/types';
+import { showNextUnsatisfied } from '../lib/shell.mjs';
 
 const STATUS_ICON: Record<string, string> = { attn: '●', bad: '■', good: '✓', muted: '○', run: '◐' };
 
@@ -169,6 +177,7 @@ export function LifecycleNowPanel({ now }: { now: LifecycleNow }) {
       </p>
     );
   }
+  const next = showNextUnsatisfied(now) ? now.nextUnsatisfied : null;
   return (
     <div className="lifecycle-now">
       <p>
@@ -177,8 +186,8 @@ export function LifecycleNowPanel({ now }: { now: LifecycleNow }) {
           ? <span className="verdict-badge verdict-pass">satisfied</span>
           : <><span className="verdict-badge verdict-fail">not satisfied</span> — {now.why}</>}
       </p>
-      {now.nextUnsatisfied && (
-        <p>Next unsatisfied: <span className="mono">{now.nextUnsatisfied.stage}</span> — {now.nextUnsatisfied.why}</p>
+      {next && (
+        <p>Next unsatisfied: <span className="mono">{next.stage}</span> — {next.why}</p>
       )}
     </div>
   );
@@ -221,11 +230,11 @@ export function ReceiptDetail({ receipt }: { receipt: Receipt }) {
   );
 }
 
-/** THE approvals caveat, rendered from the string the SERVER shipped — never re-worded here, so
- * there is exactly one wording of "recorded is not valid" in the product. */
-export function ApprovalsCaveat({ caveat }: { caveat: string }) {
-  return <p className="caveat" role="note"><strong>Recorded, not valid.</strong> {caveat}</p>;
-}
+/** The pass/fail pill of an activity row. The SERVER puts `verdict` on the `review` kind alone, so
+ *  rendering wherever one arrives is what keeps the pill off every other row. */
+export const ActivityVerdict = ({ verdict }: { verdict?: string | null }) => (
+  verdict ? <span className={`verdict-badge verdict-${verdict === 'pass' ? 'pass' : 'fail'}`}>{verdict}</span> : null
+);
 
 // --- load / empty states (VF19) ----------------------------------------------------------------------
 
@@ -308,3 +317,9 @@ export const fmtDuration = (ms: number | null) => {
   const h = min / 60;
   return h < 48 ? `${h.toFixed(1)}h` : `${(h / 24).toFixed(1)}d`;
 };
+
+/** A RECORDED token count, grouped for reading. `null` is not a number that could arrive later — it
+ * means no dispatch was attributed or no transcript was read — so it says so rather than printing 0
+ * or a dash, both of which read as a measurement. */
+export const fmtTokens = (n: number | null | undefined) =>
+  (n == null ? 'not recorded' : n.toLocaleString('en-US'));

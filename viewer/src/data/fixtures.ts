@@ -25,10 +25,6 @@ import type {
 export const FIXTURE_NOW = '2026-07-31T11:00:00.000Z';
 const T = (hoursAgo: number) => new Date(Date.parse(FIXTURE_NOW) - hoursAgo * 3_600_000).toISOString();
 
-export const CAVEAT =
-  'recorded != valid — an artifact edit invalidates deterministically; the kernel decides at use '
-  + 'time, and its refusal is the answer.';
-
 const noReceipt: Receipt = {
   present: false, declaredCommands: null, weak: false, tier: null, head: null, treeHash: null, at: null,
 };
@@ -93,17 +89,21 @@ function view(s: FeatureSummary, over: Partial<FeatureView> = {}): FeatureView {
     tasksDetail: [
       {
         id: 'T1', title: 'Port the shell', status: 'done', attempt: 1, milestone: 'M1',
-        depends_on: [], startedAt: T(11), doneAt: T(9), answers: [], receipt: fullReceipt,
+        depends_on: [], startedAt: T(11), doneAt: T(9), durationMs: 2 * 3_600_000,
+        tokens: { input: 412, output: 58_213, cacheRead: 3_104_882, cacheCreate: 241_007 },
+        answers: [], receipt: fullReceipt,
       },
       {
         id: 'T2', title: 'Reshape the data layer', status: 'started', attempt: 2, milestone: 'M1',
-        depends_on: ['T1'], startedAt: T(4), doneAt: null,
+        depends_on: ['T1'], startedAt: T(4), doneAt: null, durationMs: null,
+        tokens: { input: 108, output: 12_004, cacheRead: 901_233, cacheCreate: 44_512 },
         answers: [{ question: 'Which base branch should the diff render against?', answer: 'the pinned baseSha', at: T(5) }],
         receipt: noReceipt,
       },
       {
         id: 'T3', title: 'Budgets', status: 'pending', attempt: 0, milestone: 'M2',
-        depends_on: ['T2'], startedAt: null, doneAt: null, answers: [], receipt: noReceipt,
+        depends_on: ['T2'], startedAt: null, doneAt: null, durationMs: null, tokens: null,
+        answers: [], receipt: noReceipt,
       },
     ],
     artifacts: {
@@ -117,7 +117,6 @@ function view(s: FeatureSummary, over: Partial<FeatureView> = {}): FeatureView {
       spec: { at: T(21), subjectHash: 'sub-spec-bbbb' },
       plan: { at: T(13), subjectHash: 'sub-plan-cccc' },
     },
-    approvalsCaveat: CAVEAT,
     reviews: [
       { role: 'code-reviewer', verdict: 'fail', subject: 'task:T1', at: T(10) },
       { role: 'code-reviewer', verdict: 'pass', subject: 'task:T1', at: T(9) },
@@ -135,10 +134,12 @@ function view(s: FeatureSummary, over: Partial<FeatureView> = {}): FeatureView {
       { at: T(27), kind: 'approval', label: 'intake decision recorded' },
       { at: T(12), kind: 'stage-enter', label: 'entered stage build' },
       { at: T(11), kind: 'task-start', label: 'task T1 started' },
-      { at: T(10), kind: 'review', label: 'code-reviewer: fail on task:T1' },
+      { at: T(10.5), kind: 'agent', label: 'legion:builder dispatched', agentType: 'legion:builder', model: 'claude-opus-5', reused: false },
+      { at: T(10), kind: 'review', label: 'code-reviewer on task:T1', verdict: 'fail' },
       { at: T(9), kind: 'task-done', label: 'task T1 done' },
-      { at: T(6), kind: 'review', label: 'code-reviewer: pass on milestone:M1' },
+      { at: T(6), kind: 'review', label: 'code-reviewer on milestone:M1', verdict: 'pass' },
       { at: T(4), kind: 'task-start', label: 'task T2 started' },
+      { at: T(3.5), kind: 'agent', label: 'legion:code-reviewer dispatched', agentType: 'legion:code-reviewer', model: 'claude-haiku-4-5-20251001', reused: true },
     ],
     lifecycleNow: {
       available: true,
@@ -149,6 +150,19 @@ function view(s: FeatureSummary, over: Partial<FeatureView> = {}): FeatureView {
       approvalsValidNow: { intake: true, spec: true, plan: true, preview: false, 'pre-merge': false },
     },
     git: { available: true, head: '9c1f2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3' },
+    // The rows RECONCILE: the two task cells above, plus the residual, plus the session, are the
+    // total. A fixture whose arithmetic did not hold teaches a shape the projection never emits.
+    tokens: {
+      available: true,
+      dispatches: 5,
+      tasks: { input: 520, output: 70_217, cacheRead: 4_006_115, cacheCreate: 285_519 },
+      unattributed: { input: 96, output: 9_880, cacheRead: 612_400, cacheCreate: 31_090 },
+      session: { input: 84, output: 31_442, cacheRead: 2_884_010, cacheCreate: 58_331 },
+      sessionId: 'sess-7f3a',
+      sessionReason: null,
+      excluded: [],
+      total: { input: 700, output: 111_539, cacheRead: 7_502_525, cacheCreate: 374_940 },
+    },
     ...over,
   };
 }
@@ -320,6 +334,15 @@ function world(
         unresolvedFails: 0,
         byFeature: [{ key: active.key, reviews: 3, fixRounds: 1, unresolvedFails: 0 }],
       },
+      taskTokens: {
+        available: true,
+        features: 2,
+        excluded: { noTranscript: 1, noTranscriptTasks: 1, noDispatch: 1 },
+        input: { n: 5, p50: 412, p90: 1_206, min: 108, max: 1_206 },
+        output: { n: 5, p50: 58_213, p90: 91_004, min: 12_004, max: 91_004 },
+        cacheRead: { n: 5, p50: 3_104_882, p90: 6_220_115, min: 901_233, max: 6_220_115 },
+        cacheCreate: { n: 5, p50: 241_007, p90: 402_881, min: 44_512, max: 402_881 },
+      },
     },
     commits: {
       v: 1,
@@ -327,8 +350,14 @@ function world(
       baseSha: '1a2b3c4d5e6f7081920a1b2c3d4e5f6071829304',
       head: '9c1f2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3',
       commits: [
-        { sha: '9c1f2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3', at: T(9), subject: 'feat(m1): the shell and the poll loop' },
-        { sha: '3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5', at: T(20), subject: 'chore: gitignore the viewer build outputs' },
+        {
+          sha: '9c1f2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3', at: T(9), subject: 'feat(m1): the shell and the poll loop',
+          parents: ['3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5'], added: 96, deleted: 12, binary: false,
+        },
+        {
+          sha: '3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5', at: T(20), subject: 'chore: gitignore the viewer build outputs',
+          parents: ['1a2b3c4d5e6f7081920a1b2c3d4e5f6071829304'], added: 4, deleted: 0, binary: false,
+        },
       ],
     },
     diff: {
@@ -336,7 +365,11 @@ function world(
       available: true,
       baseSha: '1a2b3c4d5e6f7081920a1b2c3d4e5f6071829304',
       head: '9c1f2ab3d4e5f60718293a4b5c6d7e8f90a1b2c3',
-      files: [{ status: 'M', path: 'src/App.tsx' }, { status: 'A', path: 'src/data/types.ts' }],
+      rev: null,
+      files: [
+        { status: 'M', path: 'src/App.tsx', added: 1, deleted: 1, binary: false },
+        { status: 'A', path: 'src/data/types.ts', added: 99, deleted: 11, binary: false },
+      ],
       file: null,
       diff: FIXTURE_DIFF,
     },
@@ -349,13 +382,14 @@ const blockedView = view(blocked, {
   tasksDetail: [
     {
       id: 'T1', title: 'Export selector', status: 'started', attempt: 1, milestone: 'M1',
-      depends_on: [], startedAt: T(6), doneAt: null,
+      depends_on: [], startedAt: T(6), doneAt: null, durationMs: null, tokens: null,
       answers: [{ question: 'Should the export include archived rows? The spec is silent.', answer: null, at: T(3) }],
       receipt: noReceipt,
     },
     {
       id: 'T2', title: 'CSV writer', status: 'pending', attempt: 0, milestone: 'M1',
-      depends_on: ['T1'], startedAt: null, doneAt: null, answers: [], receipt: noReceipt,
+      depends_on: ['T1'], startedAt: null, doneAt: null, durationMs: null, tokens: null,
+      answers: [], receipt: noReceipt,
     },
   ],
   milestones: [{ id: 'M1', taskIds: ['T1', 'T2'], tasks: { total: 2, done: 0, started: 1, pending: 1 }, closeReviews: [] }],
@@ -366,6 +400,8 @@ const blockedView = view(blocked, {
   ],
   reviews: [],
   git: { available: false, reason: 'the recorded worktree /tmp/work/cv-mf--cv42-export is absent — pruned by `legion feature clean`, or removed by hand' },
+  // The other honest half: no transcript was read, so there is no figure at all.
+  tokens: { available: false, reason: 'none of the 1 session(s) this feature recorded has a transcript under /tmp/home/.claude/projects' },
 });
 const deliveredView = view(delivered, {
   worktree: { path: '/tmp/work/cv-mf--cv39-ticket-link', present: false },

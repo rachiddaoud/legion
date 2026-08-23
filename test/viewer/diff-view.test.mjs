@@ -4,8 +4,8 @@
 // PORTED FROM legion2's test/viewer/diff-view.test.mjs. `parsePatch` is unchanged and its
 // assertions carry over verbatim, because a unified diff did not change. The rest is REPOINTED at
 // legion3's server shape: legion2's engine returned per-file `{additions, deletions, binary,
-// truncated}`, and legion3's `/api/diff` returns what git printed — a `--name-status` list plus one
-// raw `git diff` body (src/cli/_viewer/server.mjs).
+// truncated}`, and legion3's `/api/diff` returns what git printed — a `--name-status` list joined
+// with a `--numstat` one, plus one raw diff body (src/cli/_viewer/server.mjs).
 //
 // THE TRUNCATION CONTRACT IS THE POINT OF THE NEW CASES. legion2 clipped server-side and shipped a
 // flag; legion3's server clips nothing, so the render cap moved to the client and MUST still say so.
@@ -14,7 +14,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  MAX_PATCH_ROWS, clipNote, clipRows, diffSummary, fileStatus, parsePatch,
+  MAX_PATCH_ROWS, clipNote, clipRows, diffSummary, fileCounts, fileStatus, parsePatch,
 } from '../../viewer/src/lib/diff-view.mjs';
 
 const PATCH = `diff --git a/x.css b/x.css
@@ -109,14 +109,33 @@ test('fileStatus renders git letters, and renders an UNRECOGNISED one as itself'
   assert.equal(fileStatus(undefined).code, '?');
 });
 
-test('diffSummary counts files and never invents ± totals (the server sends none)', () => {
-  assert.equal(diffSummary({ files: [{ status: 'M', path: 'a' }] }), '1 file changed');
+const row = (path, extra) => ({ status: 'M', path, added: null, deleted: null, binary: false, ...extra });
+
+test('fileCounts renders the counts GIT gave, and a file git refused to count says so', () => {
+  assert.equal(fileCounts(row('a', { added: 12, deleted: 3 })), '+12 −3');
+  assert.equal(fileCounts(row('b', { added: 0, deleted: 0 })), '+0 −0', 'a real zero is still a number git printed');
+  assert.equal(fileCounts(row('logo.png', { binary: true })), 'binary',
+    'a changed binary has no line count — `+0 −0` would be a number nobody measured (H02)');
+  assert.equal(fileCounts(row('c')), '—', 'no count reached this row: not zero, not binary');
+  assert.equal(fileCounts(undefined), '—');
+});
+
+test('diffSummary totals the SELECTION, and leaves the uncounted out of the sum', () => {
+  const files = [
+    row('a', { added: 12, deleted: 3 }),
+    row('b', { status: 'A', added: 30, deleted: 0 }),
+    row('logo.png', { binary: true }),
+  ];
+  assert.equal(
+    diffSummary({ files, baseSha: '1a2b3c4d5e6f7081', head: '9c1f2ab3d4e5f607' }),
+    '3 files changed +42 −3 in 1a2b3c4d..9c1f2ab3',
+    'the binary is one of the 3 files and none of the 42 lines',
+  );
+  assert.equal(
+    diffSummary({ files: [files[0]], rev: '9c1f2ab3d4e5f607', baseSha: '1a2b3c4d5e6f7081', head: '9c1f2ab3d4e5f607' }),
+    '1 file changed +12 −3 in 9c1f2ab3',
+  );
+  assert.equal(diffSummary({ files: [files[2]] }), '1 file changed', 'nothing counted, so no ± at all');
   assert.equal(diffSummary({ files: [] }), '0 files changed');
-  const ranged = diffSummary({
-    files: [{ status: 'M', path: 'a' }, { status: 'A', path: 'b' }],
-    baseSha: '1a2b3c4d5e6f7081', head: '9c1f2ab3d4e5f607',
-  });
-  assert.equal(ranged, '2 files changed in 1a2b3c4d..9c1f2ab3');
-  assert.ok(!/\+\d/.test(ranged), 'no addition count is fabricated');
   assert.equal(diffSummary(undefined), '0 files changed');
 });

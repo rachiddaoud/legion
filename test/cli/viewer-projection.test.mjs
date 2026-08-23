@@ -34,7 +34,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fixture, planTask, NOW } from '../helpers/fixture.mjs';
 import {
-  APPROVALS_CAVEAT, ATTENTION_KINDS, DRAFT_FILENAMES, KERNEL_STATUSES, QUIET_AFTER_HOURS,
+  ATTENTION_KINDS, DRAFT_FILENAMES, KERNEL_STATUSES, QUIET_AFTER_HOURS,
   RECENT_OUTCOME_DAYS, VIEWER_STATUSES, featureSummaries, featureView, groupByInitiative, insights,
 } from '../../src/cli/_viewer/projection.mjs';
 import { ARTIFACT_KINDS } from '../../src/kernel/state.mjs';
@@ -61,16 +61,13 @@ const patch = (dir, file, fn) => writeManifest(dir, file, fn(readManifest(dir, f
 const keys = (rows) => rows.map((r) => r.key).sort();
 const HOUR = 3_600_000;
 
-test('the vocabularies are closed sets and the caveat is the hook\'s wording', () => {
+test('the vocabularies are closed sets', () => {
   assert.deepEqual(VIEWER_STATUSES,
     ['delivered', 'abandoned', 'init-failed', 'blocked', 'active', 'unreadable', 'unknown']);
   assert.deepEqual(KERNEL_STATUSES, ['active', 'initialization_failed', 'delivered', 'abandoned']);
   assert.deepEqual(ATTENTION_KINDS, ['open-question', 'init-failed', 'unreadable-manifest', 'quiet']);
   assert.equal(QUIET_AFTER_HOURS, 24);
   assert.equal(RECENT_OUTCOME_DAYS, 7);
-  // The rule this whole viewer exists to obey: an approval is RECORDED, never VALID.
-  assert.match(APPROVALS_CAVEAT, /recorded != valid/);
-  assert.match(APPROVALS_CAVEAT, /the kernel decides at use time/);
   // No lifecycle state the manifests cannot support (header: there is no source for either).
   assert.ok(!VIEWER_STATUSES.includes('stalled'));
   assert.ok(!VIEWER_STATUSES.includes('running'));
@@ -272,8 +269,10 @@ test('approvals render RECORDED; validity comes from CALLING the kernel and dies
     assert.deepEqual(Object.keys(before.approvals), ['intake']);
     assert.deepEqual(Object.keys(before.approvals.intake).sort(), ['at', 'subjectHash']);
     assert.equal(before.approvals.intake.at, NOW);
-    assert.equal(before.approvalsCaveat, APPROVALS_CAVEAT);
     assert.ok(!/valid/i.test(JSON.stringify(before.approvals)));
+    // The DTO ships no prose about the difference either: whether an approval still binds is
+    // `approvalsValidNow` below, per kind, and there is nowhere else for a client to read it.
+    assert.ok(!('approvalsCaveat' in before), 'the DTO still ships a caveat string');
     // COMPUTED NOW, by the kernel's own approvalValid — the intake row re-derives satisfied.
     assert.equal(before.lifecycleNow.available, true);
     assert.equal(before.lifecycleNow.approvalsValidNow.intake, true);
@@ -626,8 +625,13 @@ test('insights: THE one stats formula, pinned exactly over a forged two-feature 
         { key: 'default/proj/fb', reviews: 1, fixRounds: 0, unresolvedFails: 1 },
       ],
     });
-    // NO COST AND NO TOKEN NUMBERS ANYWHERE: no source exists, so nothing is rendered (decision 9).
-    assert.ok(!/cost|token/i.test(JSON.stringify(out)));
+    // NO MONEY FIGURE ANYWHERE, EVER: no rate is recorded on this machine, so a cost has no source
+    // at all. Token counts DO have one, and this call was handed no reader for it — so the block
+    // names that rather than reporting an empty distribution as a measurement.
+    assert.ok(!/cost|price|\$[0-9]/i.test(JSON.stringify(out)));
+    assert.deepEqual(Object.keys(out.taskTokens), ['available', 'reason']);
+    assert.equal(out.taskTokens.available, false);
+    assert.match(out.taskTokens.reason, /the projection never opens Claude Code transcripts/);
   } finally { h.cleanup(); }
 });
 
@@ -644,5 +648,374 @@ test('insights carries its denominators when the population is empty or unreadab
     assert.deepEqual(out.stageDuration, {});
     assert.deepEqual(out.attempts, { tasks: 0, features: 0, distribution: {} });
     assert.deepEqual(out.reviewRounds, { features: 0, reviews: 0, fixRounds: 0, unresolvedFails: 0, byFeature: [] });
+  } finally { h.cleanup(); }
+});
+
+// --- T4: the duration, and what a feature's tokens COVER (D6) ---------------------------------
+
+const T0 = Date.parse('2026-07-25T00:00:00.000Z');
+const at = (hours) => new Date(T0 + hours * HOUR).toISOString();
+const figures = (input, output, cacheRead, cacheCreate) => ({ input, output, cacheRead, cacheCreate });
+
+/** The `readAgents` seam, injected: it answers about the sessions it is ASKED about and no others,
+ * which is what makes a session left out of the question observable. A session with no entry in
+ * `coordinators` is one whose transcript could not be read — the T3 shape's `session: null` plus a
+ * reason, never a zero. */
+function fakeAgents({ agents = [], coordinators = {} } = {}) {
+  const fn = ({ sessions }) => {
+    fn.asked.push([...sessions]);
+    const read = sessions.filter((id) => coordinators[id] !== undefined);
+    const tokens = figures(0, 0, 0, 0);
+    for (const id of read) for (const k of Object.keys(tokens)) tokens[k] += coordinators[id][k];
+    const unread = sessions.filter((id) => coordinators[id] === undefined);
+    return {
+      available: true,
+      agents,
+      session: read.length === 0 ? null : { tokens, sessionId: read.length === 1 ? read[0] : null },
+      sessionReason: unread.length === 0 ? null : `no coordinator transcript was read for ${unread.join(', ')}`,
+    };
+  };
+  fn.asked = [];
+  return fn;
+}
+
+/** Four recorded windows: T1 ran two hours and closed, T2 is still open, T3 never started, and T4
+ * started while T2 was still open — the overlap a task nobody closed leaves behind. */
+function withWindows(h) {
+  h.seedPlan(['T1', 'T2', 'T3', 'T4'].map((id) => planTask(id, { milestone: 'M1' })));
+  const started = { T1: [at(0), at(2)], T2: [at(3), null], T4: [at(5), null] };
+  patch(dossierOf(h, 'f1'), 'tasks.json', (doc) => ({
+    ...doc,
+    tasks: doc.tasks.map((t) => (started[t.id] === undefined ? t : {
+      ...t,
+      status: started[t.id][1] === null ? 'started' : 'done',
+      startedAt: started[t.id][0],
+      doneAt: started[t.id][1],
+    })),
+  }));
+}
+
+/** A second REGISTERED feature, in ANOTHER org, recording `sessionId`. Registration is what the
+ * multiplicity is read from, so the index entry is the point. Returns the index bytes from before,
+ * so the same fixture can be re-read with the sibling gone. */
+function registerSibling(h, { org, project, name, sessionId }) {
+  const dir = join(h.home, 'orgs', org, 'projects', project, 'features', name);
+  mkdirSync(dir, { recursive: true });
+  writeManifest(dir, 'feature.json', {
+    ...h.readFeature(), featureId: `${org}/${project}/${name}`, name, dossier: dir,
+    sessionHistory: [{ sessionId, at: NOW }], currentSession: sessionId,
+  });
+  const indexPath = join(h.home, 'projects.json');
+  const before = readFileSync(indexPath, 'utf8');
+  const index = JSON.parse(before);
+  index.projects.push({
+    org,
+    name: project,
+    repoRoot: h.repoRoot,
+    configPath: join(h.home, 'orgs', org, 'projects', project, 'project.json'),
+    features: [{ name, featureId: `${org}/${project}/${name}`, dossier: dir, worktree: null, branch: `feat/${name}` }],
+  });
+  writeFileSync(indexPath, `${JSON.stringify(index, null, 2)}\n`);
+  return () => writeFileSync(indexPath, before);
+}
+
+test('a task duration is the recorded subtraction, and an unfinished task has none (A3)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    withWindows(h);
+    const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1' }));
+    const by = Object.fromEntries(v.tasksDetail.map((t) => [t.id, t]));
+    assert.equal(by.T1.durationMs, 2 * HOUR);
+    assert.equal(by.T2.durationMs, null); // started, no closing timestamp: an open interval is not a duration
+    assert.equal(by.T3.durationMs, null); // never started
+    // A12, the half that needs NO reader: no transcript was read, so there is no figure at all —
+    // not a zero, and not a `—` that would imply a number which could still arrive.
+    assert.deepEqual(Object.keys(v.tokens), ['available', 'reason']);
+    assert.equal(v.tokens.available, false);
+    assert.match(v.tokens.reason, /the projection never opens Claude Code transcripts/);
+    assert.equal(JSON.stringify(v.tokens).includes('0'), false);
+    assert.deepEqual(v.tasksDetail.map((t) => t.tokens), [null, null, null, null]);
+  } finally { h.cleanup(); }
+});
+
+test('the feature total covers what its label claims: the task column, the residual and the session (A4)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    withWindows(h);
+    assert.equal(h.legion('state', 'session-record', '--session-id', 'sess-A').code, 0);
+    const readAgents = fakeAgents({
+      agents: [
+        { at: at(0), tokens: figures(1, 0, 0, 0) }, // ON T1's startedAt: the window includes its edges
+        { at: at(1), tokens: figures(10, 20, 30, 40) }, // inside T1's window
+        { at: at(2), tokens: figures(0, 3, 0, 0) }, // ON T1's doneAt, and before T2 started
+        { at: at(4), tokens: figures(1, 2, 3, 4) }, // inside T2's still-open window
+        { at: at(6), tokens: figures(7, 0, 0, 0) }, // inside T2's AND T4's: the task that started last
+        { at: at(-1), tokens: figures(100, 200, 300, 400) }, // before every window: attributed to no task
+      ],
+      coordinators: { 'sess-A': figures(5, 6, 7, 8) },
+    });
+    const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1', readAgents }));
+    const by = Object.fromEntries(v.tasksDetail.map((t) => [t.id, t]));
+    assert.deepEqual(by.T1.tokens, figures(11, 23, 30, 40));
+    assert.deepEqual(by.T2.tokens, figures(1, 2, 3, 4));
+    assert.deepEqual(by.T4.tokens, figures(7, 0, 0, 0));
+    assert.equal(by.T3.tokens, null); // no window, so no dispatch: "not recorded", never 0
+
+    assert.equal(v.tokens.available, true);
+    assert.equal(v.tokens.dispatches, 6);
+    assert.deepEqual(v.tokens.tasks, figures(19, 25, 33, 44));
+    assert.deepEqual(v.tokens.unattributed, figures(100, 200, 300, 400));
+    assert.deepEqual(v.tokens.session, figures(5, 6, 7, 8));
+    assert.equal(v.tokens.sessionId, 'sess-A');
+    assert.deepEqual(v.tokens.excluded, []);
+    // THE ARITHMETIC IS THE CLAIM: the label says "the whole feature", so nothing is left outside —
+    // counting the dispatches alone puts two thirds of the spend under a label saying all of it.
+    assert.deepEqual(v.tokens.total, figures(124, 231, 340, 452));
+    for (const k of ['input', 'output', 'cacheRead', 'cacheCreate']) {
+      assert.equal(v.tokens.total[k], v.tokens.tasks[k] + v.tokens.unattributed[k] + v.tokens.session[k]);
+    }
+  } finally { h.cleanup(); }
+});
+
+test('a coordinator transcript nobody could read is NAMED, never counted as zero (A12)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    withWindows(h);
+    assert.equal(h.legion('state', 'session-record', '--session-id', 'sess-A').code, 0);
+    const readAgents = fakeAgents({ agents: [{ at: at(1), tokens: figures(10, 20, 30, 40) }] });
+    const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1', readAgents }));
+    assert.equal(v.tokens.session, null);
+    assert.equal(v.tokens.sessionId, null);
+    assert.match(v.tokens.sessionReason, /no coordinator transcript was read for sess-A/);
+    assert.deepEqual(v.tokens.total, figures(10, 20, 30, 40)); // the dispatches, and no zero row for the session
+  } finally { h.cleanup(); }
+});
+
+test('a coordinator session two features record counts for NEITHER, and both DTOs name the other (A4, D6)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    withWindows(h);
+    assert.equal(h.legion('state', 'session-record', '--session-id', 'sess-shared').code, 0);
+    const unregister = registerSibling(h, { org: 'other', project: 'p2', name: 'fz', sessionId: 'sess-shared' });
+    const readAgents = fakeAgents({
+      agents: [{ at: at(1), tokens: figures(1, 2, 3, 4) }],
+      coordinators: { 'sess-shared': figures(5, 6, 7, 8) },
+    });
+    const ask = (org, project, name) => withHome(h.home, () => featureView({ org, project, name, readAgents }));
+
+    const mine = ask('default', 'proj', 'f1');
+    assert.equal(mine.tokens.session, null);
+    assert.deepEqual(mine.tokens.excluded, [{ sessionId: 'sess-shared', alsoRecordedBy: ['other/p2/fz'] }]);
+    assert.deepEqual(mine.tokens.total, figures(1, 2, 3, 4));
+    // CROSS-ORG on purpose: a terminal session belongs to the operator, not to an org, so the
+    // sibling that creates the case is routinely in another one.
+    const theirs = ask('other', 'p2', 'fz');
+    assert.equal(theirs.tokens.session, null);
+    assert.deepEqual(theirs.tokens.excluded, [{ sessionId: 'sess-shared', alsoRecordedBy: ['default/proj/f1'] }]);
+
+    // THE NEGATIVE TWIN: the same fixture with the sibling no longer registered counts that very
+    // session, so the assertion above cannot pass by the session having been unreadable anyway.
+    unregister();
+    const alone = ask('default', 'proj', 'f1');
+    assert.deepEqual(alone.tokens.session, figures(5, 6, 7, 8));
+    assert.equal(alone.tokens.sessionId, 'sess-shared');
+    assert.deepEqual(alone.tokens.excluded, []);
+    assert.deepEqual(alone.tokens.total, figures(6, 8, 10, 12));
+  } finally { h.cleanup(); }
+});
+
+// --- the timeline: what it says about a dispatch, and about a verdict -------------------------
+
+/** The two reviews the rows below are read against, written straight into tasks.json: the pill is
+ * about the RECORDED verdict, and the ops that write one are graded where they live. */
+function withReviews(h) {
+  patch(dossierOf(h, 'f1'), 'tasks.json', (doc) => ({
+    ...doc,
+    reviews: [
+      { role: 'code-reviewer', verdict: 'fail', subject: 'task:T1', subjectHash: 'h', at: at(1) },
+      { role: 'product-reviewer', verdict: 'pass', subject: 'feature', subjectHash: 'h', at: at(7) },
+    ],
+  }));
+}
+
+test('the timeline carries one row per dispatch, with the model it ran on and its reuse (A5, A6)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    withWindows(h);
+    assert.equal(h.legion('state', 'session-record', '--session-id', 'sess-A').code, 0);
+    const readAgents = fakeAgents({
+      agents: [
+        { at: at(1), agentType: 'legion:builder', model: 'claude-opus-4-6', reused: false, tokens: figures(1, 2, 3, 4) },
+        { at: at(4), agentType: 'legion:code-reviewer', model: 'claude-haiku-4-5', reused: true, tokens: figures(5, 6, 7, 8) },
+      ],
+      coordinators: { 'sess-A': figures(9, 9, 9, 9) },
+    });
+    const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1', readAgents }));
+    const agents = v.activity.filter((a) => a.kind === 'agent');
+
+    // ONE ROW PER DISPATCH AND NOT ONE MORE: the coordinator session above contributes tokens and
+    // no row, because "reused" and a model mean nothing for it.
+    assert.equal(agents.length, 2);
+    assert.deepEqual(agents.map((a) => a.at), [at(1), at(4)]);
+    for (const a of agents) assert.equal(typeof a.model, 'string');
+    assert.deepEqual(agents.map((a) => a.model), ['claude-opus-4-6', 'claude-haiku-4-5']);
+    assert.deepEqual(agents.map((a) => a.reused), [false, true]);
+    assert.deepEqual(agents.map((a) => a.label),
+      ['legion:builder dispatched', 'legion:code-reviewer dispatched']);
+    const dated = v.activity.filter((a) => !Number.isNaN(Date.parse(a.at)));
+    assert.deepEqual(dated, [...dated].sort((x, y) => Date.parse(x.at) - Date.parse(y.at)));
+
+    // No reader, no row: no dispatch is ever synthesised out of a manifest.
+    const bare = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1' }));
+    assert.deepEqual(bare.activity.filter((a) => a.kind === 'agent'), []);
+  } finally { h.cleanup(); }
+});
+
+test('a figure no transcript recorded is null on the row, never a plausible one (A5, A6)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    withWindows(h);
+    const readAgents = fakeAgents({ agents: [{ at: at(1), agentType: 'legion:builder', tokens: figures(1, 2, 3, 4) }] });
+    const v = withHome(h.home, () => featureView({ org: 'default', project: 'proj', name: 'f1', readAgents }));
+    const [row] = v.activity.filter((a) => a.kind === 'agent');
+    // Neither may read as a measurement: the client says the model was not recorded, in the pill's
+    // own place, and renders no reuse pill at all for a null.
+    assert.equal(row.model, null);
+    assert.equal(row.reused, null);
+  } finally { h.cleanup(); }
+});
+
+test('the verdict is a FIELD on the review row, and no other kind carries one (A7)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    withWindows(h);
+    withReviews(h);
+    assert.equal(h.legion('state', 'session-record', '--session-id', 'sess-A').code, 0);
+    const readAgents = fakeAgents({
+      agents: [{ at: at(2), agentType: 'legion:builder', model: 'claude-opus-4-6', reused: false, tokens: figures(1, 2, 3, 4) }],
+      coordinators: { 'sess-A': figures(9, 9, 9, 9) },
+    });
+    const v = withHome(h.home, () => featureView({
+      org: 'default', project: 'proj', name: 'f1', readAgents,
+      commits: [{ sha: 'abcdef1234', at: at(0), subject: 'work' }],
+    }));
+    const reviews = v.activity.filter((a) => a.kind === 'review');
+    assert.deepEqual(reviews.map((r) => r.verdict), ['fail', 'pass']);
+    // The pill hangs off THIS FIELD, so "on review rows and on no others" is the shape of the row.
+    const kinds = new Set(v.activity.map((a) => a.kind));
+    assert.ok(kinds.size > 4, `only ${[...kinds].join(', ')} — this feed is too thin to prove the exclusion`);
+    for (const row of v.activity) {
+      assert.equal('verdict' in row, row.kind === 'review', `${row.kind} row: verdict presence is wrong`);
+      for (const field of ['model', 'reused', 'agentType']) {
+        assert.equal(field in row, row.kind === 'agent', `${row.kind} row: ${field} presence is wrong`);
+      }
+    }
+    for (const r of reviews) assert.equal(/pass|fail/.test(r.label), false, r.label);
+    assert.deepEqual(reviews.map((r) => r.label), ['code-reviewer on task:T1', 'product-reviewer on feature']);
+  } finally { h.cleanup(); }
+});
+
+// --- the fleet's per-task token distribution ---------------------------------------------------
+
+/** The seam, injected PER FEATURE, so a feature the reader has nothing for is observable. */
+function fakeFleet(byDossier) {
+  return ({ dossier }) => byDossier[dossier]
+    ?? { available: false, reason: `no transcript under ${dossier}`, agents: [], session: null };
+}
+
+/** Two registered features with recorded task windows: f1's four, and a second with one. */
+function twoFeatureFleet(h) {
+  withWindows(h);
+  assert.equal(h.legionIn(h.repoRoot, 'feature', 'start', 'f2', '--base', 'main').code, 0);
+  const b = dossierOf(h, 'f2');
+  // f2 was started without `state init`, so give it the tasks.json this population needs.
+  writeManifest(b, 'tasks.json', {
+    schemaVersion: 1, legionVersion: '0.0.0', revision: 0, featureId: 'default/proj/f2',
+    tasks: [{
+      id: 'S1', title: 'a', status: 'done', attempt: 0, milestone: 'M1', depends_on: [],
+      startedAt: at(6), doneAt: at(8),
+    }],
+    artifacts: {}, approvals: {}, reviews: [], receipts: { boundary: null }, createdAt: at(6), updatedAt: at(8),
+  });
+  return { a: dossierOf(h, 'f1'), b };
+}
+
+test('the fleet distribution is four figures over per-task totals, each with its own n (A11)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    const { a, b } = twoFeatureFleet(h);
+    const readAgents = fakeFleet({
+      [a]: {
+        available: true,
+        agents: [
+          { at: at(1), tokens: figures(10, 1, 100, 1000) }, // inside T1's window
+          { at: at(2), tokens: figures(20, 2, 200, 2000) }, // ON T1's doneAt: same total
+          { at: at(4), tokens: figures(5, 5, 50, 500) }, // inside T2's still-open window
+          { at: at(-1), tokens: figures(9, 9, 9, 9) }, // inside no window: not a task's total
+        ],
+        // PER FEATURE, NOT PER TASK (D6) — big enough that folding it in would move every figure.
+        session: { tokens: figures(1_000_000, 1_000_000, 1_000_000, 1_000_000), sessionId: 'sess-A' },
+      },
+      [b]: { available: true, agents: [{ at: at(7), tokens: figures(100, 50, 1000, 10) }], session: null },
+    });
+
+    const out = withHome(h.home, () => insights({ readAgents }));
+
+    assert.equal(out.taskTokens.available, true);
+    assert.equal(out.taskTokens.features, 2);
+    // T3 never started and T4's open window contains no dispatch: two of these five tasks are out of
+    // the sample, and the block says so in TASKS — the screen prints `n` under "5 tasks across 2".
+    assert.deepEqual(out.taskTokens.excluded, { noTranscript: 0, noTranscriptTasks: 0, noDispatch: 2 });
+    assert.equal(out.population.tasks, 5);
+    assert.equal(
+      out.taskTokens.input.n + out.taskTokens.excluded.noTranscriptTasks + out.taskTokens.excluded.noDispatch,
+      out.population.tasks,
+      'a task is missing from both the sample and the exclusions',
+    );
+    // Three task totals: T1 = 10+20, T2 = 5, S1 = 100. Nearest-rank over three, no interpolation.
+    assert.deepEqual(out.taskTokens.input, { n: 3, p50: 30, p90: 100, min: 5, max: 100 });
+    assert.deepEqual(out.taskTokens.output, { n: 3, p50: 5, p90: 50, min: 3, max: 50 });
+    assert.deepEqual(out.taskTokens.cacheRead, { n: 3, p50: 300, p90: 1000, min: 50, max: 1000 });
+    assert.deepEqual(out.taskTokens.cacheCreate, { n: 3, p50: 500, p90: 3000, min: 10, max: 3000 });
+    // `p50Ms` here would be formatted as a duration by the one client that reads these.
+    assert.deepEqual(Object.keys(out.taskTokens.input), ['n', 'p50', 'p90', 'min', 'max']);
+    assert.equal(JSON.stringify(out.taskTokens).includes('Ms'), false);
+  } finally { h.cleanup(); }
+});
+
+test('a feature whose transcripts nobody could read is COUNTED, and the sample shrinks with it (A11)', () => {
+  const h = fixture({ project: 'proj', feature: 'f1' });
+  try {
+    const { a } = twoFeatureFleet(h);
+    const answer = {
+      available: true,
+      agents: [
+        { at: at(1), tokens: figures(10, 1, 100, 1000) },
+        { at: at(2), tokens: figures(20, 2, 200, 2000) },
+        { at: at(4), tokens: figures(5, 5, 50, 500) },
+      ],
+      session: null,
+    };
+    // f2 is registered and readable; only its TRANSCRIPTS are missing, which is the exclusion.
+    const out = withHome(h.home, () => insights({ readAgents: fakeFleet({ [a]: answer }) }));
+    assert.equal(out.taskTokens.features, 1);
+    // The unread feature's task leaves under ITS reason: "no dispatch" would blame the window for a
+    // transcript nobody could open.
+    assert.deepEqual(out.taskTokens.excluded, { noTranscript: 1, noTranscriptTasks: 1, noDispatch: 2 });
+    assert.equal(
+      out.taskTokens.input.n + out.taskTokens.excluded.noTranscriptTasks + out.taskTokens.excluded.noDispatch,
+      out.population.tasks,
+      'a task is missing from both the sample and the exclusions',
+    );
+    assert.deepEqual(out.taskTokens.input, { n: 2, p50: 5, p90: 30, min: 5, max: 30 });
+    assert.deepEqual(out.taskTokens.cacheCreate, { n: 2, p50: 500, p90: 3000, min: 500, max: 3000 });
+
+    // THE POSITIVE TWIN: f2 readable puts its task back, so the shrink cannot pass vacuously.
+    const whole = withHome(h.home, () => insights({
+      readAgents: fakeFleet({ [a]: answer, [dossierOf(h, 'f2')]: { available: true, agents: [{ at: at(7), tokens: figures(100, 50, 1000, 10) }], session: null } }),
+    }));
+    assert.equal(whole.taskTokens.features, 2);
+    assert.deepEqual(whole.taskTokens.excluded, { noTranscript: 0, noTranscriptTasks: 0, noDispatch: 2 });
+    assert.equal(whole.taskTokens.input.n, 3);
   } finally { h.cleanup(); }
 });

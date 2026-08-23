@@ -319,6 +319,21 @@ test('every FeatureView field the client declares matches the LIVE /api/feature 
 
     const problems = checkAgainst('FeatureView', view, 'feature');
     assert.deepEqual(problems, [], `the live feature DTO contradicts viewer/src/data/types.ts:\n  ${problems.join('\n  ')}`);
+
+    // THE TOKEN BLOCK NEEDS A READER, and no manifest produces one: without the injection every
+    // token field is absent, so the POPULATED shape would go unchecked — fixtures.ts's blind spot.
+    const withTokens = withHome(h.home, () => featureView({
+      org: 'default',
+      project: 'fixproj',
+      name: 'f1',
+      readAgents: () => ({
+        available: true,
+        agents: [{ at: '2026-07-25T01:00:00.000Z', tokens: { input: 1, output: 2, cacheRead: 3, cacheCreate: 4 } }],
+        session: { tokens: { input: 5, output: 6, cacheRead: 7, cacheCreate: 8 }, sessionId: 'sess-1' },
+      }),
+    }));
+    assert.equal(withTokens.tokens.available, true);
+    assert.deepEqual(checkAgainst('FeatureView', withTokens, 'feature(transcripts read)'), []);
   } finally { h.cleanup(); }
 });
 
