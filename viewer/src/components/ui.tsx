@@ -117,21 +117,52 @@ export interface SpineStage { stage: string; enteredAt: string | null; completed
  * re-entry is the same stage revisited, not a new one. The kernel's `nextUnsatisfied` stage is
  * appended when it is not already on the list — that is the kernel's verdict, computed on this
  * request, not a lifecycle table this client carries.
+ *
+ * `intake` HAS NO `stageHistory` ENTRY, ever: `legion feature start` (feature.mjs) sets
+ * `stage: 'intake'` directly on creation, and `stage-enter` (kernel/state.mjs) only fires on the
+ * transitions OUT of a stage, never for the implicit starting one. The only recorded fact about
+ * intake is its `completedStages` row, written once the feature leaves it. Ordering "the entries
+ * from stageHistory, then whatever's left in completedStages" (the old shape) therefore always
+ * sorts intake dead last, regardless of it being the oldest thing on the feature — this is the bug
+ * H-viewer-intake-last fixes. The correct rule: order by the EARLIEST timestamp this view records
+ * for each stage, wherever that timestamp lives.
  */
 export function spineRows(view: FeatureView): SpineStage[] {
-  const order: string[] = [];
   const entered = new Map<string, string>();
   const completed = new Map<string, string>();
+  // One {stage, at} per stage, `at` = the FIRST timestamp seen for it (stageHistory's enter time
+  // when there is one; completedStages' completion time otherwise — intake's only case).
+  const seen = new Set<string>();
+  const candidates: { stage: string; at: string | null }[] = [];
   for (const h of view.stageHistory ?? []) {
     if (typeof h?.stage !== 'string') continue;
-    if (!entered.has(h.stage)) order.push(h.stage);
+    if (!seen.has(h.stage)) { seen.add(h.stage); candidates.push({ stage: h.stage, at: typeof h.at === 'string' ? h.at : null }); }
     entered.set(h.stage, h.at);
   }
   for (const c of view.completedStages ?? []) {
     if (typeof c?.stage !== 'string') continue;
-    if (!entered.has(c.stage) && !completed.has(c.stage)) order.push(c.stage);
+    if (!seen.has(c.stage)) { seen.add(c.stage); candidates.push({ stage: c.stage, at: typeof c.at === 'string' ? c.at : null }); }
     completed.set(c.stage, c.at);
   }
+
+  // Undated (`null`) sorts LAST, in `candidates`' own insertion order — `Array.sort` is stable
+  // (ES2019+), so returning 0 for a tie (including two `null`s) preserves that order for free.
+  const epoch = (at: string | null) => {
+    if (at === null) return null;
+    const t = Date.parse(at);
+    return Number.isNaN(t) ? null : t;
+  };
+  const order: string[] = candidates
+    .sort((a, b) => {
+      const at = epoch(a.at);
+      const bt = epoch(b.at);
+      if (at === null && bt === null) return 0;
+      if (at === null) return 1;
+      if (bt === null) return -1;
+      return at - bt;
+    })
+    .map((c) => c.stage);
+
   if (typeof view.stage === 'string' && !order.includes(view.stage)) order.push(view.stage);
   const nextStage = view.lifecycleNow.available ? view.lifecycleNow.nextUnsatisfied?.stage ?? null : null;
   if (nextStage && !order.includes(nextStage)) order.push(nextStage);
