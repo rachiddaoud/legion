@@ -130,19 +130,19 @@ is the usual root cause of a first-review failure.
    of this pipeline** — code is read on its own, years later. When in doubt, delete the comment.
 
    The bar is not "does this comment add something" — it is a measured ceiling: the comment lines
-   your diff adds stay under **5% of added lines**. Measure it instead of estimating —
+   your diff adds stay under **10% of added lines**. Measure it instead of estimating —
    `git diff -U0 | grep -cE '^\+\s*(//|/\*|\*)'` against the count of added lines. Code that
    needs many comments is code that isn't clear enough — the urge to explain is a signal to
    rewrite, not to annotate: rename, extract a well-named function, simplify the control flow,
-   and the comment has nothing left to say. A typical task diff adds **0–2 comment lines**; more
+   and the comment has nothing left to say. A typical task diff adds **0–4 comment lines**; more
    than that is a signal you are narrating, not documenting.
 9. **Self-check — narrow, once.** Run the task's `validate` command (or the smallest command
    that would catch an obvious failure in what you changed). Fix what it reveals, re-run once.
    This is a courtesy pass on your own diff, not the gate.
 10. **Review pre-empt.** Before you commit: (a) grep your own diff for comments referencing the
     feature/task/spec/plan/ticket or project history and delete them — the single most recurring
-    must-fix; (b) count the comment lines your diff adds — past the 0–2 budget or
-    **5% of added lines**, cut down to the ones stating a non-obvious invariant or gotcha, and
+    must-fix; (b) count the comment lines your diff adds — past the 0–4 budget or
+    **10% of added lines**, cut down to the ones stating a non-obvious invariant or gotcha, and
     prefer the rename or extraction that makes the comment unnecessary; (c) if your diff makes a
     new error or edge path *reachable*, cover it with a test at a declared seam now — a
     live-but-untested path is a must-fix.

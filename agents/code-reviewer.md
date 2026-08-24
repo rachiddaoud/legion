@@ -146,18 +146,18 @@ skeptic pass, and the fail-closed rule.
   deleted. This is a `must-fix`.
 - **Over-commenting — measure it once per review, before any other finding.** Run
   `git diff -U0 <base>..HEAD -- <src> | grep -cE '^\+\s*(//|/\*|\*)'` and
-  `git diff -U0 <base>..HEAD -- <src> | grep -cE '^\+[^+]'`. Past **3** added comment lines, or
-  past **5% of added lines**, you owe a `note` titled
+  `git diff -U0 <base>..HEAD -- <src> | grep -cE '^\+[^+]'`. Past **10% of added lines** *and* at least
+  **5** added comment lines — both bounds, not either — you owe a `note` titled
   `over-commenting — N comment lines on M added`, carrying both numbers, even when each comment
   individually adds a *why*. Write it **once**, never per comment: a diff at ten times the budget
   has one defect, not thirty. This note is **outside** the three-note budget — it is owed as soon
-  as a threshold is crossed, and the budget would drop it exactly where it fires. A cluster
+  as both thresholds are crossed, and the budget would drop it exactly where it fires. A cluster
   marks code that isn't clear enough: propose the rename or the extraction, never a list of
   deletions.
 - **Never ask for a comment.** The fix for an invariant nothing enforces is the test, the guard,
   the type or the rename that enforces it — never a marker comment at the call site, never a
   paragraph moved closer to the line it binds, never a clause added to an existing docblock. The
-  builder's budget is 0–2 lines per task, and a review that spends it works against the rule it
+  builder's budget is 0–4 lines per task, and a review that spends it works against the rule it
   is there to hold. Where you would write "say what is true instead", the answer is most often
   "delete the sentence".
 
