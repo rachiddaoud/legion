@@ -121,9 +121,9 @@ vanished. Never both and never silence. Uncontested findings are re-judged exact
 copied. **`emittedBy` is the one the loop READS**: an absence without it is one no backend gave, so
 supplying it for an answer you did not obtain is the one lie that costs the run its second opinion.
 `backend` is the RESOLVED value the verb printed (`google` stays `google`, a placeholder comes back
-`codex`) on every return, unavailable ones included — provenance for the review artifact. **Never a
-`${user_config.…}` placeholder**: one there says the answer did not come from the verb, and the
-loop discards that absence as unfounded. `category` is the one field of substance that
+`codex`) — provenance for the review artifact, and the EXIT 1 bullet is the whole rule for the one
+case where it was never printed. **Never a `${user_config.…}` placeholder**: one there says the
+answer did not come from the verb, and the loop discards that absence as unfounded. `category` is the one field of substance that
 is yours: translator metadata naming the defect class (reuse the same slug for the same root
 cause) so recurrence is countable downstream — it never alters the backend's substance.
 

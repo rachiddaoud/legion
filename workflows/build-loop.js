@@ -928,9 +928,10 @@ const CONSULT_DURABLE = ['cli-missing', 'not-authenticated', 'quota', 'misconfig
 // worth, are written down once — src/cli/consult.mjs, above VERB_STAMP. Cross-pinned to the verb's
 // spelling in test/plugin-manifest.test.mjs; the workflow cannot import it.
 // A SIGNATURE, NOT A PROOF, and the residual is ACCEPTED rather than overlooked (codex, round 2 of
-// the review that landed this): an agent that invents the field defeats the check. That is the whole design — inventing a field it was told belongs to the verb
-// is a different act from reasoning an answer out of its own prompt, which is what actually
-// happened — and the failure is one-sided on purpose: an unsigned absence costs a re-dispatch
+// the review that landed this): an agent that invents the field defeats the check. That is the
+// whole design — inventing a field it was told belongs to the verb is a different act from
+// reasoning an answer out of its own prompt, which is what actually happened — and the failure is
+// one-sided on purpose: an unsigned absence costs a re-dispatch
 // (~26k tokens), never a run's second lens, so an older agent build that relays the envelope
 // without this field simply stops buying the skip.
 // UNFORGEABLE PROVENANCE IS A DIFFERENT DESIGN, not a bigger regex: nothing the lens hands back

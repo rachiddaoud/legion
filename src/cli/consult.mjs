@@ -536,7 +536,9 @@ export function translate(review, cwd) {
 /** THE VERB'S SIGNATURE, on every envelope it emits and on nothing else. MEASURED 2026-08-29: the
  * consult agent returned a durable `misconfigured` absence it had reasoned out of the placeholders
  * in its own prompt, WITHOUT running this verb, and the loop's latch — which cannot see a dispatch
- * that never happened — believed it and stripped the second opinion from 7 of 13 tasks. The loop
+ * that never happened — believed it. It happened TWICE in that one feature, which is the measure
+ * of how reliably a lens reaches this conclusion when nothing stops it: 7 of 13 tasks lost their
+ * second opinion. The loop
  * now latches only on an answer carrying this string, so an absence nobody obtained costs a
  * re-dispatch instead of the whole run's second lens. It is an HONESTY AID, not a security
  * boundary: an agent that invents the field defeats it, and the point is exactly that inventing a
