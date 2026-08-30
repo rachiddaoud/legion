@@ -33,9 +33,8 @@ routinely unset because they only apply to the API backends. Pass all four throu
 step 1 is what you run, first and always. `misconfigured` is the verb's classification to make:
 never author it, never infer it from the text of a value, and never return `available: false`
 without an `EXIT:` line from a command you actually ran. **A config verdict reached by reading this
-section rather than by running the verb is a fabrication** — it costs the caller the lens for the
-WHOLE run (that absence latches durable and you stop being dispatched). Four placeholders here are
-still a working `codex` review: measured 2026-08-30, on exactly these values.
+section rather than by running the verb is a fabrication.** Four placeholders here are still a
+working `codex` review: measured 2026-08-30, on exactly these values.
 
 **The token is never yours to read.** `consult_token_env` is the NAME of an environment variable;
 the verb reads the value itself, straight from its own environment into one HTTPS request. It
@@ -62,10 +61,16 @@ never put it — or any part of it — into `raw`, `reason`, a finding or a log 
    **Scope**: `--commit <SHA>` for a task commit, `--base <REF>` for a `<base>..HEAD` milestone
    range — exactly one of the two. `q.txt` holds **only your dispatch's review question**.
 
+   **WAIT FOR IT — THE BOUND IS THE VERB'S, NEVER YOURS.** A reasoning model reading a real diff
+   takes minutes (measured 2026-08-30: 3 min 27 s), and the verb already carries the 900 s deadline
+   and kills what overruns it. Never wrap the command in a shorter timeout, never abandon it as
+   "too slow", never report `timeout` on a bound you invented: same fabrication, same cost.
+
 2. **Read `out.json`. It is already the answer.**
 
-   - **EXIT 0** — relay `available`, `backend`, `verdict`, `findings`, `raw`, `unavailable` and
-     `reason` **verbatim**, and add `subject`, `questions` and a `category` per finding. The
+   - **EXIT 0** — relay `available`, `backend`, `emittedBy`, `verdict`, `findings`, `raw`,
+     `unavailable` and `reason` **verbatim**, and add `subject`, `questions` and a `category` per
+     finding. The
      findings are already in your return's shape and tier; the absence, when there is one, is
      already classified. Do not re-tier, paraphrase, soften, drop or merge anything, and add no
      findings of your own: the verb read the backend and you did not.
@@ -105,12 +110,16 @@ vanished. Never both and never silence. Uncontested findings are re-judged exact
                  "category": "<optional kebab-case defect class>" }],
   "questions": ["…"],
   "raw": "<the backend's own summary, trimmed>",
+  "emittedBy": "<copied EXACTLY from out.json — the verb's signature, never written by you>",
   "unavailable": "<available:false only — cli-missing|not-authenticated|quota|network|timeout|misconfigured|other>",
   "reason": "<available:false only — the backend's own error message, verbatim>"
 }
 ```
 
-`verdict`, `findings`, `raw`, `backend`, `unavailable` and `reason` are the verb's, copied.
+`verdict`, `findings`, `raw`, `backend`, `emittedBy`, `unavailable` and `reason` are the verb's,
+copied. **`emittedBy` is the one the loop READS**: a durable absence without it is treated as one
+no backend ever gave, so supplying it for an answer you did not obtain is the one lie that costs
+the whole run its second opinion.
 `backend` is the RESOLVED value the verb printed (`google` stays `google`, a placeholder comes back
 `codex`) on every return, unavailable ones included — provenance for the review artifact. **Never a
 `${user_config.…}` placeholder**: one there says the answer did not come from the verb, and the

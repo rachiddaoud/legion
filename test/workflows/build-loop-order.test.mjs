@@ -35,6 +35,7 @@
 // ORDER and DISPATCH SHAPE, which is exactly what the fakes record.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { VERB_STAMP } from '../../src/cli/consult.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -330,7 +331,10 @@ const consultDispatched = (dispatches) => dispatches.filter((d) => d.agentType =
 /** A consult return that says the lens is gone, with the cause it classified (agents/consult.md
  * step 3). `verdict: 'pass'` on purpose: available:false is not a verdict, and a case that carried
  * its fail in `findings` would prove nothing about the latch. */
-const consultGone = (unavailable, reason) => ({ verdict: 'pass', findings: [], available: false, backend: 'codex', ...(unavailable ? { unavailable } : {}), ...(reason ? { reason } : {}) });
+const consultGone = (unavailable, reason) => ({ verdict: 'pass', findings: [], available: false, backend: 'codex', emittedBy: VERB_STAMP, ...(unavailable ? { unavailable } : {}), ...(reason ? { reason } : {}) });
+// `emittedBy: VERB_STAMP` rides on the fixture because the verb signs every envelope it emits:
+// these cases model absences a backend actually gave. Imported from the verb, so a rename cannot
+// leave this file testing a string the loop no longer looks for.
 
 test('a DURABLE consult absence LATCHES the lens off — the next task pays no dispatch and is still degraded', async () => {
   // T1 discovers a spent quota, which lasts days. T2 must not re-ask (that is the whole change),
@@ -381,52 +385,55 @@ test('a MISCONFIGURED backend latches too — a broken config does not repair it
   assert.deepEqual(result.built, ['T1', 'T2'], 'a broken consult config never fails a task');
 });
 
-test('a durable absence the lens INVENTED does not latch — a placeholder proves the verb never ran', async () => {
-  // MEASURED 2026-08-29, twice in one feature: the lens read the `${user_config.…}` placeholders in
-  // its own prompt, declared the backend misconfigured, and returned available:false WITHOUT
-  // running the verb. The latch believed it and stripped the second opinion from every remaining
-  // task — 7 of 13. The verb resolves a placeholder to the manifest default and never echoes one
-  // onward, so a surviving placeholder is proof of authorship, not of a broken config.
+test('an UNSIGNED durable absence does not latch — the lens invented it, no backend ever gave it', async () => {
+  // MEASURED 2026-08-29, twice in one feature: the lens reasoned `misconfigured` out of the
+  // `${user_config.…}` placeholders in its own prompt and returned available:false WITHOUT running
+  // the verb. The latch cannot see a dispatch that never happened, believed it, and stripped the
+  // second opinion from every remaining task — 7 of 13. The signature is what the loop can see:
+  // the verb stamps every envelope, so an absence without the stamp is an absence nobody obtained.
+  // The fabricated answer here carries NO placeholder anywhere — an earlier fix keyed on the
+  // placeholder alone and this exact shape walked straight through it.
+  const invented = { verdict: 'pass', findings: [], available: false, backend: 'codex', unavailable: 'misconfigured', reason: 'the consult backend is not configured' };
   const { result, dispatches, logs } = await runLoop([row('T1'), row('T2')], {
-    lensResult: (type, label) =>
-      (label === 'T1 review:consult'
-        ? { ...consultGone('misconfigured', 'consult_base_url is not set'), backend: '${user_config.consult_backend}' }
-        : undefined),
+    lensResult: (type, label) => (label === 'T1 review:consult' ? invented : undefined),
   });
   assert.deepEqual(consultDispatched(dispatches), ['T1 review:consult', 'T2 review:consult'],
     'T2 still buys its second opinion — the answer that would have bought the skip was never obtained');
   assert.equal(result.consultOff, null, 'nothing latched: the lens skipped its one job, the config did not break');
-  assert.equal(result.consultBackend, 'codex',
-    "T2's genuine answer names the backend; the placeholder never could, and never overwrote it");
-  assert.deepEqual(result.consultUnfounded, [{ after: 'T1', unavailable: 'misconfigured', backend: '${user_config.consult_backend}' }],
+  assert.deepEqual(result.consultUnfounded, [{ after: 'T1', unavailable: 'misconfigured', backend: 'codex' }],
     'the fabrication survives in the RETURN — build-report.jsonl is the only durable trace, and it is what diagnosed this');
   assert.deepEqual(result.degraded, ['T1'], 'T1 got one lens and says so; T2 got two');
   assert.ok(logs.some((l) => /consult absence NOT LATCHED after T1/.test(l)));
-  assert.deepEqual(result.built, ['T1', 'T2']);
-
-  // Alone, the fabrication leaves the run with NO named backend — the half the two-task case
-  // cannot show, because T2's real answer supplies one.
-  const solo = await runLoop([row('T1')], {
-    lensResult: () => ({ ...consultGone('misconfigured', 'x'), backend: '${user_config.consult_backend}' }),
-  });
-  assert.equal(solo.result.consultBackend, null, 'a placeholder names no second opinion, so none is recorded');
+  assert.deepEqual(result.built, ['T1', 'T2'], 'and an invented absence never fails a task either');
 });
 
-test('the placeholder can be in the REASON instead of the backend — same authorship, same refusal', async () => {
-  // The other half of the `||`: the first of the two observed reports named a resolved backend and
-  // put the placeholders in its prose. One field or the other is enough to prove the envelope was
-  // written by the lens rather than printed by the verb.
+test('a SIGNED absence latches even when its reason quotes a placeholder — the signature decides, not the prose', async () => {
+  // The mirror, and the reason the rule is the signature and not a text scan: the verb's own
+  // `misconfigured` reasons quote the operator's configured values back (src/cli/consult.mjs
+  // claudeGuard, the unknown-backend row), so a model literally named `claude-${user_config.x}`
+  // would produce a GENUINE absence carrying the marker. Refusing that one would re-bill the same
+  // real misconfiguration on every task of the run.
   const { result, dispatches } = await runLoop([row('T1'), row('T2')], {
     lensResult: (type, label) =>
       (label === 'T1 review:consult'
-        ? consultGone('misconfigured', "base-url '${user_config.consult_base_url}' is an unsubstituted placeholder")
+        ? consultGone('misconfigured', "model 'claude-${user_config.consult_model}' is a Claude model on an API backend")
         : undefined),
   });
-  assert.deepEqual(consultDispatched(dispatches), ['T1 review:consult', 'T2 review:consult']);
-  assert.equal(result.consultOff, null);
-  assert.equal(result.consultBackend, 'codex', 'the backend it DID name is still provenance — only the absence is refused');
-  assert.deepEqual(result.consultUnfounded, [{ after: 'T1', unavailable: 'misconfigured', backend: 'codex' }]);
-  assert.deepEqual(result.degraded, ['T1']);
+  assert.deepEqual(consultDispatched(dispatches), ['T1 review:consult'], 'a real config fault still buys the skip');
+  assert.equal(result.consultOff.reason, 'misconfigured');
+  assert.deepEqual(result.consultUnfounded, [], 'and it is not filed as a fabrication');
+});
+
+test('a placeholder is never recorded as the backend — it names no second opinion', async () => {
+  // Provenance, separate from the latch: the observed report wrote
+  // `consultBackend: '${user_config.consult_backend}'` into build-report.jsonl, which reads to the
+  // pre-merge human as a backend. `null` reads as "unknown", which is the truth.
+  const { result } = await runLoop([row('T1')], {
+    lensResult: () => ({ verdict: 'pass', findings: [], available: false, backend: '${user_config.consult_backend}', unavailable: 'misconfigured', reason: 'unset' }),
+  });
+  assert.equal(result.consultBackend, null);
+  assert.deepEqual(result.consultUnfounded, [{ after: 'T1', unavailable: 'misconfigured', backend: '${user_config.consult_backend}' }],
+    'the placeholder is kept HERE, where it is evidence about the lens rather than provenance about a backend');
 });
 
 test('a TRANSIENT consult absence does NOT latch — the next task still pays for its second lens', async () => {

@@ -32,7 +32,7 @@ import { applyHardenedGitEnv } from '../../src/kernel/git.mjs';
 import {
   AGY_DEFAULT_MODEL, AGY_PRINT_TIMEOUT_S, AGY_WATCHDOG_MS, BACKENDS, DIFF_CAP_BYTES, REVIEW_SCHEMA,
   PLACEHOLDER_RE, PROVIDERS, TIMEOUT_MS, UNAVAILABLE_CAUSES, USAGE, composePrompt, consultCore,
-  isEmptyScope, translate,
+  VERB_STAMP, isEmptyScope, translate,
 } from '../../src/cli/consult.mjs';
 
 applyHardenedGitEnv(process.env, { identity: { name: 'legion test', email: 'test@example.invalid' } });
@@ -220,12 +220,34 @@ async function misconfigured(over, deps = {}) {
   assert.equal(r.code, 0, 'a missing lens is a valid answer, never a process failure');
   assert.equal(r.envelope.available, false);
   assert.equal(r.envelope.unavailable, 'misconfigured');
+  assert.equal(r.envelope.emittedBy, VERB_STAMP, 'an unsigned absence is one the loop refuses to latch — see the signed/unsigned pair in build-loop-order.test.mjs');
   assert.ok(UNAVAILABLE_CAUSES.includes(r.envelope.unavailable));
   assert.equal(r.output, `${JSON.stringify(r.envelope)}\n`, 'stdout is exactly one JSON object');
   assert.equal(f.calls.length, 0, 'a config refusal must not spend a request');
   assert.equal(run.calls.length, 0, 'nor a spawn');
   return r.envelope;
 }
+
+test('EVERY envelope carries the verb\'s signature — available, unavailable, and refused alike', async () => {
+  // WHY THIS IS AN INVARIANT AND NOT A DETAIL. MEASURED 2026-08-29: the consult agent returned a
+  // durable `misconfigured` absence it had reasoned out of the `${user_config.…}` placeholders in
+  // its own prompt, without ever running this verb. The loop cannot see a dispatch that never
+  // happened, so it latched the lens off and 7 of 13 tasks lost their second opinion. The loop now
+  // latches only on an answer carrying `emittedBy` — which makes an envelope emitted WITHOUT it a
+  // silent regression whose only symptom is a token bill, invisible to every other assertion here.
+  // Emitted in ONE place (`emit`), so these three cover every path that exits 0.
+  const r = repoWith(64);
+  const good = await call({ '--backend': 'codex', '--model': null, '--commit': r.headSha },
+    { run: runFake(codexRun({ review: reviewIn(r.dir) })), cwd: r.dir });
+  assert.equal(good.envelope.available, true);
+  assert.equal(good.envelope.emittedBy, VERB_STAMP, 'a review the backend gave');
+  const gone = await call({ '--backend': 'codex', '--model': null, '--commit': r.headSha },
+    { run: runFake(() => spawned({ spawnError: 'ENOENT' })), cwd: r.dir });
+  assert.equal(gone.envelope.available, false);
+  assert.equal(gone.envelope.emittedBy, VERB_STAMP, 'an absence the backend gave');
+  const bad = await call({ '--backend': 'perplexity' });
+  assert.equal(bad.envelope.emittedBy, VERB_STAMP, 'and a refusal the verb itself gave');
+});
 
 test('an unknown backend value names what it received and lists what is accepted', async () => {
   const e = await misconfigured({ '--backend': 'perplexity' });
@@ -547,6 +569,7 @@ test('a 200 with an OpenAI-shaped body yields available:true and the findings AL
     tokenEnv: 'DEEPSEEK_API_KEY',
     httpStatus: 200,
     ...TRANSLATED,
+    emittedBy: VERB_STAMP,
   }, 'the envelope is exactly these fields — findings in the return contract\'s shape, no raw `review`');
   assert.equal(out.output, `${JSON.stringify(out.envelope)}\n`, 'stdout is exactly one JSON object and a newline');
 });
@@ -1086,7 +1109,7 @@ test('the codex success envelope is exactly available, backend, model, verdict, 
   const r = repoWith(64);
   const out = await call({ '--backend': 'codex', '--model': null, '--commit': r.headSha },
     { run: runFake(codexRun({ review: reviewIn(r.dir) })), cwd: r.dir });
-  assert.deepEqual(out.envelope, { available: true, backend: 'codex', model: null, ...TRANSLATED });
+  assert.deepEqual(out.envelope, { available: true, backend: 'codex', model: null, ...TRANSLATED, emittedBy: VERB_STAMP });
 });
 
 test('the scratch directory is gone after the run — on success and on every refusal', async () => {
@@ -1232,7 +1255,7 @@ test('structured_output is the review — as an object, or as a JSON string', as
   const r = repoWith(64);
   const asObject = await call({ '--backend': 'agy', '--model': null, '--commit': r.headSha },
     { run: runFake(agyRun({ status: 'SUCCESS', structured_output: reviewIn(r.dir) })), cwd: r.dir });
-  assert.deepEqual(asObject.envelope, { available: true, backend: 'agy', model: AGY_DEFAULT_MODEL, ...TRANSLATED },
+  assert.deepEqual(asObject.envelope, { available: true, backend: 'agy', model: AGY_DEFAULT_MODEL, ...TRANSLATED, emittedBy: VERB_STAMP },
     'the agy success envelope: available, backend, model, verdict, findings, raw');
   const asString = await call({ '--backend': 'agy', '--model': null, '--commit': r.headSha },
     { run: runFake(agyRun({ status: 'SUCCESS', structured_output: JSON.stringify(reviewIn(r.dir)) })), cwd: r.dir });
@@ -1471,7 +1494,8 @@ test('the codex recipe through bin/legion.mjs and the REAL runner seam: a fake c
   assert.equal(out.code, 0, `stderr was: ${out.stderr}`);
   assert.equal(out.stderr, '', 'the child\'s stderr noise stays inside the seam — nothing reaches the agent but the envelope');
   const envelope = JSON.parse(out.stdout);
-  assert.deepEqual(envelope, { available: true, backend: 'codex', model: null, ...TRANSLATED });
+  assert.deepEqual(envelope, { available: true, backend: 'codex', model: null, ...TRANSLATED, emittedBy: VERB_STAMP },
+    'the signature survives the REAL seam — stdout is what the agent relays, and the loop latches on nothing else');
   // What the binary actually received, through spawnSync with an argv array and no shell.
   const argv = readFileSync(argvFile, 'utf8').split('\0').filter((a) => a !== '');
   assert.deepEqual(argv.slice(0, 5), ['exec', '--json', '--sandbox', 'read-only', '--output-schema']);
