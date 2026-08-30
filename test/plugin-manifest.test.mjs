@@ -149,11 +149,9 @@ test('the consult agent reads its config from user_config and dispatches ONE pin
   // the rule is to pass it through untouched, and the VERB reads it as unset.
   assert.match(consult, /NOT CONFIGURED/, 'the agent must read an unsubstituted placeholder as "unset", not as a value');
   assert.match(consult, /verbatim and single-quoted/, 'and pass it through, quoted so bash does not expand it');
-  // AND IT MUST NOT ACT ON THAT READING. MEASURED 2026-08-29: a haiku dispatch read the
-  // placeholders in its own prompt, declared the backend misconfigured and returned
-  // `available:false` WITHOUT running the verb — twice in one feature, degrading 7 of 13 tasks,
-  // because a `misconfigured` absence latches for the whole run. The prose above told it the
-  // placeholder means "unset"; nothing told it that unset is ORDINARY and not its call to make.
+  // AND IT MUST NOT ACT ON THAT READING (the incident: src/cli/consult.mjs, above VERB_STAMP). The
+  // prose above told the lens a placeholder means "unset"; nothing told it that unset is ORDINARY
+  // and not its call to make, and it declared the backend broken without ever running the verb.
   assert.match(consult, /NOT CONFIGURED IS NORMAL/, 'an unset option is the ordinary case, not a fault to report');
   assert.match(consult, /YOU NEVER DIAGNOSE THE CONFIGURATION — YOU ALWAYS DISPATCH/,
     'the agent may not short-circuit the dispatch on the look of its own config values');

@@ -386,13 +386,9 @@ test('a MISCONFIGURED backend latches too — a broken config does not repair it
 });
 
 test('an UNSIGNED durable absence does not latch — the lens invented it, no backend ever gave it', async () => {
-  // MEASURED 2026-08-29, twice in one feature: the lens reasoned `misconfigured` out of the
-  // `${user_config.…}` placeholders in its own prompt and returned available:false WITHOUT running
-  // the verb. The latch cannot see a dispatch that never happened, believed it, and stripped the
-  // second opinion from every remaining task — 7 of 13. The signature is what the loop can see:
-  // the verb stamps every envelope, so an absence without the stamp is an absence nobody obtained.
-  // The fabricated answer here carries NO placeholder anywhere — an earlier fix keyed on the
-  // placeholder alone and this exact shape walked straight through it.
+  // The incident is in src/cli/consult.mjs above VERB_STAMP; what this case adds is the SHAPE that
+  // defeated the first fix. The fabricated answer carries NO placeholder anywhere — an earlier
+  // version of this guard keyed on the placeholder alone, and this walked straight through it.
   const invented = { verdict: 'pass', findings: [], available: false, backend: 'codex', unavailable: 'misconfigured', reason: 'the consult backend is not configured' };
   const { result, dispatches, logs } = await runLoop([row('T1'), row('T2')], {
     lensResult: (type, label) => (label === 'T1 review:consult' ? invented : undefined),
@@ -1936,6 +1932,7 @@ test('designSignals stays empty on single-SUBJECT recurrence, and is [] not abse
     { args: { reviews: [rec('code-reviewer', 'pass', 'milestone:M1'), rec('product-reviewer', 'pass', 'milestone:M1')] } },
   );
   assert.deepEqual(done.result.designSignals, [], 'the early return carries the empty list');
+  assert.deepEqual(done.result.consultUnfounded, [], 'and so does the consult-fabrication list, for the same reason');
 });
 
 // --- A builder may CONTEST a finding, and the lens that raised it adjudicates -----------------

@@ -76,7 +76,8 @@ never put it — or any part of it — into `raw`, `reason`, a finding or a log 
      findings of your own: the verb read the backend and you did not.
    - **EXIT 1** — the invocation was wrong (bad flags, a scope that does not resolve, an
      unreadable question file) and stdout is EMPTY. Return `available: false`, `unavailable:
-     "other"`, `reason` = the single line printed on stderr (it is prefixed `legion consult`).
+     "other"`, `reason` = the single line on stderr (prefixed `legion consult`) — and OMIT
+     `backend` and `emittedBy`: the verb printed neither, so you have neither.
    - **Never retry, never switch backend, never assemble anything yourself.** An
      `available: false` answer is a complete one — the caller records the review as *degraded*
      and continues (operator ruling 2026-07-31: you are a second lens, never the unique one) — and
@@ -117,9 +118,8 @@ vanished. Never both and never silence. Uncontested findings are re-judged exact
 ```
 
 `verdict`, `findings`, `raw`, `backend`, `emittedBy`, `unavailable` and `reason` are the verb's,
-copied. **`emittedBy` is the one the loop READS**: a durable absence without it is treated as one
-no backend ever gave, so supplying it for an answer you did not obtain is the one lie that costs
-the whole run its second opinion.
+copied. **`emittedBy` is the one the loop READS**: an absence without it is one no backend gave, so
+supplying it for an answer you did not obtain is the one lie that costs the run its second opinion.
 `backend` is the RESOLVED value the verb printed (`google` stays `google`, a placeholder comes back
 `codex`) on every return, unavailable ones included — provenance for the review artifact. **Never a
 `${user_config.…}` placeholder**: one there says the answer did not come from the verb, and the

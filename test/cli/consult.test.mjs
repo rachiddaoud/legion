@@ -229,13 +229,10 @@ async function misconfigured(over, deps = {}) {
 }
 
 test('EVERY envelope carries the verb\'s signature — available, unavailable, and refused alike', async () => {
-  // WHY THIS IS AN INVARIANT AND NOT A DETAIL. MEASURED 2026-08-29: the consult agent returned a
-  // durable `misconfigured` absence it had reasoned out of the `${user_config.…}` placeholders in
-  // its own prompt, without ever running this verb. The loop cannot see a dispatch that never
-  // happened, so it latched the lens off and 7 of 13 tasks lost their second opinion. The loop now
-  // latches only on an answer carrying `emittedBy` — which makes an envelope emitted WITHOUT it a
-  // silent regression whose only symptom is a token bill, invisible to every other assertion here.
-  // Emitted in ONE place (`emit`), so these three cover every path that exits 0.
+  // WHY THIS IS AN INVARIANT AND NOT A DETAIL (the incident is above VERB_STAMP): the loop latches
+  // a durable absence only when it carries `emittedBy`, so an envelope emitted WITHOUT the stamp is
+  // a silent regression whose only symptom is a token bill — invisible to every other assertion
+  // here. Emitted in ONE place (`emit`), so these three cover every path that exits 0.
   const r = repoWith(64);
   const good = await call({ '--backend': 'codex', '--model': null, '--commit': r.headSha },
     { run: runFake(codexRun({ review: reviewIn(r.dir) })), cwd: r.dir });

@@ -922,16 +922,13 @@ let consultBackend = null
 // would not latch, and a ten-task feature would pay ten ~26k-token dispatches to be told the same
 // configuration mistake ten times.
 const CONSULT_DURABLE = ['cli-missing', 'not-authenticated', 'quota', 'misconfigured']
-// …ON THE VERB'S OWN EVIDENCE ONLY. MEASURED 2026-08-29, twice in one feature: the lens read the
-// `${user_config.…}` placeholders in its own prompt, concluded `misconfigured` WITHOUT running the
-// consult verb, and the latch — which cannot see a dispatch that never happened — believed it and
-// stripped the second opinion from every remaining task of the run (7 of 13 degraded). The verb
-// signs every envelope it emits (src/cli/consult.mjs VERB_STAMP, cross-pinned in
-// test/plugin-manifest.test.mjs), so a durable absence WITHOUT that signature is one no backend
-// ever gave: not evidence of a broken config, evidence of a lens that skipped its one job.
+// …ON THE VERB'S OWN EVIDENCE ONLY. The verb signs every envelope it emits, so a durable absence
+// WITHOUT that signature is one no backend ever gave: not evidence of a broken config, evidence of
+// a lens that skipped its one job. The incident that bought this rule, and what the signature is
+// worth, are written down once — src/cli/consult.mjs, above VERB_STAMP. Cross-pinned to the verb's
+// spelling in test/plugin-manifest.test.mjs; the workflow cannot import it.
 // A SIGNATURE, NOT A PROOF, and the residual is ACCEPTED rather than overlooked (codex, round 2 of
-// the review that landed this): the agent is told the literal, so an agent that invents the field
-// defeats the check. That is the whole design — inventing a field it was told belongs to the verb
+// the review that landed this): an agent that invents the field defeats the check. That is the whole design — inventing a field it was told belongs to the verb
 // is a different act from reasoning an answer out of its own prompt, which is what actually
 // happened — and the failure is one-sided on purpose: an unsigned absence costs a re-dispatch
 // (~26k tokens), never a run's second lens, so an older agent build that relays the envelope

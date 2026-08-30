@@ -630,8 +630,7 @@ facts survive to reach it.
   **claimed without getting it from the verb** (a `${user_config.…}` placeholder survived in the
   answer, which `legion consult` never emits). A non-empty list means the LENS misbehaved, not the
   config: read it before treating a run's `degraded` ids as an environment problem, and before
-  acting on any `misconfigured` advice in the artifact. Measured 2026-08-29, this cost one feature
-  7 of 13 second opinions.
+  acting on any `misconfigured` advice in the artifact.
 - **`consultOff`** — `null`, or `{after, reason, detail, backend}`: the task or milestone that
   discovered the consult lens was **durably** gone (`cli-missing`, `not-authenticated`, `quota`,
   `misconfigured`), the classified cause, the backend's own message, and which backend it was. From
