@@ -149,6 +149,16 @@ test('the consult agent reads its config from user_config and dispatches ONE pin
   // the rule is to pass it through untouched, and the VERB reads it as unset.
   assert.match(consult, /NOT CONFIGURED/, 'the agent must read an unsubstituted placeholder as "unset", not as a value');
   assert.match(consult, /verbatim and single-quoted/, 'and pass it through, quoted so bash does not expand it');
+  // AND IT MUST NOT ACT ON THAT READING. MEASURED 2026-08-29: a haiku dispatch read the
+  // placeholders in its own prompt, declared the backend misconfigured and returned
+  // `available:false` WITHOUT running the verb — twice in one feature, degrading 7 of 13 tasks,
+  // because a `misconfigured` absence latches for the whole run. The prose above told it the
+  // placeholder means "unset"; nothing told it that unset is ORDINARY and not its call to make.
+  assert.match(consult, /NOT CONFIGURED IS NORMAL/, 'an unset option is the ordinary case, not a fault to report');
+  assert.match(consult, /YOU NEVER DIAGNOSE THE CONFIGURATION — YOU ALWAYS DISPATCH/,
+    'the agent may not short-circuit the dispatch on the look of its own config values');
+  assert.match(consult.replace(/\s+/g, ' '), /never return `available: false` without an `EXIT:` line from a command you actually ran/,
+    'every absence it reports must be one a command it ran actually produced');
 
   // 2. The one command. MEASURED, and the reason the recipes left the prose: a haiku dispatch with
   //    `consult_backend` configured to one CLI opened by probing another, because the familiar one
@@ -167,8 +177,12 @@ test('the consult agent reads its config from user_config and dispatches ONE pin
   assert.doesNotMatch(consult, /response_format|--max-time 900|curl -sS|api\.openai\.com|structured_output/,
     'no api recipe, no agy envelope parsing');
   assert.doesNotMatch(consult, /\| `error` is|\| `\$RC`|\| signal \|/, 'no outcome table: the classification is the verb\'s');
-  assert.ok(consult.trimEnd().split('\n').length <= 125,
-    'the agent is ~120 lines of dispatch + relay + contract; growth past this is a recipe creeping back into prose');
+  // Raised 125 → 135 on 2026-08-30 for the "never diagnose the config" guard above, and only for
+  // it: the recipes are fenced out by the `doesNotMatch` assertions right here, which is the check
+  // that actually enforces "no recipe in prose". The budget still binds — it is what stops the
+  // next author answering a lens defect with another paragraph instead of another invariant.
+  assert.ok(consult.trimEnd().split('\n').length <= 135,
+    'the agent is ~130 lines of dispatch + relay + contract; growth past this is a recipe creeping back into prose');
 
   // 3. Every backend the manifest OFFERS is one the agent names, and one the verb routes — and
   //    the manifest offers nothing the verb does not (the gemini recipe is gone).
@@ -323,6 +337,15 @@ test('the consult schema carries `backend` and `misconfigured`, and the latch tr
     'the unavailable enum carries misconfigured — a broken consult config is an absence like any other');
   assert.match(code, /CONSULT_DURABLE = \['cli-missing', 'not-authenticated', 'quota', 'misconfigured'\]/,
     'and it LATCHES: the plugin config cannot change under a running loop, so re-asking only re-bills');
+  // …BUT ONLY ON THE VERB'S OWN EVIDENCE. `legion consult` resolves a placeholder to the manifest
+  // default and never echoes one onward, so a `${user_config.…}` surviving in `backend` or
+  // `reason` proves the envelope is the agent's own prose. Latching on it is what turned one
+  // fabricated verdict into 7 degraded tasks (2026-08-29). Both fields are checked: the observed
+  // pair of reports carried the placeholder in one each.
+  assert.match(code, /placeholder\.test\(res\.backend \|\| ''\) \|\| placeholder\.test\(res\.reason \|\| ''\)/,
+    'a misconfigured answer still carrying an unsubstituted placeholder did not come from the verb, and must not latch');
+  assert.match(code, /!\/\\\$\\\{user_config\\\.\/\.test\(res\.backend\)/,
+    'and a placeholder is never recorded as the run\'s backend — that is provenance nobody can read');
 });
 
 test('.claude-plugin/ contains only the two manifests — components never nest inside it', () => {

@@ -22,11 +22,20 @@ Configured backend: `${user_config.consult_backend}` — model: `${user_config.c
 base URL: `${user_config.consult_base_url}`, token env var name: `${user_config.consult_token_env}`.
 
 Those four values are substituted into this prompt when you are loaded, from the plugin's user
-config. **A value that still reads as a literal `${user_config.…}` placeholder is NOT CONFIGURED**
-— measured on Claude Code 2.1.236: an option the operator never set is left unsubstituted rather
-than filled in from the manifest default. You do not interpret that: pass all four values through
-**verbatim and single-quoted**, placeholder included. The verb reads a placeholder as "unset" (an
-unset backend is `codex`), and the single quotes are what stop bash choking on `${…}`.
+config. **A value that still reads as a literal `${user_config.…}` placeholder is NOT CONFIGURED,
+and NOT CONFIGURED IS NORMAL** — measured on Claude Code 2.1.236: an option the operator never set
+is left unsubstituted rather than filled in from the manifest default, and three of the four are
+routinely unset because they only apply to the API backends. Pass all four through
+**verbatim and single-quoted**, placeholder included; the verb reads a placeholder as "unset"
+(an unset backend is `codex`), and the quotes are what stop bash choking on `${…}`.
+
+**YOU NEVER DIAGNOSE THE CONFIGURATION — YOU ALWAYS DISPATCH.** Whatever those values look like,
+step 1 is what you run, first and always. `misconfigured` is the verb's classification to make:
+never author it, never infer it from the text of a value, and never return `available: false`
+without an `EXIT:` line from a command you actually ran. **A config verdict reached by reading this
+section rather than by running the verb is a fabrication** — it costs the caller the lens for the
+WHOLE run (that absence latches durable and you stop being dispatched). Four placeholders here are
+still a working `codex` review: measured 2026-08-30, on exactly these values.
 
 **The token is never yours to read.** `consult_token_env` is the NAME of an environment variable;
 the verb reads the value itself, straight from its own environment into one HTTPS request. It
@@ -102,8 +111,10 @@ vanished. Never both and never silence. Uncontested findings are re-judged exact
 ```
 
 `verdict`, `findings`, `raw`, `backend`, `unavailable` and `reason` are the verb's, copied.
-`backend` is the CONFIGURED value verbatim (`google` stays `google`) on every return, unavailable
-ones included — provenance for the review artifact. `category` is the one field of substance that
+`backend` is the RESOLVED value the verb printed (`google` stays `google`, a placeholder comes back
+`codex`) on every return, unavailable ones included — provenance for the review artifact. **Never a
+`${user_config.…}` placeholder**: one there says the answer did not come from the verb, and the
+loop discards that absence as unfounded. `category` is the one field of substance that
 is yours: translator metadata naming the defect class (reuse the same slug for the same root
 cause) so recurrence is countable downstream — it never alters the backend's substance.
 

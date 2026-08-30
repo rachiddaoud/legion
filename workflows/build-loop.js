@@ -951,9 +951,31 @@ let stopped = null // set when a milestone close fails: later milestones are unt
  * second opinion died — the artifact and the pre-merge human read provenance off the RETURN, and
  * the lens's own answer never crosses the workflow boundary any other way. */
 function latchConsultOff(res, after) {
-  if (res && typeof res.backend === 'string' && res.backend) consultBackend = res.backend
+  // Provenance, not prose: a `${user_config.…}` placeholder names no second opinion, so it is not
+  // written down as one — `consultBackend: null` reads as "unknown", which is the truth, where
+  // `consultBackend: '${user_config.consult_backend}'` reads to the pre-merge human as a backend.
+  if (res && typeof res.backend === 'string' && res.backend && !/\$\{user_config\./.test(res.backend)) {
+    consultBackend = res.backend
+  }
   if (consultOff || !res || res.available !== false) return
   if (!CONSULT_DURABLE.includes(res.unavailable)) return
+  // AN ABSENCE THAT NEVER CAME FROM THE VERB DOES NOT LATCH. MEASURED 2026-08-29, twice in one
+  // feature: the lens read the `${user_config.…}` placeholders in its own prompt, concluded
+  // `misconfigured` WITHOUT running `legion consult`, and the latch — doing exactly what it is
+  // for — stripped the second opinion from every remaining task of the run (7 of 13 degraded).
+  // `legion consult` resolves a placeholder to the manifest default before it answers and never
+  // echoes one onward (src/cli/consult.mjs, PLACEHOLDER_RE), so a placeholder surviving in the
+  // backend or the reason is proof the envelope is the AGENT'S OWN PROSE, not the verb's. That
+  // is not evidence of a broken config; it is evidence of a lens that skipped its one job. The
+  // dispatch is kept — the next task re-asks and may get a real answer — and the degradation of
+  // THIS review still stands, because a review nobody ran is degraded whatever the reason.
+  const placeholder = /\$\{user_config\./
+  if (placeholder.test(res.backend || '') || placeholder.test(res.reason || '')) {
+    log(`consult absence NOT LATCHED after ${after} — the '${res.unavailable}' answer still carries an unsubstituted `
+      + `\${user_config.…} placeholder, so it did not come from the consult verb. The lens stays dispatchable; `
+      + `this review is degraded as usual.`)
+    return
+  }
   consultOff = { after, reason: res.unavailable, detail: res.reason || '', backend: res.backend || null }
   log(`consult lens LATCHED OFF after ${after} — ${res.unavailable}${res.reason ? `: ${res.reason}` : ''}. ` +
     `Not dispatched again this run; every review from here is DEGRADED and returned as such.`)
