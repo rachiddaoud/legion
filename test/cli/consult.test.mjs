@@ -858,6 +858,31 @@ test('a success envelope carries the token env var NAME and no value anywhere', 
   assert.ok(!Object.values(out.envelope).some((v) => String(v).includes(TOKEN)));
 });
 
+test('a token that COLLIDES with the signature cannot unsign the envelope', async () => {
+  // The scrubber deletes the token's bytes everywhere, keys included, and a token is an ARBITRARY
+  // string. A token spelling `legion-consult` would redact the stamp; one spelling `emittedBy`
+  // would rename its key. Either way a genuine durable absence arrives UNSIGNED at the loop, which
+  // then re-dispatches it on every task instead of latching — a silent token bill, invisible to
+  // every other assertion in this file. Contrived on purpose: the invariant is that signing and
+  // redaction are independent, which is why the stamp is added after the scrub and not before.
+  const r = repoWith(64);
+  for (const hostile of [VERB_STAMP, 'emittedBy']) {
+    const srv = await loopback((req, res) => {
+      res.writeHead(401, { 'Content-Type': 'text/plain' });
+      res.end(`rejected key ${req.headers.authorization}`);
+    });
+    try {
+      const out = await call(
+        { '--backend': 'api', '--base-url': srv.base, '--token-env': 'COLLIDING_KEY', '--commit': r.headSha },
+        { fetch: globalThis.fetch, cwd: r.dir, env: { COLLIDING_KEY: hostile } },
+      );
+      assert.equal(out.envelope.unavailable, 'not-authenticated', `${hostile}: still classified`);
+      assert.equal(out.envelope.emittedBy, VERB_STAMP, `${hostile}: still signed, so the loop can still latch it`);
+      assert.ok(!out.envelope.reason.includes(hostile), `${hostile}: and the token is still gone from the prose`);
+    } finally { await srv.close(); }
+  }
+});
+
 test('a token that only survives JSON escaping is scrubbed too', async () => {
   // A token carrying a quote or a backslash is escaped by JSON.stringify before the scrubber sees
   // the text, so matching the raw spelling alone would let it through. Contrived on purpose: the

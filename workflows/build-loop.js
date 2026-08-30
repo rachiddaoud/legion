@@ -929,11 +929,18 @@ const CONSULT_DURABLE = ['cli-missing', 'not-authenticated', 'quota', 'misconfig
 // signs every envelope it emits (src/cli/consult.mjs VERB_STAMP, cross-pinned in
 // test/plugin-manifest.test.mjs), so a durable absence WITHOUT that signature is one no backend
 // ever gave: not evidence of a broken config, evidence of a lens that skipped its one job.
-// A SIGNATURE, NOT A PROOF. An agent that invents the field defeats it, and that is the whole
-// design: inventing a field it was told belongs to the verb is a different act from reasoning an
-// answer out of its own prompt, which is what actually happened. The failure is one-sided on
-// purpose — an unsigned absence costs a re-dispatch (~26k tokens), never a run's second lens — so
-// an older agent build that relays the envelope without this field simply stops buying the skip.
+// A SIGNATURE, NOT A PROOF, and the residual is ACCEPTED rather than overlooked (codex, round 2 of
+// the review that landed this): the agent is told the literal, so an agent that invents the field
+// defeats the check. That is the whole design — inventing a field it was told belongs to the verb
+// is a different act from reasoning an answer out of its own prompt, which is what actually
+// happened — and the failure is one-sided on purpose: an unsigned absence costs a re-dispatch
+// (~26k tokens), never a run's second lens, so an older agent build that relays the envelope
+// without this field simply stops buying the skip.
+// UNFORGEABLE PROVENANCE IS A DIFFERENT DESIGN, not a bigger regex: nothing the lens hands back
+// can prove a command ran, so the verb would have to be dispatched through the kernel-op seam —
+// the loop's existing "run one command, report its exit code" primitive — with the lens reduced to
+// translation. That is a redesign of the consult path; this stamp is what makes the observed
+// fabrication cost one dispatch instead of a whole run's second opinion.
 const VERB_STAMP = 'legion-consult'
 // Every unsigned durable absence, kept in the RETURN and not only in the log: session context is
 // not durable, and `consultBackend: '${user_config.consult_backend}'` in build-report.jsonl is the
