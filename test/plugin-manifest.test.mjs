@@ -337,15 +337,10 @@ test('the consult schema carries `backend` and `misconfigured`, and the latch tr
     'the unavailable enum carries misconfigured — a broken consult config is an absence like any other');
   assert.match(code, /CONSULT_DURABLE = \['cli-missing', 'not-authenticated', 'quota', 'misconfigured'\]/,
     'and it LATCHES: the plugin config cannot change under a running loop, so re-asking only re-bills');
-  // …BUT ONLY ON THE VERB'S OWN EVIDENCE. `legion consult` resolves a placeholder to the manifest
-  // default and never echoes one onward, so a `${user_config.…}` surviving in `backend` or
-  // `reason` proves the envelope is the agent's own prose. Latching on it is what turned one
-  // fabricated verdict into 7 degraded tasks (2026-08-29). Both fields are checked: the observed
-  // pair of reports carried the placeholder in one each.
-  assert.match(code, /placeholder\.test\(res\.backend \|\| ''\) \|\| placeholder\.test\(res\.reason \|\| ''\)/,
-    'a misconfigured answer still carrying an unsubstituted placeholder did not come from the verb, and must not latch');
-  assert.match(code, /!\/\\\$\\\{user_config\\\.\/\.test\(res\.backend\)/,
-    'and a placeholder is never recorded as the run\'s backend — that is provenance nobody can read');
+  // …BUT ONLY ON THE VERB'S OWN EVIDENCE, which is CONTROL FLOW and therefore pinned where the
+  // rest of the latch is pinned — test/workflows/build-loop-order.test.mjs, executably. A source
+  // grep for the guard would pass on code where the guard sits one line too late and the 2026-08-29
+  // defect is fully restored; that mutation was run, and it is why there is no grep here.
 });
 
 test('.claude-plugin/ contains only the two manifests — components never nest inside it', () => {

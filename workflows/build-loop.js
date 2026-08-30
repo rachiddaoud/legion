@@ -918,6 +918,19 @@ let consultBackend = null
 // would not latch, and a ten-task feature would pay ten ~26k-token dispatches to be told the same
 // configuration mistake ten times.
 const CONSULT_DURABLE = ['cli-missing', 'not-authenticated', 'quota', 'misconfigured']
+// …ON THE VERB'S OWN EVIDENCE ONLY. MEASURED 2026-08-29, twice in one feature: the lens read the
+// `${user_config.…}` placeholders in its own prompt, concluded `misconfigured` WITHOUT running the
+// consult verb, and the latch — doing exactly what it is for — stripped the second opinion from
+// every remaining task of the run (7 of 13 degraded). The verb resolves a placeholder to the
+// manifest default before it answers and never echoes one onward (src/cli/consult.mjs,
+// PLACEHOLDER_RE), so a placeholder surviving in `backend` or `reason` proves the envelope is the
+// AGENT'S OWN PROSE: not evidence of a broken config, evidence of a lens that skipped its one job.
+const notFromTheVerb = (res) => /\$\{user_config\./.test(res.backend || '') || /\$\{user_config\./.test(res.reason || '')
+// Every such fabrication, kept in the RETURN and not only in the log: session context is not
+// durable, and `consultBackend: '${user_config.consult_backend}'` in build-report.jsonl is the one
+// trace that diagnosed this defect. Dropping it from `consultBackend` (right, it names no backend)
+// without landing it here would make a fabricating lens indistinguishable from a dead one.
+const consultUnfounded = []
 // BY-DESIGN SINGLE LENS, KEPT APART FROM `degraded` ON PURPOSE. A task reviewed by one
 // lens because its architect-assigned tier says so, and a task reviewed by one lens because the
 // consult backend was missing, look identical in tasks.json — and the pre-merge human must be able to
@@ -951,26 +964,15 @@ let stopped = null // set when a milestone close fails: later milestones are unt
  * second opinion died — the artifact and the pre-merge human read provenance off the RETURN, and
  * the lens's own answer never crosses the workflow boundary any other way. */
 function latchConsultOff(res, after) {
-  // Provenance, not prose: a `${user_config.…}` placeholder names no second opinion, so it is not
-  // written down as one — `consultBackend: null` reads as "unknown", which is the truth, where
-  // `consultBackend: '${user_config.consult_backend}'` reads to the pre-merge human as a backend.
-  if (res && typeof res.backend === 'string' && res.backend && !/\$\{user_config\./.test(res.backend)) {
-    consultBackend = res.backend
-  }
+  // Provenance, not prose: a placeholder names no second opinion, so it is not written down as
+  // one — `consultBackend: null` reads as "unknown", which is the truth.
+  if (res && typeof res.backend === 'string' && res.backend && !notFromTheVerb(res)) consultBackend = res.backend
   if (consultOff || !res || res.available !== false) return
   if (!CONSULT_DURABLE.includes(res.unavailable)) return
-  // AN ABSENCE THAT NEVER CAME FROM THE VERB DOES NOT LATCH. MEASURED 2026-08-29, twice in one
-  // feature: the lens read the `${user_config.…}` placeholders in its own prompt, concluded
-  // `misconfigured` WITHOUT running `legion consult`, and the latch — doing exactly what it is
-  // for — stripped the second opinion from every remaining task of the run (7 of 13 degraded).
-  // `legion consult` resolves a placeholder to the manifest default before it answers and never
-  // echoes one onward (src/cli/consult.mjs, PLACEHOLDER_RE), so a placeholder surviving in the
-  // backend or the reason is proof the envelope is the AGENT'S OWN PROSE, not the verb's. That
-  // is not evidence of a broken config; it is evidence of a lens that skipped its one job. The
-  // dispatch is kept — the next task re-asks and may get a real answer — and the degradation of
-  // THIS review still stands, because a review nobody ran is degraded whatever the reason.
-  const placeholder = /\$\{user_config\./
-  if (placeholder.test(res.backend || '') || placeholder.test(res.reason || '')) {
+  if (notFromTheVerb(res)) {
+    // The absence is kept as evidence and the DISPATCH is kept too — the next task re-asks and may
+    // get a real answer — while THIS review is degraded as any unreviewed one is.
+    consultUnfounded.push({ after, unavailable: res.unavailable, backend: res.backend || null })
     log(`consult absence NOT LATCHED after ${after} — the '${res.unavailable}' answer still carries an unsubstituted `
       + `\${user_config.…} placeholder, so it did not come from the consult verb. The lens stays dispatchable; `
       + `this review is degraded as usual.`)
@@ -1866,6 +1868,10 @@ return {
   // The backend the consult lens last reported this run (null when it never answered): the
   // artifact names the second opinion's provenance from here, never from the transcript.
   consultBackend,
+  // [] or [{after, unavailable, backend}]: durable absences the lens claimed but did not get from
+  // the verb. Non-empty means the LENS misbehaved, not the config — read it before believing a
+  // run's `degraded` list is an environment problem.
+  consultUnfounded,
   singleLens,
   tiersIgnored,
   milestones: milestoneReports,
