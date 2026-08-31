@@ -503,7 +503,7 @@ if (closesPending.length === 0) {
   log('nothing outstanding: every task is done and every milestone close is recorded passing — ' +
     'returning without a single dispatch')
   return {
-    built: [], blocked: [], failed: [], deferred: [], degraded: [], consultOff: null, consultBackend: null, singleLens: [], tiersIgnored: [],
+    built: [], blocked: [], failed: [], deferred: [], degraded: [], consultOff: null, consultBackend: null, consultUnfounded: [], singleLens: [], tiersIgnored: [],
     milestones: groups.map(g => ({ id: g.id, tasks: g.tasks.length, outcome: 'close-already-recorded' })),
     squashDeviations: [], designSignals: [], profile: PROFILE, profileAssumed: !PROFILE_GIVEN, profileCoerced: PROFILE_COERCED,
     reviewsProvided: RECORDED_REVIEWS !== null,
@@ -584,6 +584,10 @@ const REVIEW_SCHEMA = {
     // review artifact and the pre-merge human can say which second opinion they got, or did not
     // get, instead of inferring it from a config they cannot see from the dossier.
     backend: { type: 'string', description: 'consult lens only: the backend that ran (or was configured, when available:false) — provenance for the review artifact, read by no predicate' },
+    // The one consult field a predicate DOES read, and the reason it must be declared: an
+    // undeclared property is dropped by the runtime, which would leave every absence unsigned and
+    // no durable cause able to latch. Copied, never composed — see VERB_STAMP above.
+    emittedBy: { type: 'string', description: "consult lens only: copy `emittedBy` from the verb's JSON EXACTLY as it appears there, on every return, available or not. It is the verb's own signature; never write it yourself and never supply it for an answer you did not get from a command you ran" },
   },
 }
 
@@ -918,6 +922,32 @@ let consultBackend = null
 // would not latch, and a ten-task feature would pay ten ~26k-token dispatches to be told the same
 // configuration mistake ten times.
 const CONSULT_DURABLE = ['cli-missing', 'not-authenticated', 'quota', 'misconfigured']
+// …ON THE VERB'S OWN EVIDENCE ONLY. The verb signs every envelope it emits, so a durable absence
+// WITHOUT that signature is one no backend ever gave: not evidence of a broken config, evidence of
+// a lens that skipped its one job. The incident that bought this rule, and what the signature is
+// worth, are written down once — src/cli/consult.mjs, above VERB_STAMP. Cross-pinned to the verb's
+// spelling in test/plugin-manifest.test.mjs; the workflow cannot import it.
+// A SIGNATURE, NOT A PROOF, and the residual is ACCEPTED rather than overlooked (codex, round 2 of
+// the review that landed this): an agent that invents the field defeats the check. That is the
+// whole design — inventing a field it was told belongs to the verb is a different act from
+// reasoning an answer out of its own prompt, which is what actually happened — and the failure is
+// one-sided on purpose: an unsigned absence costs a re-dispatch
+// (~26k tokens), never a run's second lens, so an older agent build that relays the envelope
+// without this field simply stops buying the skip.
+// UNFORGEABLE PROVENANCE IS A DIFFERENT DESIGN, not a bigger regex: nothing the lens hands back
+// can prove a command ran, so the verb would have to be dispatched through the kernel-op seam —
+// the loop's existing "run one command, report its exit code" primitive — with the lens reduced to
+// translation. That is a redesign of the consult path; this stamp is what makes the observed
+// fabrication cost one dispatch instead of a whole run's second opinion.
+const VERB_STAMP = 'legion-consult'
+// Every unsigned durable absence, kept in the RETURN and not only in the log: session context is
+// not durable, and `consultBackend: '${user_config.consult_backend}'` in build-report.jsonl is the
+// one trace that diagnosed this defect. Without a home in the return, a lens inventing an absence
+// on every task is indistinguishable from a backend that is genuinely dead.
+const consultUnfounded = []
+// A placeholder names no second opinion, so it is never recorded as one — separate from the
+// signature check, which is about the ABSENCE; this is about provenance of the backend field.
+const isPlaceholder = (v) => /\$\{user_config\./.test(v || '')
 // BY-DESIGN SINGLE LENS, KEPT APART FROM `degraded` ON PURPOSE. A task reviewed by one
 // lens because its architect-assigned tier says so, and a task reviewed by one lens because the
 // consult backend was missing, look identical in tasks.json — and the pre-merge human must be able to
@@ -951,9 +981,19 @@ let stopped = null // set when a milestone close fails: later milestones are unt
  * second opinion died — the artifact and the pre-merge human read provenance off the RETURN, and
  * the lens's own answer never crosses the workflow boundary any other way. */
 function latchConsultOff(res, after) {
-  if (res && typeof res.backend === 'string' && res.backend) consultBackend = res.backend
+  // Provenance, not prose: a placeholder names no second opinion, so it is not written down as
+  // one — `consultBackend: null` reads as "unknown", which is the truth.
+  if (res && typeof res.backend === 'string' && res.backend && !isPlaceholder(res.backend)) consultBackend = res.backend
   if (consultOff || !res || res.available !== false) return
   if (!CONSULT_DURABLE.includes(res.unavailable)) return
+  if (res.emittedBy !== VERB_STAMP) {
+    // The absence is kept as evidence and the DISPATCH is kept too — the next task re-asks and may
+    // get a real answer — while THIS review is degraded as any unreviewed one is.
+    consultUnfounded.push({ after, unavailable: res.unavailable, backend: res.backend || null })
+    log(`consult absence NOT LATCHED after ${after} — the '${res.unavailable}' answer is not signed by the consult `
+      + `verb, so no backend ever gave it. The lens stays dispatchable; this review is degraded as usual.`)
+    return
+  }
   consultOff = { after, reason: res.unavailable, detail: res.reason || '', backend: res.backend || null }
   log(`consult lens LATCHED OFF after ${after} — ${res.unavailable}${res.reason ? `: ${res.reason}` : ''}. ` +
     `Not dispatched again this run; every review from here is DEGRADED and returned as such.`)
@@ -1844,6 +1884,10 @@ return {
   // The backend the consult lens last reported this run (null when it never answered): the
   // artifact names the second opinion's provenance from here, never from the transcript.
   consultBackend,
+  // [] or [{after, unavailable, backend}]: durable absences the lens claimed but did not get from
+  // the verb. Non-empty means the LENS misbehaved, not the config — read it before believing a
+  // run's `degraded` list is an environment problem.
+  consultUnfounded,
   singleLens,
   tiersIgnored,
   milestones: milestoneReports,

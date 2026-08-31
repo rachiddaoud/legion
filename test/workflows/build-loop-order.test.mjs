@@ -35,6 +35,7 @@
 // ORDER and DISPATCH SHAPE, which is exactly what the fakes record.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { VERB_STAMP } from '../../src/cli/consult.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -330,7 +331,10 @@ const consultDispatched = (dispatches) => dispatches.filter((d) => d.agentType =
 /** A consult return that says the lens is gone, with the cause it classified (agents/consult.md
  * step 3). `verdict: 'pass'` on purpose: available:false is not a verdict, and a case that carried
  * its fail in `findings` would prove nothing about the latch. */
-const consultGone = (unavailable, reason) => ({ verdict: 'pass', findings: [], available: false, backend: 'codex', ...(unavailable ? { unavailable } : {}), ...(reason ? { reason } : {}) });
+const consultGone = (unavailable, reason) => ({ verdict: 'pass', findings: [], available: false, backend: 'codex', emittedBy: VERB_STAMP, ...(unavailable ? { unavailable } : {}), ...(reason ? { reason } : {}) });
+// `emittedBy: VERB_STAMP` rides on the fixture because the verb signs every envelope it emits:
+// these cases model absences a backend actually gave. Imported from the verb, so a rename cannot
+// leave this file testing a string the loop no longer looks for.
 
 test('a DURABLE consult absence LATCHES the lens off — the next task pays no dispatch and is still degraded', async () => {
   // T1 discovers a spent quota, which lasts days. T2 must not re-ask (that is the whole change),
@@ -379,6 +383,53 @@ test('a MISCONFIGURED backend latches too — a broken config does not repair it
     'the lens reports the value it was configured with, and the return carries it out verbatim');
   assert.ok(logs.some((l) => /consult lens LATCHED OFF after T1 — misconfigured/.test(l)));
   assert.deepEqual(result.built, ['T1', 'T2'], 'a broken consult config never fails a task');
+});
+
+test('an UNSIGNED durable absence does not latch — the lens invented it, no backend ever gave it', async () => {
+  // The incident is in src/cli/consult.mjs above VERB_STAMP; what this case adds is the SHAPE that
+  // defeated the first fix. The fabricated answer carries NO placeholder anywhere — an earlier
+  // version of this guard keyed on the placeholder alone, and this walked straight through it.
+  const invented = { verdict: 'pass', findings: [], available: false, backend: 'codex', unavailable: 'misconfigured', reason: 'the consult backend is not configured' };
+  const { result, dispatches, logs } = await runLoop([row('T1'), row('T2')], {
+    lensResult: (type, label) => (label === 'T1 review:consult' ? invented : undefined),
+  });
+  assert.deepEqual(consultDispatched(dispatches), ['T1 review:consult', 'T2 review:consult'],
+    'T2 still buys its second opinion — the answer that would have bought the skip was never obtained');
+  assert.equal(result.consultOff, null, 'nothing latched: the lens skipped its one job, the config did not break');
+  assert.deepEqual(result.consultUnfounded, [{ after: 'T1', unavailable: 'misconfigured', backend: 'codex' }],
+    'the fabrication survives in the RETURN — build-report.jsonl is the only durable trace, and it is what diagnosed this');
+  assert.deepEqual(result.degraded, ['T1'], 'T1 got one lens and says so; T2 got two');
+  assert.ok(logs.some((l) => /consult absence NOT LATCHED after T1/.test(l)));
+  assert.deepEqual(result.built, ['T1', 'T2'], 'and an invented absence never fails a task either');
+});
+
+test('a SIGNED absence latches even when its reason quotes a placeholder — the signature decides, not the prose', async () => {
+  // The mirror, and the reason the rule is the signature and not a text scan: the verb's own
+  // `misconfigured` reasons quote the operator's configured values back (src/cli/consult.mjs
+  // claudeGuard, the unknown-backend row), so a model literally named `claude-${user_config.x}`
+  // would produce a GENUINE absence carrying the marker. Refusing that one would re-bill the same
+  // real misconfiguration on every task of the run.
+  const { result, dispatches } = await runLoop([row('T1'), row('T2')], {
+    lensResult: (type, label) =>
+      (label === 'T1 review:consult'
+        ? consultGone('misconfigured', "model 'claude-${user_config.consult_model}' is a Claude model on an API backend")
+        : undefined),
+  });
+  assert.deepEqual(consultDispatched(dispatches), ['T1 review:consult'], 'a real config fault still buys the skip');
+  assert.equal(result.consultOff.reason, 'misconfigured');
+  assert.deepEqual(result.consultUnfounded, [], 'and it is not filed as a fabrication');
+});
+
+test('a placeholder is never recorded as the backend — it names no second opinion', async () => {
+  // Provenance, separate from the latch: the observed report wrote
+  // `consultBackend: '${user_config.consult_backend}'` into build-report.jsonl, which reads to the
+  // pre-merge human as a backend. `null` reads as "unknown", which is the truth.
+  const { result } = await runLoop([row('T1')], {
+    lensResult: () => ({ verdict: 'pass', findings: [], available: false, backend: '${user_config.consult_backend}', unavailable: 'misconfigured', reason: 'unset' }),
+  });
+  assert.equal(result.consultBackend, null);
+  assert.deepEqual(result.consultUnfounded, [{ after: 'T1', unavailable: 'misconfigured', backend: '${user_config.consult_backend}' }],
+    'the placeholder is kept HERE, where it is evidence about the lens rather than provenance about a backend');
 });
 
 test('a TRANSIENT consult absence does NOT latch — the next task still pays for its second lens', async () => {
@@ -1881,6 +1932,7 @@ test('designSignals stays empty on single-SUBJECT recurrence, and is [] not abse
     { args: { reviews: [rec('code-reviewer', 'pass', 'milestone:M1'), rec('product-reviewer', 'pass', 'milestone:M1')] } },
   );
   assert.deepEqual(done.result.designSignals, [], 'the early return carries the empty list');
+  assert.deepEqual(done.result.consultUnfounded, [], 'and so does the consult-fabrication list, for the same reason');
 });
 
 // --- A builder may CONTEST a finding, and the lens that raised it adjudicates -----------------

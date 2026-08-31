@@ -533,6 +533,20 @@ export function translate(review, cwd) {
 // `backend` — which every envelope carries, unavailable ones included, because the review
 // artifact and the pre-merge human are entitled to know which second opinion they did not get.
 
+/** THE VERB'S SIGNATURE, on every envelope it emits and on nothing else. MEASURED 2026-08-29: the
+ * consult agent returned a durable `misconfigured` absence it had reasoned out of the placeholders
+ * in its own prompt, WITHOUT running this verb, and the loop's latch — which cannot see a dispatch
+ * that never happened — believed it. It happened TWICE in that one feature, which is the measure
+ * of how reliably a lens reaches this conclusion when nothing stops it: 7 of 13 tasks lost their
+ * second opinion. The loop
+ * now latches only on an answer carrying this string, so an absence nobody obtained costs a
+ * re-dispatch instead of the whole run's second lens. It is an HONESTY AID, not a security
+ * boundary: an agent that invents the field defeats it, and the point is exactly that inventing a
+ * field it was told is the verb's is a different act from paraphrasing its own prompt.
+ * Cross-pinned to the loop's literal in test/plugin-manifest.test.mjs — the workflow is a
+ * standalone script and cannot import it. */
+export const VERB_STAMP = 'legion-consult';
+
 /** The routing value VERBATIM (`google` stays `google`, never the `api` recipe it rode). */
 const unavailable = (backend, cause, reason) => ({ available: false, backend, unavailable: cause, reason });
 
@@ -882,7 +896,14 @@ export async function consultCore(argv, deps = {}) {
     // Walking the values first means a deletion can only ever land inside a string, so no token
     // can reach the shape that carries it. The object is still parsed back out of the emitted
     // text, so no caller holds a copy of the envelope that stdout did not carry.
-    const text = JSON.stringify(scrubDeep(envelope, scrub));
+    // SIGNED AFTER SCRUBBING, and it is the one field that must be. The scrubber deletes the
+    // token's bytes wherever they occur, keys included, and a token is an ARBITRARY string: one
+    // equal to (or containing) `legion-consult` would redact the signature, and one spelling
+    // `emittedBy` would rename its key — either way a genuine durable absence arrives unsigned and
+    // re-bills every task instead of latching. Adding the stamp last keeps redaction and signature
+    // independent. It leaks nothing: the stamp is a public constant, present in this file and in
+    // the agent's prompt, so a token that collides with it is not disclosed by its own literal.
+    const text = JSON.stringify({ ...scrubDeep(envelope, scrub), emittedBy: VERB_STAMP });
     return { code: 0, envelope: JSON.parse(text), output: `${text}\n` };
   };
   const refuse = ({ cause, reason }) => emit(unavailable(backend, cause, reason));

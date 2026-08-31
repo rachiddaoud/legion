@@ -32,7 +32,7 @@ import { applyHardenedGitEnv } from '../../src/kernel/git.mjs';
 import {
   AGY_DEFAULT_MODEL, AGY_PRINT_TIMEOUT_S, AGY_WATCHDOG_MS, BACKENDS, DIFF_CAP_BYTES, REVIEW_SCHEMA,
   PLACEHOLDER_RE, PROVIDERS, TIMEOUT_MS, UNAVAILABLE_CAUSES, USAGE, composePrompt, consultCore,
-  isEmptyScope, translate,
+  VERB_STAMP, isEmptyScope, translate,
 } from '../../src/cli/consult.mjs';
 
 applyHardenedGitEnv(process.env, { identity: { name: 'legion test', email: 'test@example.invalid' } });
@@ -220,12 +220,31 @@ async function misconfigured(over, deps = {}) {
   assert.equal(r.code, 0, 'a missing lens is a valid answer, never a process failure');
   assert.equal(r.envelope.available, false);
   assert.equal(r.envelope.unavailable, 'misconfigured');
+  assert.equal(r.envelope.emittedBy, VERB_STAMP, 'an unsigned absence is one the loop refuses to latch — see the signed/unsigned pair in build-loop-order.test.mjs');
   assert.ok(UNAVAILABLE_CAUSES.includes(r.envelope.unavailable));
   assert.equal(r.output, `${JSON.stringify(r.envelope)}\n`, 'stdout is exactly one JSON object');
   assert.equal(f.calls.length, 0, 'a config refusal must not spend a request');
   assert.equal(run.calls.length, 0, 'nor a spawn');
   return r.envelope;
 }
+
+test('EVERY envelope carries the verb\'s signature — available, unavailable, and refused alike', async () => {
+  // WHY THIS IS AN INVARIANT AND NOT A DETAIL (the incident is above VERB_STAMP): the loop latches
+  // a durable absence only when it carries `emittedBy`, so an envelope emitted WITHOUT the stamp is
+  // a silent regression whose only symptom is a token bill — invisible to every other assertion
+  // here. Emitted in ONE place (`emit`), so these three cover every path that exits 0.
+  const r = repoWith(64);
+  const good = await call({ '--backend': 'codex', '--model': null, '--commit': r.headSha },
+    { run: runFake(codexRun({ review: reviewIn(r.dir) })), cwd: r.dir });
+  assert.equal(good.envelope.available, true);
+  assert.equal(good.envelope.emittedBy, VERB_STAMP, 'a review the backend gave');
+  const gone = await call({ '--backend': 'codex', '--model': null, '--commit': r.headSha },
+    { run: runFake(() => spawned({ spawnError: 'ENOENT' })), cwd: r.dir });
+  assert.equal(gone.envelope.available, false);
+  assert.equal(gone.envelope.emittedBy, VERB_STAMP, 'an absence the backend gave');
+  const bad = await call({ '--backend': 'perplexity' });
+  assert.equal(bad.envelope.emittedBy, VERB_STAMP, 'and a refusal the verb itself gave');
+});
 
 test('an unknown backend value names what it received and lists what is accepted', async () => {
   const e = await misconfigured({ '--backend': 'perplexity' });
@@ -547,6 +566,7 @@ test('a 200 with an OpenAI-shaped body yields available:true and the findings AL
     tokenEnv: 'DEEPSEEK_API_KEY',
     httpStatus: 200,
     ...TRANSLATED,
+    emittedBy: VERB_STAMP,
   }, 'the envelope is exactly these fields — findings in the return contract\'s shape, no raw `review`');
   assert.equal(out.output, `${JSON.stringify(out.envelope)}\n`, 'stdout is exactly one JSON object and a newline');
 });
@@ -835,6 +855,31 @@ test('a success envelope carries the token env var NAME and no value anywhere', 
   assert.ok(!Object.values(out.envelope).some((v) => String(v).includes(TOKEN)));
 });
 
+test('a token that COLLIDES with the signature cannot unsign the envelope', async () => {
+  // The scrubber deletes the token's bytes everywhere, keys included, and a token is an ARBITRARY
+  // string. A token spelling `legion-consult` would redact the stamp; one spelling `emittedBy`
+  // would rename its key. Either way a genuine durable absence arrives UNSIGNED at the loop, which
+  // then re-dispatches it on every task instead of latching — a silent token bill, invisible to
+  // every other assertion in this file. Contrived on purpose: the invariant is that signing and
+  // redaction are independent, which is why the stamp is added after the scrub and not before.
+  const r = repoWith(64);
+  for (const hostile of [VERB_STAMP, 'emittedBy']) {
+    const srv = await loopback((req, res) => {
+      res.writeHead(401, { 'Content-Type': 'text/plain' });
+      res.end(`rejected key ${req.headers.authorization}`);
+    });
+    try {
+      const out = await call(
+        { '--backend': 'api', '--base-url': srv.base, '--token-env': 'COLLIDING_KEY', '--commit': r.headSha },
+        { fetch: globalThis.fetch, cwd: r.dir, env: { COLLIDING_KEY: hostile } },
+      );
+      assert.equal(out.envelope.unavailable, 'not-authenticated', `${hostile}: still classified`);
+      assert.equal(out.envelope.emittedBy, VERB_STAMP, `${hostile}: still signed, so the loop can still latch it`);
+      assert.ok(!out.envelope.reason.includes(hostile), `${hostile}: and the token is still gone from the prose`);
+    } finally { await srv.close(); }
+  }
+});
+
 test('a token that only survives JSON escaping is scrubbed too', async () => {
   // A token carrying a quote or a backslash is escaped by JSON.stringify before the scrubber sees
   // the text, so matching the raw spelling alone would let it through. Contrived on purpose: the
@@ -1086,7 +1131,7 @@ test('the codex success envelope is exactly available, backend, model, verdict, 
   const r = repoWith(64);
   const out = await call({ '--backend': 'codex', '--model': null, '--commit': r.headSha },
     { run: runFake(codexRun({ review: reviewIn(r.dir) })), cwd: r.dir });
-  assert.deepEqual(out.envelope, { available: true, backend: 'codex', model: null, ...TRANSLATED });
+  assert.deepEqual(out.envelope, { available: true, backend: 'codex', model: null, ...TRANSLATED, emittedBy: VERB_STAMP });
 });
 
 test('the scratch directory is gone after the run — on success and on every refusal', async () => {
@@ -1232,7 +1277,7 @@ test('structured_output is the review — as an object, or as a JSON string', as
   const r = repoWith(64);
   const asObject = await call({ '--backend': 'agy', '--model': null, '--commit': r.headSha },
     { run: runFake(agyRun({ status: 'SUCCESS', structured_output: reviewIn(r.dir) })), cwd: r.dir });
-  assert.deepEqual(asObject.envelope, { available: true, backend: 'agy', model: AGY_DEFAULT_MODEL, ...TRANSLATED },
+  assert.deepEqual(asObject.envelope, { available: true, backend: 'agy', model: AGY_DEFAULT_MODEL, ...TRANSLATED, emittedBy: VERB_STAMP },
     'the agy success envelope: available, backend, model, verdict, findings, raw');
   const asString = await call({ '--backend': 'agy', '--model': null, '--commit': r.headSha },
     { run: runFake(agyRun({ status: 'SUCCESS', structured_output: JSON.stringify(reviewIn(r.dir)) })), cwd: r.dir });
@@ -1471,7 +1516,8 @@ test('the codex recipe through bin/legion.mjs and the REAL runner seam: a fake c
   assert.equal(out.code, 0, `stderr was: ${out.stderr}`);
   assert.equal(out.stderr, '', 'the child\'s stderr noise stays inside the seam — nothing reaches the agent but the envelope');
   const envelope = JSON.parse(out.stdout);
-  assert.deepEqual(envelope, { available: true, backend: 'codex', model: null, ...TRANSLATED });
+  assert.deepEqual(envelope, { available: true, backend: 'codex', model: null, ...TRANSLATED, emittedBy: VERB_STAMP },
+    'the signature survives the REAL seam — stdout is what the agent relays, and the loop latches on nothing else');
   // What the binary actually received, through spawnSync with an argv array and no shell.
   const argv = readFileSync(argvFile, 'utf8').split('\0').filter((a) => a !== '');
   assert.deepEqual(argv.slice(0, 5), ['exec', '--json', '--sandbox', 'read-only', '--output-schema']);

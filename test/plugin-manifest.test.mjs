@@ -40,7 +40,7 @@ import { fileURLToPath } from 'node:url';
 import { STATE_OPS, ARTIFACT_KINDS, REVIEW_RECEIPT_AGENT_ROLES } from '../src/kernel/state.mjs';
 import {
   AGY_DEFAULT_MODEL, AGY_PRINT_TIMEOUT_S, AGY_WATCHDOG_MS, BACKENDS, DIFF_CAP_BYTES, PROVIDERS, REVIEW_SCHEMA,
-  TIMEOUT_MS, UNAVAILABLE_CAUSES, composePrompt,
+  TIMEOUT_MS, UNAVAILABLE_CAUSES, VERB_STAMP, composePrompt,
 } from '../src/cli/consult.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -149,6 +149,14 @@ test('the consult agent reads its config from user_config and dispatches ONE pin
   // the rule is to pass it through untouched, and the VERB reads it as unset.
   assert.match(consult, /NOT CONFIGURED/, 'the agent must read an unsubstituted placeholder as "unset", not as a value');
   assert.match(consult, /verbatim and single-quoted/, 'and pass it through, quoted so bash does not expand it');
+  // AND IT MUST NOT ACT ON THAT READING (the incident: src/cli/consult.mjs, above VERB_STAMP). The
+  // prose above told the lens a placeholder means "unset"; nothing told it that unset is ORDINARY
+  // and not its call to make, and it declared the backend broken without ever running the verb.
+  assert.match(consult, /NOT CONFIGURED IS NORMAL/, 'an unset option is the ordinary case, not a fault to report');
+  assert.match(consult, /YOU NEVER DIAGNOSE THE CONFIGURATION — YOU ALWAYS DISPATCH/,
+    'the agent may not short-circuit the dispatch on the look of its own config values');
+  assert.match(consult.replace(/\s+/g, ' '), /never return `available: false` without an `EXIT:` line from a command you actually ran/,
+    'every absence it reports must be one a command it ran actually produced');
 
   // 2. The one command. MEASURED, and the reason the recipes left the prose: a haiku dispatch with
   //    `consult_backend` configured to one CLI opened by probing another, because the familiar one
@@ -167,8 +175,14 @@ test('the consult agent reads its config from user_config and dispatches ONE pin
   assert.doesNotMatch(consult, /response_format|--max-time 900|curl -sS|api\.openai\.com|structured_output/,
     'no api recipe, no agy envelope parsing');
   assert.doesNotMatch(consult, /\| `error` is|\| `\$RC`|\| signal \|/, 'no outcome table: the classification is the verb\'s');
-  assert.ok(consult.trimEnd().split('\n').length <= 125,
-    'the agent is ~120 lines of dispatch + relay + contract; growth past this is a recipe creeping back into prose');
+  // Raised 125 → 140 on 2026-08-30, for the three fabrication guards and nothing else: never
+  // diagnose the config, never invent a bound, relay the verb's signature. The recipes stay fenced
+  // out by the `doesNotMatch` assertions right here, which is the check that actually enforces "no
+  // recipe in prose"; the budget is what stops the next author answering a lens defect with
+  // another paragraph instead of another invariant — which is why each of these three came with
+  // an executable pin in build-loop-order.test.mjs or the verb's own suite.
+  assert.ok(consult.trimEnd().split('\n').length <= 140,
+    'the agent is ~140 lines of dispatch + relay + contract; growth past this is a recipe creeping back into prose');
 
   // 3. Every backend the manifest OFFERS is one the agent names, and one the verb routes — and
   //    the manifest offers nothing the verb does not (the gemini recipe is gone).
@@ -323,6 +337,17 @@ test('the consult schema carries `backend` and `misconfigured`, and the latch tr
     'the unavailable enum carries misconfigured — a broken consult config is an absence like any other');
   assert.match(code, /CONSULT_DURABLE = \['cli-missing', 'not-authenticated', 'quota', 'misconfigured'\]/,
     'and it LATCHES: the plugin config cannot change under a running loop, so re-asking only re-bills');
+  // THE SIGNATURE MUST BE THE SAME STRING ON BOTH SIDES. The workflow is a standalone script and
+  // cannot import the verb, so this is the only place the two spellings meet: a rename on either
+  // side leaves every absence unsigned, nothing latches, and the only symptom is a token bill.
+  assert.match(code, new RegExp(`const VERB_STAMP = '${VERB_STAMP}'`),
+    "the loop's stamp must be the verb's own, byte for byte");
+  assert.match(code, /emittedBy: \{ type: 'string'/,
+    'and it must be DECLARED in REVIEW_SCHEMA — an undeclared property is dropped by the runtime, unsigning every answer');
+  // …BUT ONLY ON THE VERB'S OWN EVIDENCE, which is CONTROL FLOW and therefore pinned where the
+  // rest of the latch is pinned — test/workflows/build-loop-order.test.mjs, executably. A source
+  // grep for the guard would pass on code where the guard sits one line too late and the 2026-08-29
+  // defect is fully restored; that mutation was run, and it is why there is no grep here.
 });
 
 test('.claude-plugin/ contains only the two manifests — components never nest inside it', () => {

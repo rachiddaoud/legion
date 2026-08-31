@@ -624,7 +624,13 @@ facts survive to reach it.
   report carrying `degraded` is the only form this fact takes there. **Which** backend was missing
   is in the return too: **`consultBackend`** carries the backend the lens last reported, on every
   answer, available or not — the lens's own return never reaches `build-report.jsonl`, this field is
-  how its provenance does.
+  how its provenance does. An unsubstituted `${user_config.…}` placeholder is the one value it does
+  NOT carry: that names no backend, and it lands in `consultUnfounded` instead.
+- **`consultUnfounded`** — `[]`, or `{after, unavailable, backend}` per durable absence the lens
+  **claimed without getting it from the verb** (a `${user_config.…}` placeholder survived in the
+  answer, which `legion consult` never emits). A non-empty list means the LENS misbehaved, not the
+  config: read it before treating a run's `degraded` ids as an environment problem, and before
+  acting on any `misconfigured` advice in the artifact.
 - **`consultOff`** — `null`, or `{after, reason, detail, backend}`: the task or milestone that
   discovered the consult lens was **durably** gone (`cli-missing`, `not-authenticated`, `quota`,
   `misconfigured`), the classified cause, the backend's own message, and which backend it was. From
