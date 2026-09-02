@@ -37,10 +37,10 @@ import { mkdtempSync, readdirSync, readFileSync, statSync, accessSync, constants
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { STATE_OPS, ARTIFACT_KINDS, REVIEW_RECEIPT_AGENT_ROLES } from '../src/kernel/state.mjs';
+import { STATE_OPS, ARTIFACT_KINDS, PROFILES, PROFILE_REVIEW_ROLES, REVIEW_RECEIPT_AGENT_ROLES } from '../src/kernel/state.mjs';
 import {
-  AGY_DEFAULT_MODEL, AGY_PRINT_TIMEOUT_S, AGY_WATCHDOG_MS, BACKENDS, CONFIG_KEYS, DIFF_CAP_BYTES, PROVIDERS,
-  REVIEW_SCHEMA, TIMEOUT_MS, UNAVAILABLE_CAUSES, composePrompt,
+  AGY_DEFAULT_MODEL, AGY_PRINT_TIMEOUT_S, AGY_WATCHDOG_MS, BACKENDS, CONFIG_KEYS, DIFF_CAP_BYTES, PLUGIN_ID,
+  PROVIDERS, REVIEW_SCHEMA, TIMEOUT_MS, UNAVAILABLE_CAUSES, composePrompt,
 } from '../src/cli/consult.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -105,6 +105,12 @@ test('the manifest declares the consult backend userConfig — four string keys,
   );
   assert.deepEqual(Object.values(CONFIG_KEYS).sort(), Object.keys(uc).sort(),
     'and the verb resolves exactly those keys — a manifest key it does not read is config the operator sets for nothing');
+  // WHERE it reads them from is `<plugin>@<marketplace>`, and both halves are manifests in this
+  // repo: a rename on either side that PLUGIN_ID did not follow makes every consult call fall
+  // back to codex silently, which is the one failure no envelope reports.
+  const marketplace = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'marketplace.json'), 'utf8'));
+  assert.equal(PLUGIN_ID, `${manifest.name}@${marketplace.name}`,
+    'the settings key the verb reads is derived from the two manifests, never a literal that can drift');
   for (const [key, field] of Object.entries(uc)) {
     assert.equal(field.type, 'string', `${key}: string is the only type the agent parses`);
     assert.ok(field.title && field.title.length > 0, `${key}: the config dialog labels the field with this`);
@@ -1007,6 +1013,13 @@ test('the build stage drives every task, review and milestone close IN SESSION, 
   assert.match(s, /\*\*pass and fail alike\*\*/, 'a fail is recorded exactly like a pass');
   const iFix = at('**ONE fix round**', 'the fix round');
   assert.match(s.slice(iFix), /SendMessage/, 'the re-review is warm — the same agent, continued');
+  // The squash is only safe in one position, and only because it preserves the tree the task
+  // receipts key to: both halves of that are prose here, so both are pinned here.
+  const close = s.slice(at('Milestone close, by this session', 'the milestone-close block'));
+  assert.ok(close.indexOf('**Squash**') < close.indexOf('legion gate run --boundary'),
+    'the squash lands BEFORE the boundary gate — after it, the boundary receipt and every verdict bound to that HEAD are orphaned');
+  assert.match(close, /`git rev-parse HEAD\^\{tree\}` before and after/,
+    'and the squash is checked content-preserving against the tree it must not move');
   assert.doesNotMatch(s, /designSignals|build-report\.jsonl|Workflow\(/,
     'the workflow return fields are gone with the workflow');
 });
@@ -1022,8 +1035,42 @@ test('no profile reviews a task, and express also skips the critic and the produ
     'and what express costs is stated where the profile is chosen');
   assert.match(stageSection(body, 'plan'), /except on express, where the dispatch is\s+skipped/,
     'the plan stage names the same exemption');
-  assert.match(stageSection(body, 'build'), /`legion:product-reviewer` on standard and full/,
-    'and the milestone close runs the product reviewer only where the profile owes one');
+  // The close's required-role set is stated ONCE, and it is the skill's rule, not the kernel's:
+  // PROFILE_REVIEW_ROLES names the code and product reviewers and never the visual one.
+  const close = stageSection(body, 'build').slice(stageSection(body, 'build').indexOf('Milestone close'));
+  assert.match(close, /`code-reviewer` always/, 'the code reviewer is owed by every profile');
+  assert.match(close, /`product-reviewer` on standard and full/,
+    'the product reviewer only where the profile owes one');
+  assert.match(close, /`visual-reviewer` when a task of the milestone carries `notes\.visual`/,
+    'and the visual reviewer on the plan flag, which no kernel predicate reads');
+  assert.deepEqual(PROFILE_REVIEW_ROLES.full, ['code-reviewer', 'product-reviewer'],
+    'the kernel names neither the visual reviewer nor the consult — the close set is prose, and the skill says so');
+});
+
+test('the review stage describes the predicate `stage-complete review` actually runs', () => {
+  // state.mjs takes, per required role, the LATEST product-scope verdict and demands a passing
+  // one whose binding holds. It does NOT walk the milestones — a skill that says it does invites
+  // a session to trust a backstop that is not there, so the per-milestone rule is claimed here.
+  const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
+  const review = stageSection(body, 'review');
+  assert.match(review, /LATEST product-scope verdict/, 'the op reads the latest verdict per role');
+  assert.match(review, /never iterates milestones/, 'and says plainly what it does not do');
+  assert.match(review, /THIS skill's rule/, 'per-milestone coverage is owned here');
+  assert.match(review, /stage-complete build/, 'and enforced at the build stage, before this one');
+});
+
+test('the `full` profile claims no gate the kernel does not give it', () => {
+  // The plan-stage consult was structurally unreachable: at the plan stage the branch carries no
+  // commits and the dossier is outside the worktree, so `--base` derives an empty diff and
+  // consult.mjs refuses with `available:false` every time. A profile whose only distinguishing
+  // step can never run is a false claim of rigour, so `full` now says what it is.
+  const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
+  assert.match(stageSection(body, 'intake'), /\*\*full\*\* \(accepted by the kernel, currently identical to standard\)/,
+    'full is declared identical to standard');
+  assert.doesNotMatch(stageSection(body, 'plan'), /legion consult/,
+    'and the plan stage buys no second opinion it cannot obtain');
+  assert.ok(PROFILES.includes('full'), 'the kernel still accepts the value, so the menu keeps it');
+  assert.match(body, /escalate-profile <express\\?\|standard\\?\|full>/, 'and the escalate menu still offers it');
 });
 
 test('lessons.md is wired: intake and the architect read it, the session writes it', () => {

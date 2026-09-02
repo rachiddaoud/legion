@@ -896,12 +896,10 @@ export async function consultCore(argv, deps = {}) {
   // --- usage class: raised BEFORE any git read, any file read, any spawn and any HTTP call -----
   // A malformed invocation must not be answered with an envelope. An envelope is a REVIEW RESULT,
   // and "the caller typed the command wrong" is not a fact about the backend — reporting it as
-  // one would have the loop record a degraded review and latch a lens that was never asked.
+  // one would have the caller record a degraded review and latch a lens that was never asked.
+  // `resolve()` reads settings.json, so every throw below it comes FIRST: a mistyped command must
+  // not depend on the operator's plugin config being present or parseable.
   if (positional.length > 0) throw new Error(`unexpected argument '${positional[0]}'. usage: ${USAGE}`);
-
-  // Routing is settled FIRST, before anything else is looked at. Unset — absent, empty or an
-  // unsubstituted placeholder — is the manifest default, codex (header).
-  const backend = resolve('backend') ?? 'codex';
 
   // Exactly one scope. Neither is a review of nothing; both is a review of an ambiguity, and
   // silently preferring one would make the caller's typo invisible in the artifact.
@@ -925,6 +923,10 @@ export async function consultCore(argv, deps = {}) {
   } catch (e) {
     throw new Error(`--question-file ${questionPath} is unreadable: ${e?.message ?? e}. usage: ${USAGE}`);
   }
+
+  // Routing is settled before anything is spent. Unset — absent, empty or an unsubstituted
+  // placeholder, on the flag or in the plugin config — is the manifest default, codex (header).
+  const backend = resolve('backend') ?? 'codex';
 
   // --- config law: from here on every refusal is an ENVELOPE, exit 0 ---------------------------
   // Everything below is a fact about the operator's plugin config or about the backend, i.e.

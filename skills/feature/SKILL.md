@@ -72,8 +72,8 @@ Read `stage` from `feature.json` and act. Do the smallest next thing, then stop 
    derived: ask, take it verbatim, **skip silently when there is none**.
 2. Classify the **profile**, say why, record it with `legion state escalate-profile <express|standard|full>`:
    **express** (contained, one or two tasks, mini-spec fused into the recap,
-   no plan critic and no product review), **standard** (the default), **full** (standard plus a `legion
-   consult` at the plan stage).
+   no plan critic and no product review), **standard** (the default),
+   **full** (accepted by the kernel, currently identical to standard).
 3. **READ THE TARGET REPOSITORY — before the recap, at the depth this profile sets.** Classification first
    *because* it fixes the depth; read with Read/Glob/Grep here, and the project's **`lessons.md`** first when
    it exists (`~/.legion/orgs/<org>/projects/<project>/lessons.md`) — an entry the framing contradicts
@@ -115,18 +115,17 @@ interaction; if not, write or re-present the spec **at the mini-spec format defi
 1. Write the functional spec into the dossier. **The spec is your reformulation of the need, written for the
    human at the gate** — what you understood, for whom, where it comes from.
    It says WHAT; every HOW belongs to the plan.
-   - **Register rule: no internal identifier.** No file path, symbol, test file, schema or column, migration
-     or library — that read lives in `repo-brief.md`, which the architect reads. What stays is the surface the
-     user or an external consumer sees.
-   - **A checklist, not a template** — a section exists only when there is something to say: context and
-     origin, business rules, flows and screens when there is UI, data and API *as the consumer sees them* when
-     a contract changes (still **named explicitly**), edge cases and loading/empty/error states, constraints,
-     out-of-scope.
-   - **`## Assumptions` — the questions you did not ask, with the answer you gave yourself.** One line each:
-     `<what you assumed> — instead of asking: <the question>`. Never empty.
-   - **Acceptance rows are observations the human can make on the product** — a screen, a response, a file —
-     never a command over the source tree (`grep`, `typecheck`), which is a gate check belonging in a task's
-     `validate`.
+- **Register rule: no internal identifier.** No file path, symbol, test file, schema or column, migration or
+  library — that read lives in `repo-brief.md`, which the architect reads. What stays is the surface the user
+  or an external consumer sees.
+- **A checklist, not a template** — a section exists only when there is something to say: context and origin,
+  business rules, flows and screens when there is UI, data and API *as the consumer sees them* when a contract
+  changes (still **named explicitly**), edge cases and loading/empty/error states, constraints, out-of-scope.
+- **`## Assumptions` — the questions you did not ask, with the answer you gave yourself.** One line each:
+  `<what you assumed> — instead of asking: <the question>`. Never empty.
+- **Acceptance rows are observations the human can make on the product** — a screen, a response, a file —
+  never a command over the source tree (`grep`, `typecheck`), which is a gate check belonging in a task's
+  `validate`.
 2. It opens with a **`## Digest` of ≤ 20 lines of prose** passing the read-nothing-else test; a triggered
    visual rides outside the count. A user-visible surface triggers a **mock offer**: before the yes, offer to
    draft `mockups/<slug>.html` — ONE self-contained file under 2 MiB, styles and script inline, no external
@@ -151,21 +150,19 @@ approved this is an Amendment** (below), never a silent rewrite.
    carry), the dossier, the recorded answers, the project's `lessons.md` path when it exists, and any mock
    under `mockups/`, which the plan's UI tasks must target. It writes `plan.md` + `plan.tasks.json` and runs
    `legion plan check --feature <name>` until clean.
-   - **CONCERNS GO TO THE HUMAN — before the next kernel op.** The architect returns a `concerns` list, and so
-     does the critic: `kind: "spec"` is a spec premise the repo refutes (`ref` / `premise` / `evidence` /
-     `alternative`); `kind: "decision"` is a critic overturn of a `D<n>` the architect contests. Surface every
-     entry **verbatim** with its evidence; **never answer one yourself**. Three outcomes: **spec, upheld** ⇒
-     the Amendments **spec route** below, then back here; **spec, overruled** ⇒ re-dispatch the architect with
-     the operator's words verbatim, recorded as a `D<n>`'s evidence; **decision, arbitrated** ⇒ the human
-     picks and the architect records it in the `D<n>`, settling it. Every outcome is a lessons trigger.
+- **CONCERNS GO TO THE HUMAN — before the next kernel op.** The architect returns a `concerns` list, and so
+  does the critic: `kind: "spec"` is a spec premise the repo refutes (`ref` / `premise` / `evidence` /
+  `alternative`); `kind: "decision"` is a critic overturn of a `D<n>` the architect contests. Surface every
+  entry **verbatim** with its evidence; **never answer one yourself**. Three outcomes: **spec, upheld** ⇒ the
+  Amendments **spec route** below, then back here; **spec, overruled** ⇒ re-dispatch the architect with the
+  operator's words verbatim, recorded as a `D<n>`'s evidence; **decision, arbitrated** ⇒ the human picks and
+  the architect records it in the `D<n>`, settling it. Every outcome is a lessons trigger.
 2. **Import the canonical task list — BEFORE any approval:** `legion plan check --feature <name> --import`
    seeds `tasks.json` from `plan.tasks.json` **and** records the plan artifact. The approval binds `plan.md`'s
    bytes and the task list together, so approving first binds an *empty* set.
 3. Dispatch **`legion:plan-critic`** with the same `lessons.md` path —
-   **except on express, where the dispatch is skipped**; a *recorded* fail still blocks everywhere. On
-   **full**, first run `legion consult` on the plan (Bash, `--base <base>`, the question being the plan's
-   premises against the repo) and hand its findings to the critic to adjudicate. Record: `legion state
-   review-record --role plan-critic --verdict <pass|fail> --subject plan`.
+   **except on express, where the dispatch is skipped**; a *recorded* fail still blocks everywhere. Record:
+   `legion state review-record --role plan-critic --verdict <pass|fail> --subject plan`.
 4. **CRITIC LOOP, CAPPED.** Round 1: route any `concerns` entry to the human first, then send the rest to the
    architect — a finding carrying `overturns: "D<n>"` is one it **adopts or contests, never ignores** — which
    appends a Revision note and re-runs `legion plan check --feature <name> --import`. Round 2 is **WARM**:
@@ -215,12 +212,16 @@ Single-quote every task id and path you interpolate into Bash. Per outstanding t
    `legion plan check --feature <name> --import`, re-approval — never sideways into a re-plan of your own.
    **Never mark a task done to move on.**
 
-**Milestone close, by this session:**
+**Milestone close, by this session.** The **required roles** of a close are `code-reviewer` always,
+`product-reviewer` on standard and full, and
+`visual-reviewer` when a task of the milestone carries `notes.visual`. That set is THIS skill's rule, not the
+kernel's: `PROFILE_REVIEW_ROLES` names the two code and product roles and never the visual one, and the
+consult is advisory at every scope.
 
 1. **Squash** the milestone's task commits into one conventional commit (skipped when it holds a single task),
-   the body keeping each task id and title and the mutation-sweep lines. Run `git rev-parse HEAD^{tree}`
-   before and after: identical, or the squash changed content and you restore the history. Then `legion gate
-   run --boundary` on a clean worktree.
+   the body keeping each task id and title and the mutation-sweep lines. Run
+   `git rev-parse HEAD^{tree}` before and after: identical, or the squash changed content and you restore the
+   history. Then `legion gate run --boundary` on a clean worktree.
 2. **`legion consult` FIRST, directly in Bash — no agent:** `legion consult --base <base> --question-file <q>`
    from the worktree, or `--commit <sha>`. Backend and model come from the plugin config (`/plugin` → legion →
    configure, or `pluginConfigs["legion@legion"].options` in `~/.claude/settings.json`), re-read on every
@@ -231,14 +232,14 @@ Single-quote every task id and path you interpolate into Bash. Per outstanding t
    `cli-missing|not-authenticated|quota|misconfigured` is **durable**: do not run the verb again this feature,
    and note the cause for the review artifact; `network`, `timeout` and `other` cost this milestone only. The
    consult is **advisory** — no `review-record`, and the close never blocks on it.
-3. **Dispatch in parallel**: `legion:code-reviewer` (`model: opus`) in MILESTONE MODE over the assembled diff
-   (these tasks were never reviewed — review them in full, then the seams), carrying the consult findings to
-   adjudicate (accept or reject each with one line of why; unverifiable ⇒ note);
-   `legion:product-reviewer` on standard and full (the acceptance rows this milestone delivers, the plan's `##
-   NOT building`, over-delivery a finding); `legion:visual-reviewer` when any task carries `notes.visual` (the
-   plan's `## Visual review` serve recipe, screenshots to `<dossier>/visual/<m>/`, worktree byte-clean). Every
-   brief carries `Your review subject — copy it VERBATIM into the subject field of your return:
-   milestone:<id>` and the BLAST RADIUS text. Record each with
+3. **Dispatch the required roles in parallel**: `legion:code-reviewer` (`model: opus`) in MILESTONE MODE over
+   the assembled diff (these tasks were never reviewed — review them in full, then the seams), carrying the
+   consult findings to adjudicate (accept or reject each with one line of why; unverifiable ⇒ note);
+   `legion:product-reviewer` against the acceptance rows this milestone delivers and the plan's `## NOT
+   building`, over-delivery being a finding; `legion:visual-reviewer` with the plan's `## Visual review` serve
+   recipe, screenshots to `<dossier>/visual/<m>/`, worktree left byte-clean. Every brief carries `Your review
+   subject — copy it VERBATIM into the subject field of your return: milestone:<id>` and the BLAST RADIUS
+   text. Record each with
    `legion state review-record --role <role> --verdict <pass|fail> --subject milestone:<id>`,
    **pass and fail alike** — the record consumes the receipt that reviewer's stop minted.
 4. **ONE fix round** when a required role failed. Dispatch `legion:builder` (`model: opus`) with ALL blocking
@@ -303,9 +304,13 @@ receipt, the reviews and the pre-merge approval.
    recorded verdict; the consult findings from `review-consult.md` with the **backend named**, each blocking
    one fixed or adjudicated in writing (the rejected finding, the reason, the residual); the accepted
    residuals with their reasons; any milestone closed without the consult lens, with the cause.
-2. `legion state stage-complete review`, `legion state stage-enter pre-merge`. That op counts the roles the
-   profile requires at each `milestone:<id>` and at `feature` against the current tree — if it refuses, read
-   which role and subject it names.
+2. `legion state stage-complete review`, `legion state stage-enter pre-merge`. For each role the profile
+   requires, that op takes the LATEST product-scope verdict — subject `feature` or `milestone:<id>`, whichever
+   was recorded last — and demands a pass whose binding still holds against the current tree. **It
+   never iterates milestones**, so read the role it names rather than re-recording anything. Per-milestone
+   coverage is THIS skill's rule, kept at the build stage — every milestone's required roles recorded passing
+   before the next milestone starts and before `legion state stage-complete build` — and never a kernel
+   backstop.
 
 Three rules bind every review round, here and above. **A re-review is warm and belongs to the reviewer that
 failed** — `SendMessage`, its own findings as the checklist; a fresh agent only when that one is gone,

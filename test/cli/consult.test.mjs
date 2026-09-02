@@ -1021,6 +1021,25 @@ test('a settings.json that is missing, or unparseable, is unset — codex, and n
   } finally { process.env.CLAUDE_CONFIG_DIR = prev; }
 });
 
+test('a REAL settings.json under CLAUDE_CONFIG_DIR supplies the model — the whole path, no fake', async () => {
+  // The cases around this one inject deps.readSettings, which proves the resolution but not the
+  // read. This drives the default readSettings against a file on disk, the way the operator's
+  // config is actually reached (the relocation pattern is test/cli/plugin-dir.test.mjs's).
+  const dir = mkdtempSync(join(TMP, 'cfg-real-'));
+  writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+    pluginConfigs: { [PLUGIN_ID]: { options: { consult_model: 'gpt-5-codex-from-settings-file' } } },
+  }));
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = dir;
+  try {
+    const run = runFake(codexRun());
+    const out = await codex({ '--backend': null, '--model': null }, { run });
+    assert.deepEqual(run.calls[0].args.slice(-3, -1), ['-m', 'gpt-5-codex-from-settings-file'],
+      'the value on disk reaches the CLI');
+    assert.equal(out.envelope.model, 'gpt-5-codex-from-settings-file');
+  } finally { process.env.CLAUDE_CONFIG_DIR = prev; }
+});
+
 test('an unsubstituted placeholder STORED in settings.json is unset, exactly like one on the flag', async () => {
   const run = runFake(codexRun());
   const out = await codex({ '--backend': null, '--model': null }, {
