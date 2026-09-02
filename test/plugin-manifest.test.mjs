@@ -127,6 +127,13 @@ test('the manifest declares the consult backend userConfig — four string keys,
   assert.match(uc.consult_backend.description, /codex/, 'the accepted values are listed for the operator');
   assert.match(uc.consult_token_env.description, /NAME/,
     'the field takes the env var NAME, never the token — say so where the operator types it');
+  // The MENU the operator reads and the routing table the verb owns are one contract: a backend
+  // offered here that BACKENDS does not route is a `misconfigured` envelope for an operator who
+  // spelled it exactly as told, and the gemini CLI recipe was deleted on 2026-08-20 — the
+  // `google` API row is the way to a Gemini model.
+  const offered = uc.consult_backend.description;
+  for (const b of BACKENDS) assert.ok(offered.includes(b), `the manifest description must offer ${b}`);
+  assert.ok(!/\bgemini\b/.test(offered), 'and it must not offer the deleted gemini CLI recipe');
 });
 
 test('`legion consult` carries every recipe agents/consult.md no longer spells out', () => {
