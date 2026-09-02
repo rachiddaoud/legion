@@ -25,8 +25,10 @@
 //     the loader's `[pluginName, ...subdirs, name].join(':')`, but only a live session proves
 //     it. The SubagentStop matcher is written to match with or without the namespace, and
 //     hooks/builder-receipt.mjs re-checks agent_type itself, so both spellings are covered.
-//   - THAT THE `Workflow` TOOL EXISTS in the operator's build (org policy and the "Dynamic
-//     workflows" setting can disable it). `--build=sequential` is the documented fallback.
+//   - THAT THE BUILD LOOP RUNS AS WRITTEN. The Workflow build loop is gone: the build stage is
+//     prose in skills/feature/SKILL.md, driven by the feature session itself, so no build tool
+//     has to exist and there is no `--build` fallback to fall back to. What IS testable is that
+//     the stage still states its order and still names real commands — the build-stage test.
 //   - THAT THE MODEL FOLLOWS the skill's judgement and approval flow. Prose is not testable;
 //     what IS testable is that every command the prose names actually exists, which is test 8.
 //   - THAT THE ntfy TOPIC IS REACHABLE. Tests never touch the network.
@@ -718,6 +720,11 @@ test('the intake stage reads the code BEFORE the recap, at the depth the profile
     're-recording the intent the recap corrected');
   assert.ok(iReRecord < iAgreed,
     'the corrected intent is re-recorded BEFORE the agreement that binds its hash');
+  // The CLI still accepts `--add-repo`/`--initiative`, and this skill version drives neither: a
+  // stage that walked one anyway would spec ONE repository for a feature declared over several.
+  assert.match(s, /`intakeRepos`/, 'intake names the cross-repo manifest field it must stop on');
+  assert.match(s, /never run intake as if the feature were single-repo/,
+    'and says what not to do instead — stop and tell the operator, never a single-repo intake');
 });
 
 // The express mini-spec (2026-08-07): the spec STAGE stays — it anchors the acceptance
@@ -1018,7 +1025,9 @@ test('the build stage drives every task, review and milestone close IN SESSION, 
   // The squash is only safe in one position, and only because it preserves the tree the task
   // receipts key to: both halves of that are prose here, so both are pinned here.
   const close = s.slice(at('Milestone close, by this session', 'the milestone-close block'));
-  assert.ok(close.indexOf('**Squash**') < close.indexOf('legion gate run --boundary'),
+  // Through at() on both sides: a raw indexOf of an absent `**Squash**` is -1, which precedes
+  // everything and passes this assertion against a file that lost the squash step entirely.
+  assert.ok(at('**Squash**', 'the squash step') < at('legion gate run --boundary', 'the boundary gate'),
     'the squash lands BEFORE the boundary gate — after it, the boundary receipt and every verdict bound to that HEAD are orphaned');
   assert.match(close, /`git rev-parse HEAD\^\{tree\}` before and after/,
     'and the squash is checked content-preserving against the tree it must not move');

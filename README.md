@@ -109,7 +109,7 @@ flowchart TD
     I[intake<br/><i>interview + repo read</i>]
     S[spec<br/><i>what was understood, rules, acceptance</i>]
     P[plan<br/><i>plan.md + tasks</i>]
-    B[build<br/><i>milestone by milestone</i>]
+    B[build<br/><i>in-session: builders, then each milestone closes</i>]
     R[review<br/><i>feature-level settlement</i>]
     M[pre-merge<br/><i>all evidence, shown</i>]
     F[finalize<br/><i>opens the MR/PR</i>]
@@ -122,6 +122,8 @@ flowchart TD
     M -->|human approves| F
     F --> H([human merges])
 ```
+
+The build runs in the feature session: one builder subagent per task, then at each milestone close one code review plus an external consult, whose backend and model are read from the plugin config on every call.
 
 Agents propose; the kernel records evidence and enforces safety gates. The intent is to keep operations auditable and fail closed rather than guessing.
 

@@ -1,8 +1,8 @@
 // consult.mjs — `legion consult`: every recipe of the second-opinion lens — codex, agy, and the
 // OpenAI-compatible api — as one deterministic verb.
 //
-// WHY A VERB AND NOT PROSE. Each recipe of agents/consult.md used to be shell for a haiku agent
-// to assemble by hand: ~50 lines for the api one (a JSON payload built with `node -e`, a curl
+// WHY A VERB AND NOT PROSE. Each recipe below used to be shell for a consult subagent to assemble
+// by hand from prose: ~50 lines for the api one (a JSON payload built with `node -e`, a curl
 // line whose only safe spelling of the token was one shell expansion, a status table to read the
 // outcome off), ~250 for codex and agy together (a probe, a perl alarm, a backgrounded SIGKILL
 // watchdog, an event stream to read, two outcome tables with an order that mattered, and a
@@ -136,8 +136,8 @@ export const USAGE =
  * never of models: the model is always `--model`. `api` is a row with both columns null — the
  * "bring your own endpoint" case — so that "an explicit flag overrides its column" is ONE rule
  * with no special case, and so the API-backend list is exactly Object.keys(PROVIDERS).
- * These five rows are the ones agents/consult.md carried until 2026-08-20; moving them into code
- * is what lets test/plugin-manifest.test.mjs pin them by import instead of by regexing prose. */
+ * These five rows lived in the consult agent's prose until 2026-08-20; moving them into code is
+ * what lets test/plugin-manifest.test.mjs pin them by import instead of by regexing prose. */
 export const PROVIDERS = {
   openai: { baseUrl: 'https://api.openai.com/v1', tokenEnv: 'OPENAI_API_KEY' },
   google: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', tokenEnv: 'GEMINI_API_KEY' },
@@ -931,8 +931,8 @@ export async function consultCore(argv, deps = {}) {
   // --- config law: from here on every refusal is an ENVELOPE, exit 0 ---------------------------
   // Everything below is a fact about the operator's plugin config or about the backend, i.e.
   // about whether a second opinion CAN be obtained. A config fact is the `misconfigured` absence,
-  // and the loop latches the lens off for the run when it sees one — correctly, since plugin
-  // config cannot change mid-run.
+  // which the feature session treats as durable and stops re-dispatching for the rest of the
+  // feature — correctly, since plugin config cannot change mid-run.
   // The scrubber is installed the moment a token VALUE is read (the api recipe's onToken) and is
   // identity until then — which is not a gap: before that line no token exists in this process,
   // so no envelope can contain one.

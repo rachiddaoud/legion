@@ -70,6 +70,9 @@ Read `stage` from `feature.json` and act. Do the smallest next thing, then stop 
    Write `intent.md`, then `legion state artifact-record intent <path>`. A ticket surfacing here is recorded
    here — `legion state ticket-record <ref>` (`123`, `#123`, `group/project#123`) — as operator data, never
    derived: ask, take it verbatim, **skip silently when there is none**.
+   **A cross-repo feature is not driven by this skill version**: if `feature.json` carries `intakeRepos` or an
+   `initiative` block — the CLI still accepts `legion feature start --add-repo` and `--initiative` — say so to
+   the operator and stop, and never run intake as if the feature were single-repo.
 2. Classify the **profile**, say why, record it with `legion state escalate-profile <express|standard|full>`:
    **express** (contained, one or two tasks, mini-spec fused into the recap,
    no plan critic and no product review), **standard** (the default),
