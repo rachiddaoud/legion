@@ -9,24 +9,25 @@
 // translation table). Every one of those is a step a model can get subtly right and occasionally
 // wrong, and the failure modes are the two this lens exists to prevent: a review that never ran
 // reported as a pass, and a credential that reached a transcript. The judgement is not the
-// model's to make, so it is not the model's to make: the agent passes the four userConfig values
-// through as flags and reads back one JSON object whose findings are already in the return
-// contract's shape.
+// model's to make, so it is not the model's to make: the feature session calls this verb directly
+// in Bash, the verb resolves the four options from settings.json itself, and the caller reads back
+// one JSON object whose findings are already in the shape the close needs.
 //
 // READ-ONLY, ABSOLUTELY — the same property `legion doctor` holds and for the same reason. This
 // verb resolves no dossier, takes no lock, mints no evidence and records no review; the one thing
 // it writes is a `mkdtempSync` directory under os.tmpdir() for the files the CLIs insist on
 // (codex's `-o`, agy's `--json-schema`), removed in a `finally` before the envelope is emitted.
-// Its only outputs are stdout and the exit code. (The kernel is not ignorant of consult:
-// state.mjs REVIEW_RECEIPT_AGENT_ROLES maps the `consult` review ROLE, and the build loop records
-// its verdict with `legion state review-record --role consult`. What the kernel owns no row for
-// is a consult GATE — PROFILE_REVIEW_ROLES names none, deliberately. This verb sits on neither
-// path: it fetches an opinion, and the caller does everything else with it.)
+// Its only outputs are stdout and the exit code. (The kernel is not ignorant of consult: state.mjs
+// REVIEW_RECEIPT_AGENT_ROLES still maps a `consult` review ROLE. Nothing on the shipped path uses
+// it: the milestone close appends this answer to `review-consult.md` as ADVISORY input its lenses
+// adjudicate, and records no `review-record --role consult` for it. The kernel owns no consult
+// GATE either — PROFILE_REVIEW_ROLES names none, deliberately. This verb sits on neither path: it
+// fetches an opinion, and the caller does everything else with it.)
 //
 // EXIT CODE, AND WHY `available:false` IS A ZERO. 0 means an envelope was emitted — INCLUDING an
-// `available:false` one. A missing lens is a valid, complete answer: the build loop records the
-// review as degraded and continues, and it is a ZERO exit that stops the haiku caller from
-// treating the answer as a broken command and "repairing" it into some other backend. 1 is
+// `available:false` one. A missing lens is a valid, complete answer: the close reports the
+// milestone as closed without the consult lens and continues, and it is a ZERO exit that stops the
+// SESSION from treating that answer as a broken command and "repairing" it into another backend. 1 is
 // reserved for a call that was never a review request at all — bad flags, an unreadable question
 // file, a commit that does not resolve — where the router prints `legion consult: <message>` on
 // stderr and NO envelope is written to stdout. Those two classes must not blur: an envelope on
@@ -931,8 +932,9 @@ export async function consultCore(argv, deps = {}) {
   // --- config law: from here on every refusal is an ENVELOPE, exit 0 ---------------------------
   // Everything below is a fact about the operator's plugin config or about the backend, i.e.
   // about whether a second opinion CAN be obtained. A config fact is the `misconfigured` absence,
-  // which the feature session treats as durable and stops re-dispatching for the rest of the
-  // feature — correctly, since plugin config cannot change mid-run.
+  // which the feature session treats as durable BY POLICY and stops re-dispatching for the rest of
+  // the feature — settings.json is re-read on every call, so the operator fixes the config and the
+  // next feature (or an explicit re-run) picks it up; nothing here caches it.
   // The scrubber is installed the moment a token VALUE is read (the api recipe's onToken) and is
   // identity until then — which is not a gap: before that line no token exists in this process,
   // so no envelope can contain one.

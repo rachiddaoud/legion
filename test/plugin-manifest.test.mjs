@@ -720,11 +720,21 @@ test('the intake stage reads the code BEFORE the recap, at the depth the profile
     're-recording the intent the recap corrected');
   assert.ok(iReRecord < iAgreed,
     'the corrected intent is re-recorded BEFORE the agreement that binds its hash');
-  // The CLI still accepts `--add-repo`/`--initiative`, and this skill version drives neither: a
-  // stage that walked one anyway would spec ONE repository for a feature declared over several.
-  assert.match(s, /`intakeRepos`/, 'intake names the cross-repo manifest field it must stop on');
-  assert.match(s, /never run intake as if the feature were single-repo/,
-    'and says what not to do instead — stop and tell the operator, never a single-repo intake');
+});
+
+// The CLI still accepts `--add-repo`/`--initiative`, and this skill version drives neither. The rule
+// is a HOUSE RULE, above the stage table, not a step of intake: a feature resumed at plan or build
+// never re-reads intake, so a guard living there would let exactly the sessions that skip intake
+// drive a multi-repo feature as if it were single-repo.
+test('a cross-repo feature is refused as a house rule, above the stage table', () => {
+  const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
+  const iTable = body.indexOf('## The stage table');
+  assert.ok(iTable > 0, 'SKILL.md must still have a stage table for the house rules to sit above');
+  const rules = body.slice(0, iTable);
+  assert.match(rules, /`intakeRepos`/, 'the house rules name the cross-repo manifest field to stop on');
+  assert.match(rules, /`initiative` block/, 'and the initiative block, the other half of the shape');
+  assert.match(rules, /at whatever stage you resume/,
+    'the rule binds every stage, not just intake — a resume past intake is the case it exists for');
 });
 
 // The express mini-spec (2026-08-07): the spec STAGE stays — it anchors the acceptance
