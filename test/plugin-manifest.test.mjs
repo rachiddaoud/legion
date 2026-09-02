@@ -39,8 +39,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STATE_OPS, ARTIFACT_KINDS, REVIEW_RECEIPT_AGENT_ROLES } from '../src/kernel/state.mjs';
 import {
-  AGY_DEFAULT_MODEL, AGY_PRINT_TIMEOUT_S, AGY_WATCHDOG_MS, BACKENDS, DIFF_CAP_BYTES, PROVIDERS, REVIEW_SCHEMA,
-  TIMEOUT_MS, UNAVAILABLE_CAUSES, composePrompt,
+  AGY_DEFAULT_MODEL, AGY_PRINT_TIMEOUT_S, AGY_WATCHDOG_MS, BACKENDS, CONFIG_KEYS, DIFF_CAP_BYTES, PROVIDERS,
+  REVIEW_SCHEMA, TIMEOUT_MS, UNAVAILABLE_CAUSES, composePrompt,
 } from '../src/cli/consult.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -92,16 +92,19 @@ test('the manifest declares the consult backend userConfig — four string keys,
   // ~/.claude/settings.json under `pluginConfigs.<plugin-id>.options` — project scope is ignored
   // by design — so the consult backend is a GLOBAL choice by construction, which is the operator
   // ruling this block implements. The values reach agents/consult.md as `${user_config.<key>}`
-  // placeholders substituted when the agent is loaded (MEASURED on Claude Code 2.1.236, at both
-  // the Agent-tool and the Workflow-tool dispatch path).
+  // placeholders substituted when an agent is loaded (MEASURED on Claude Code 2.1.236). No agent
+  // reads them any more: `legion consult` resolves the same four keys out of settings.json
+  // itself, which is why the key set below is pinned against the verb's CONFIG_KEYS.
   const manifest = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
   const uc = manifest.userConfig;
   assert.ok(uc && typeof uc === 'object', 'the consult lens is configured through plugin userConfig');
   assert.deepEqual(
     Object.keys(uc).sort(),
     ['consult_backend', 'consult_base_url', 'consult_model', 'consult_token_env'],
-    'exactly the four keys agents/consult.md reads — a key added here that the agent never reads is dead config',
+    'exactly the four keys `legion consult` reads from settings.json — a key added here that the verb never reads is dead config',
   );
+  assert.deepEqual(Object.values(CONFIG_KEYS).sort(), Object.keys(uc).sort(),
+    'and the verb resolves exactly those keys — a manifest key it does not read is config the operator sets for nothing');
   for (const [key, field] of Object.entries(uc)) {
     assert.equal(field.type, 'string', `${key}: string is the only type the agent parses`);
     assert.ok(field.title && field.title.length > 0, `${key}: the config dialog labels the field with this`);
@@ -315,15 +318,15 @@ test('the /legion:feature skill exists and is well-formed', () => {
   assert.equal(fm.name, 'feature');
   assert.ok(typeof fm.description === 'string' && fm.description.length > 40, 'description must be substantive');
   assert.ok(Array.isArray(fm['allowed-tools']), 'allowed-tools must be a list');
-  // Without these two the skill cannot do its job at all: Agent dispatches every role, and
-  // Workflow runs the shipped build stage (PLAN-V3 decision 11).
-  for (const tool of ['Agent', 'Workflow', 'Bash', 'Read']) {
+  // Without these the skill cannot do its job at all: Agent dispatches every role and SendMessage
+  // continues one, which is the only form a warm re-review takes now that the build stage runs here.
+  for (const tool of ['Agent', 'SendMessage', 'Bash', 'Read']) {
     assert.ok(fm['allowed-tools'].includes(tool), `allowed-tools must include ${tool}`);
   }
+  assert.ok(!fm['allowed-tools'].includes('Workflow'), 'the Workflow build loop is gone — granting the tool back would be a second build path');
   assert.ok(body.length > 2000, 'the skill body carries the whole lifecycle — it cannot be a stub');
   // PLAN-V3 §Startup, the skill's rule 0. Stated, in those words, or the rule has rotted out.
   assert.match(body, /never creates infrastructure/i);
-  assert.match(body, /--build=sequential/, 'the in-session fallback must stay documented');
 });
 
 test('every role subagent exists, parses, and declares its tools', () => {
@@ -711,31 +714,6 @@ test('the intake stage reads the code BEFORE the recap, at the depth the profile
     'the corrected intent is re-recorded BEFORE the agreement that binds its hash');
 });
 
-test('the multi-repo intake form lands the mechanics and fences M1b out', () => {
-  const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
-  const s = stageSection(body, 'intake');
-  assert.match(s, /intakeRepos/, 'the multi-repo form triggers on the manifest key T23 records');
-  assert.match(s, /specs\/<repo basename>\.md/, 'the per-repo spec drafts are named by path');
-  assert.match(s, /exactly \*\*one\*\* spec artifact/,
-    'the drafts must not read as this feature\'s spec — one recorded spec artifact per feature');
-  // THE FENCE MOVED, AND THIS PIN MOVED WITH IT (T34). Until c10 the fence read "create no
-  // sibling features, no initiative links, no by-reference intake records and no interface
-  // contract — that is M1b", and this assertion pinned that sentence. T32/T33 BUILT the layer, so
-  // that sentence became false prose and the pin became a pin on a lie. What still has to be
-  // fenced is not the mechanics but the CLAIM: M1b's attended FE+BE proving run is deferred, the
-  // layer ships dark, its acceptance stays OPEN (PLAN-V3 §Milestones M1b, amended 2026-07-29). So
-  // the assertion is RE-AIMED at the live mechanics plus the ships-dark fence — three checks
-  // where there was one, and nothing here is satisfied by prose that predates the build.
-  assert.match(s, /artifact-record contract/,
-    'the primary hosts the interface contract, recorded through the real op');
-  assert.match(s, /--initiative <id>/,
-    'and the siblings are started by the OPERATOR through the real flag');
-  assert.match(s, /SHIPS DARK[\s\S]{0,600}(DEFERRED|deferred)/,
-    'the fence that remains: the attended proving run is deferred and the layer ships dark');
-  assert.match(s, /acceptance stays \*\*open\*\*/i,
-    'and M1b\'s acceptance is stated as OPEN — a skill that claims it delivered is the one thing this pin exists to catch');
-});
-
 // The express mini-spec (2026-08-07): the spec STAGE stays — it anchors the acceptance
 // yardstick, the Amendments route and the initiative contract — but on express its authoring and
 // approval fuse into the intake recap (one reading, one yes). These pin the protocol rules whose
@@ -752,21 +730,17 @@ test('express fuses the mini-spec into the intake recap, artifact before decisio
   const intake = stageSection(body, 'intake');
   const iFused = anchor(intake, /EXPRESS, the spec stage is FUSED/, 'the express fused block');
   const fused = intake.slice(iFused);
-  assert.match(fused, /replace — never precede/,
-    'the fused forms SUBORDINATE steps 7–9 — read as additional, the intake ops run twice');
+  assert.match(fused, /which \*\*replace\*\* them/,
+    'the fused forms SUBORDINATE the recap steps — read as additional, the intake ops run twice');
   assert.match(fused, /acceptance rows/, 'the mini-spec still carries the acceptance yardstick');
-  assert.match(fused, /named explicitly/, 'and a schema change is still named, never hidden');
+  assert.match(fused, /named\s+explicitly/, 'and a schema change is still named, never hidden');
   assert.match(fused, /yes covers both/, 'the single yes covers recap AND mini-spec digest');
-  assert.match(fused, /`intent\.md` \*\*and\s+the mini-spec\*\*/,
+  assert.match(fused, /folded\s+into both files/,
     'a corrected yes is folded into BOTH artifacts before anything is approved');
   const iArtifact = anchor(fused, 'artifact-record spec', 'the mini-spec artifact record');
   const iDecision = anchor(fused, 'decision-record spec', 'the mini-spec decision record');
   assert.ok(iArtifact < iDecision,
     'the artifact is recorded BEFORE the approval — reversed, the chain breaks mid-flow');
-  assert.match(fused, /minus\s+`legion state decision-record intake`/,
-    'the by-reference secondary keeps its exemption inside the fused chain');
-  assert.match(fused, /again, against the changed\s+recap/,
-    'a recap that moved re-collects the mini-spec yes — its approval subject never binds the recap');
   const spec = stageSection(body, 'spec');
   assert.match(spec, /EXPRESS profile this stage is normally already satisfied/,
     'the spec stage names the express traversal — else express features get a second spec pass');
@@ -809,7 +783,7 @@ test('the /legion:start skill exists, is well-formed, and cannot create infrastr
   assert.match(body, /naming-and-invocation wrapper, never a second creation path/i);
   // THE NAME SHAPE IS THE KERNEL'S. The skill teaches the operator-visible rule; a shape that
   // drifts from safeSegment() teaches a name `feature start` will refuse. Bound byte-for-byte to
-  // paths.mjs, the same way build-loop's ID_RE is above.
+  // paths.mjs, read out of the kernel source rather than copied into this test.
   const kernelRe = read('src', 'kernel', 'paths.mjs').match(/const SEGMENT_RE = \/([^;]+)\/;/)?.[1];
   assert.ok(kernelRe, 'paths.mjs must declare SEGMENT_RE where this test can read it');
   assert.ok(body.includes(kernelRe),
@@ -982,55 +956,74 @@ test('the decision grammar is declared across the plan surface', () => {
     'reviewer findings can carry the recurrence slug');
 });
 
-test('the build stage routes design signals through the PLAN stage, never task-answer', () => {
+test('the build stage drives every task, review and milestone close IN SESSION, in the kernel order', () => {
+  // The Workflow build loop is gone: the orchestration rules its own tests used to pin are prose
+  // here now, so each one below is the assertion that used to live in build-loop-order.test.mjs.
   const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
-  const s = stageSection(body, 'build — by default, the shipped workflow');
+  const s = stageSection(body, 'build');
   const at = (needle, what) => {
     const i = typeof needle === 'string' ? s.indexOf(needle) : s.search(needle);
     assert.ok(i >= 0, `build stage: ${what} is missing (${needle})`);
     return i;
   };
-  // ORDER: the kind check opens the question protocol (an answered design concern is a plan
-  // problem settled inside the very plan it contests), the light task-rewrite path stays for
-  // ordinary plan problems, and the design route follows it as the explicit exception.
-  const iProtocol = at('QUESTION PROTOCOL', 'the question protocol');
-  const iKind = at(/First check `kind`/, 'the kind check');
-  const iLight = at(/When the workflow returns failed tasks/, 'the light task-rewrite path');
-  const iRoute = at(/the DESIGN\s+ROUTE/, 'the design route');
-  assert.ok(iProtocol < iKind, 'the kind check opens the question protocol');
-  assert.ok(iKind < iLight && iLight < iRoute, 'the design route is the exception AFTER the light path');
+  // The per-task order is kernel-enforced and stated in it: started, built, VERIFIED, done.
+  const iStart = at('legion state task-start', 'task-start');
+  const iBuilder = at('`legion:builder`', 'the builder dispatch');
+  const iVerify = at('legion gate verify-receipt --task', 'the receipt verification');
+  const iDone = at('legion state task-done', 'task-done');
+  assert.ok(iStart < iBuilder && iBuilder < iVerify && iVerify < iDone,
+    'task-start → builder → verify-receipt → task-done, in that order');
+  assert.match(s, /never trust the builder's `receipt: true`/,
+    'the self-report is never the evidence — the kernel re-derives it');
+  assert.match(s, /No task is reviewed, on any profile/,
+    'no profile reviews a task any more: the milestone close is the whole code judgement');
+  // The brief is composed from the canonical rows, never from a paraphrase of the plan.
+  assert.match(s.slice(iBuilder), /canonical `tasks\.json` row, never from a paraphrase of the plan/,
+    'the brief is composed from tasks.json');
+  for (const field of ['`notes`', '`validate`']) {
+    assert.ok(s.slice(iBuilder).includes(field), `the brief carries the row's ${field}`);
+  }
+  assert.match(s, /Single-quote every task id and path you interpolate into Bash/,
+    'a task id reaching a shell unquoted is the injection this line closes');
+  assert.match(s, /a done task is skipped, and a milestone whose required close\s+verdicts are recorded passing does not close again/,
+    're-runnable: done tasks and closed milestones skip');
+  // The design route: a contested plan premise is a PLAN problem, never a task answer.
+  const iRoute = at(/kind: "design"/, 'the design route trigger');
   const route = s.slice(iRoute);
-  assert.match(route, /stage-enter plan/, 'the route re-enters the plan stage through the real op');
+  assert.match(route, /stage-enter plan/, 'it re-enters the plan stage through the real op');
   assert.match(route, /plan check --feature <name> --import/, 'and re-imports through the guard');
-  assert.match(route, /[Pp]lan-critic/, 'the critic reviews the amendment (express excused, as at plan)');
   assert.match(route, /decision-record plan/, 'and the human re-approves through the real op');
-  assert.match(route, /never the light task-rewrite/,
-    'the route must name what it is NOT — the one-task rewrite that lets a shared premise survive');
-  assert.match(route, /explicitly overrules/,
+  assert.match(route, /explicitly\s+\*\*overrules\*\*|\*\*explicitly overrules\*\*/,
     'the operator carve-out: an overruled concern settles as a recorded answer, an upheld one never does');
-  // The signal must be named where the return value is persisted AND in the completion gate —
-  // an all-green run with a recurring class is exactly the entrenchment shape.
-  assert.match(s, /`designSignals`[\s\S]{0,500}design route/,
-    'designSignals is listed among the return fields that exist only in the return');
-  assert.match(s, /designSignals` came back empty or every signal was routed/,
-    'and the stage-completion gate refuses to close over an unrouted signal');
+  assert.match(s, /bounces \*\*UP to the architect\*\*/,
+    'a thin task goes up to the architect — there is no per-task planner anywhere in this stage');
+  // The milestone close, in its order: consult FIRST and in Bash, then the lenses, then the records.
+  const iConsult = at('`legion consult` FIRST, directly in Bash', 'the consult call');
+  assert.match(s.slice(iConsult), /review-consult\.md/, 'its output is appended to the dossier file');
+  const iLenses = at('legion:code-reviewer', 'the milestone-mode code review');
+  assert.ok(iConsult < iLenses, 'the consult runs before the lenses that adjudicate its findings');
+  assert.match(s, /legion state review-record --role <role> --verdict <pass\|fail> --subject milestone:<id>/,
+    'every close verdict is recorded at the milestone subject');
+  assert.match(s, /\*\*pass and fail alike\*\*/, 'a fail is recorded exactly like a pass');
+  const iFix = at('**ONE fix round**', 'the fix round');
+  assert.match(s.slice(iFix), /SendMessage/, 'the re-review is warm — the same agent, continued');
+  assert.doesNotMatch(s, /designSignals|build-report\.jsonl|Workflow\(/,
+    'the workflow return fields are gone with the workflow');
 });
 
-test('the EXPRESS bargain is stated at the build stage, not left to be discovered', () => {
-  // Express stopped reviewing tasks, so the close is the only code judgement there is. That is a
-  // trade the operator has to make knowingly at classification time — the tokens below are what a
-  // session reads before it picks the profile, and their silent loss turns the trade into a
-  // surprise found at the pre-merge gate.
+test('no profile reviews a task, and express also skips the critic and the product review', () => {
+  // Express stopped reviewing tasks first; the in-session build stage extended that to every
+  // profile. What the operator has to know at classification time is what express still drops.
   const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
-  const s = stageSection(body, 'build — by default, the shipped workflow');
-  const i = s.indexOf('THE EXPRESS BARGAIN');
-  assert.ok(i >= 0, 'the build stage must state the express bargain');
-  const bargain = s.slice(i, s.indexOf('\n\n', i));
-  assert.match(bargain, /judgement/, 'the close is the whole of it, not a thinner slice of a per-task review');
-  assert.match(bargain, /~3 tasks/, 'with the size past which the trade stops holding');
-  assert.match(bargain, /misclassified/, 'and what a milestone past it means — a profile to escalate, not a milestone to stretch');
-  assert.match(bargain, /escalate-profile/, 'named as the op that acts on it');
-  assert.match(bargain, /omission/, 'the empty evidence fields are by profile, and the artifact must say which');
+  assert.match(stageSection(body, 'build'), /No task is reviewed, on any profile/,
+    'the trade is stated where the tasks are built');
+  const intake = stageSection(body, 'intake');
+  assert.match(intake, /\*\*express\*\*[^.]*no plan critic and no product review/,
+    'and what express costs is stated where the profile is chosen');
+  assert.match(stageSection(body, 'plan'), /except on express, where the dispatch is\s+skipped/,
+    'the plan stage names the same exemption');
+  assert.match(stageSection(body, 'build'), /`legion:product-reviewer` on standard and full/,
+    'and the milestone close runs the product reviewer only where the profile owes one');
 });
 
 test('lessons.md is wired: intake and the architect read it, the session writes it', () => {
@@ -1190,15 +1183,14 @@ test('the spec is the human-readable reformulation, and the architect and critic
   assert.match(concerns, /overruled/, 'outcome: the spec stands, recorded as a D<n> with the operator’s words');
   assert.match(concerns, /arbitrat/, 'outcome: a contested overturn is arbitrated by the human');
   assert.match(concerns, /spec route/, 'an upheld spec concern takes the amendment spec route');
-  const iLoop = at(plan, 'REJECTION LOOP', 'plan stage: the rejection loop');
+  const iLoop = at(plan, 'CRITIC LOOP, CAPPED', 'plan stage: the critic loop');
   const iApproval = at(plan, 'PLAN APPROVAL', 'plan stage: the approval gate');
   const loop = plan.slice(iLoop, iApproval);
   assert.match(loop, /overturns: "D<n>"/, 'the loop knows the overturn field');
-  assert.match(loop, /adopts or contests, never silently\s+ignores/, 'an overturn has exactly two exits');
-  assert.match(loop, /never\s+answer a concern on the human's behalf/, 'the loop’s last fence');
-  assert.match(plan.slice(iApproval), /every concern raised on the way/, 'the human gate shows what was contested');
-  assert.match(plan.slice(iApproval), /overturned/, 'and every pick the critic overturned');
-  const iFence = at(body, 'A design concern is not an amendment', 'amendments: the design-concern fence');
+  assert.match(loop, /adopts or contests, never\s+ignores/, 'an overturn has exactly two exits');
+  assert.match(loop, /route any `concerns` entry to the human first/, 'a concern still leaves the loop for the human');
+  assert.match(plan.slice(iApproval), /\*\*every concern\*\* with how it was settled/, 'the human gate shows what was contested');
+  const iFence = at(body, /a design concern is not an\s+amendment/i, 'amendments: the design-concern fence');
   assert.match(body.slice(iFence, iFence + 500), /spec concern the human upholds/i,
     'the fence names the one concern that IS an amendment — the upheld spec concern');
 
