@@ -933,8 +933,11 @@ test('the decision grammar is declared across the plan surface', () => {
   const iInputs = architect.indexOf('## Inputs');
   assert.match(architect.slice(iInputs, architect.indexOf('## Do')), /lessons\.md/,
     'the architect reads the project lessons file whole');
-  assert.match(architect, /\*\*build\*\*/,
-    'the risk tier is stated to buy build cheapness too, not review cheapness alone');
+  // (`notes.risk` and the review tiers it bought are DELETED: no task is reviewed on any profile,
+  // so there is no tier left to write, to challenge, or to override. The pin that used to sit here
+  // graded a mechanism the build stage no longer has.)
+  assert.doesNotMatch(architect, /notes\.risk|review tier/i,
+    'the risk tier is gone from the plan surface — nothing buys a cheaper review any more');
 
   const critic = read('agents', 'plan-critic.md');
   assert.match(critic, /always present/,
@@ -955,7 +958,6 @@ test('the decision grammar is declared across the plan surface', () => {
   assert.match(builder, /premise/, 'with the contested premise named');
   assert.match(builder, /alternative/, 'and the simpler route named');
   assert.match(builder, /plan stage/, 'and told where the concern routes — never to a task answer');
-  assert.match(builder, /re-bills/, 'the builder is told to group its reads, and why');
   assert.match(builder, /drive-by/, 'and to write the smallest diff that satisfies the task');
 
   assert.match(read('agents', 'code-reviewer.md'), /category/,
@@ -1158,8 +1160,8 @@ test('the plan critic sweeps placeholders and prices the remedy a finding asks f
 
 test('the architect prices verification machinery as a structuring choice, grader mandate intact', () => {
   const architect = read('agents', 'architect.md');
-  const trigger = architect.slice(architect.indexOf('3. **Declare structuring decisions'),
-    architect.indexOf('4. **Decompose'));
+  const trigger = architect.slice(architect.indexOf('- **Declare structuring decisions'),
+    architect.indexOf('- **Decompose'));
   assert.ok(trigger.length > 0, 'architect.md must keep its structuring-decision trigger');
   assert.match(trigger, /verification\s+machinery/,
     'the trigger names it — a bare `machinery` matches this file twice with the rule deleted');
