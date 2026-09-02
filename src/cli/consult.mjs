@@ -145,9 +145,8 @@ export const BACKENDS = ['codex', 'agy', ...Object.keys(PROVIDERS)];
  * real name merely CONTAINS the text is not a placeholder. */
 export const PLACEHOLDER_RE = /^\$\{user_config\./;
 
-/** The `unavailable` causes this verb can emit — a SUBSET of the enum in workflows/build-loop.js
- * (today the whole of it). A cross-pin in the test file asserts the subset relation, so adding a
- * cause here that the loop's REVIEW_SCHEMA would drop cannot pass silently. */
+/** The `unavailable` causes this verb can emit. Every caller that classifies an absence reads
+ * this list, so a cause added here must be one the caller's own vocabulary already carries. */
 export const UNAVAILABLE_CAUSES = [
   'cli-missing', 'misconfigured', 'not-authenticated', 'quota', 'network', 'timeout', 'other',
 ];

@@ -1637,40 +1637,6 @@ test('an unsubstituted placeholder survives the shell and is read as unset, not 
   assert.ok(!out.stdout.includes('${user_config'), 'the placeholder is never echoed onward');
 });
 
-// --- §5.11 cross-pins: the verb, the loop's schema, and the prompt cannot drift apart --------
-
-test('every `unavailable` the verb can emit is in the loop\'s REVIEW_SCHEMA enum — cli-missing included', () => {
-  // An `unavailable` value missing from that enum is DROPPED by the runtime and arrives at the
-  // latch as nothing — which reads exactly like a lens that never classified its absence, i.e.
-  // like a transient failure worth re-dispatching. A cause invented here without the enum knowing
-  // it is therefore not a new row, it is a silently deleted one.
-  const loop = readFileSync(join(ROOT, 'workflows', 'build-loop.js'), 'utf8');
-  const m = /unavailable: \{[^}]*enum: \[([^\]]+)\]/.exec(loop);
-  assert.ok(m, 'the unavailable enum must still be findable in workflows/build-loop.js');
-  const enumValues = m[1].split(',').map((v) => v.trim().replace(/^'|'$/g, ''));
-  for (const cause of UNAVAILABLE_CAUSES) {
-    assert.ok(enumValues.includes(cause), `the loop's enum must carry '${cause}'`);
-  }
-  assert.ok(UNAVAILABLE_CAUSES.includes('cli-missing'),
-    'reachable again: codex and agy are spawned here, and a missing binary is this verb\'s to report');
-});
-
-test('agents/consult.md pins the invocation, and names every flag the verb reads', () => {
-  // The prompt is the only caller. A flag the verb requires and the prompt never mentions is a
-  // `misconfigured` envelope in production that no test here would ever produce, and a flag the
-  // prompt passes that the verb does not read is an argument silently dropped.
-  const md = readFileSync(join(ROOT, 'agents', 'consult.md'), 'utf8');
-  assert.match(md, /legion consult --backend/, 'the pinned invocation');
-  for (const flag of ['--backend', '--model', '--base-url', '--token-env', '--commit', '--base', '--question-file']) {
-    assert.ok(md.includes(flag), `the pinned command must name ${flag}`);
-    assert.ok(USAGE.includes(flag), `and the verb's usage line must offer ${flag}`);
-  }
-  assert.match(md, /verbatim and single-quoted/,
-    'the four configured values go through UNTOUCHED — including an unsubstituted placeholder, which the verb reads as unset');
-  assert.match(md, /EXIT 1/, 'and the prompt must know that exit 1 is a wrong invocation, never a lens verdict');
-});
-
-// --- the cap's other half, and the redaction that must not break its own envelope -------------
 // Both of these are review findings from the first pass, and both are the same shape of bug: a
 // guard whose text claims more than its code does. The empty-scope tests exercise a path the
 // cases above never reached (an inert guard passes every test that does not call it), and the
