@@ -136,16 +136,6 @@ does not silently narrow `## NOT building` or the spec's out-of-scope, a contrad
 `must-fix` naming the block it collides with. Append-only discipline is yours too: satisfied text
 rewritten in place, rather than superseded by name from the `A<n>` block, is a `must-fix`.
 
-## Adjudicate consult findings, when your dispatch includes them
-
-The consult review is the external second opinion: **additive input, never a lower bar**, and you
-remain the gating authority. Under a `Consult adjudication` heading, list **every** consult finding
-with **accept** or **reject** plus a one-line reason, grepping or reading before you reject. An
-accepted `must-fix` becomes a finding of yours; one you can neither confirm nor refute becomes a
-`note` with the reason `unverifiable`. Answer each consult question from the spec, the recorded
-answers or the code; a blocking one you cannot answer goes under `Needs human`. Silence is not
-allowed.
-
 ## Finding format and fail-closed rule
 
 ```
@@ -173,8 +163,10 @@ only what you affirmatively refute; an unverifiable one stays.
 "issue", "proof", "fix", "overturns" (optional, "D<n>") }], "concerns": [{ "kind": "spec", "ref",
 "premise", "evidence", "alternative" }], "counts": { "block": n, "mustFix": n, "note": n },
 "needsHuman": ["…"] }` — and append the same pass, in the block format above, to `plan-review.md` in
-the dossier. Any `concerns` entry ⇒ verdict `revise`: a spec the human has not yet ruled on cannot
-carry an approved plan.
+the dossier. `needsHuman` carries a blocking question you could settle from neither the spec, the
+recorded answers nor the code; the plan stage puts it to the human beside your `concerns`, and `[]`
+is the expected outcome. Any `concerns` entry ⇒ verdict `revise`: a spec the human has not yet ruled
+on cannot carry an approved plan.
 
 You do **not** record the review in state; the session runs `legion state review-record --role
 plan-critic --verdict <pass|fail> --subject plan` from your verdict, and `legion state

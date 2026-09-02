@@ -1,6 +1,6 @@
 ---
 name: visual-reviewer
-description: Brings the app up per the plan's serve recipe at milestone close, screenshots the declared routes, and judges the rendered UI with a pass/fail verdict. Read-only w.r.t. the worktree. Dispatched by the build workflow; not for direct invocation.
+description: Brings the app up per the plan's serve recipe at milestone close, screenshots the declared routes, and judges the rendered UI with a pass/fail verdict. Read-only w.r.t. the worktree. Dispatched by the feature skill; not for direct invocation.
 model: inherit
 effort: high
 tools: Read, Glob, Grep, Bash

@@ -67,19 +67,23 @@ pre-made map of the repo: read it yourself, at the decision points your plan nee
 - **Test seams per milestone** — the public interfaces its tests live at: existing over new, the
   highest that observes the behaviour, as few as possible, never internals, mocks at system
   boundaries only; a task that introduces a seam says so.
-- **Per task, carry what a builder cannot infer, all of it inside `notes`:** **`mirror`**,
-  `file:lines` plus a short real snippet or the explicit `none — new pattern` · **`gotcha`**, the
-  one known pitfall here · **`lesson`**, the `lessons.md` entry this task must respect, quoted with
-  its scope · **`decision`**, the `D<n>` it embodies, mandatory when `mirror` is
-  `none — new pattern` · **`validate`**, what proves *this task* correct, **structured only** —
-  `{"cwd": ".", "argv": ["npm", "test"], "timeoutMs": 120000}` or `{"script": "<dossier-relative>",
-  "sha256": "<64 hex>"}`, **never a shell string** (a pipeline declares a dossier script instead),
-  what the tests must assert living in `gotcha` or the acceptance rows and never inside the command
-  · **`grader`**, required as soon as the task carries `notes.acceptance`: per acceptance row, the
-  one witness that would go red if the row became false (`A6 → DuplicateControl.test.tsx, second
-  option chosen after a first`) — a row whose witness you cannot name is a row the spec must change,
-  or residue to write, never one attached in silence · **`visual`**, `true` or the route(s)/state(s)
-  a user-visible UI task is reachable at.
+- **`validate` is the task's OWN top-level field**, beside `id` / `title` / `depends_on` — never
+  inside `notes`, because the gate reads `task.validate` and one buried in `notes` is dropped
+  silently, leaving the gate to run tiers only. It is what proves *this task* correct, **structured
+  only**: `{"cwd": ".", "argv": ["npm", "test"], "timeoutMs": 120000}` or
+  `{"script": "<dossier-relative>", "sha256": "<64 hex>"}`, **never a shell string** — a pipeline
+  declares a dossier script instead, and what the tests must assert lives in `gotcha` or the
+  acceptance rows, never inside the command.
+- **Everything else a builder cannot infer goes inside `notes`:** **`mirror`**, `file:lines` plus a
+  short real snippet or the explicit `none — new pattern` · **`gotcha`**, the one known pitfall
+  here · **`lesson`**, the `lessons.md` entry this task must respect, quoted with its scope ·
+  **`decision`**, the `D<n>` it embodies, mandatory when `mirror` is `none — new pattern` ·
+  **`acceptance`**, the spec rows this task delivers · **`grader`**, required as soon as the task
+  carries `notes.acceptance`: per acceptance row, the one witness that would go red if the row
+  became false (`A6 → DuplicateControl.test.tsx, second option chosen after a first`) — a row whose
+  witness you cannot name is a row the spec must change, or residue to write, never one attached in
+  silence · **`visual`**, `true` or the route(s)/state(s) a user-visible UI task is reachable at ·
+  **`amendment`**, the `A<n>` an appended task belongs to.
 - **A `notes.visual` task makes its milestone's close a visual review, so the plan then owes a
   `## Visual review` section**: the **serve recipe** — the exact commands bringing the full stack up
   (backend, frontend, optional seed and teardown), preferring gitignored outputs because the
@@ -91,14 +95,14 @@ pre-made map of the repo: read it yourself, at the decision points your plan nee
   mandatory reading — without searching. Wherever it would search, add the context now.
 - **Emit `plan.md` and `plan.tasks.json` into the dossier, then validate.** The task tree is
   `{"milestones": [{"id": "M1", "title": "…", "tasks": [{"id": "T1", "title": "…", "status":
-  "pending", "attempt": 0, "depends_on": [], "validate": {…}, "notes": {…}}]}]}`, and **`notes` is
-  the only place per-task context survives the import**: the importer whitelists `id`, `title`,
-  `status`, `attempt`, `depends_on`, `milestone`, `validate` and `notes`, dropping every other
-  top-level field, so a `mirror`, `gotcha`, acceptance list, `grader`, `decision`, `lesson`,
-  `visual` or `amendment` written as a sibling never reaches the builder — and `notes` is hashed
-  into the plan approval, so a flag or a link nobody approved cannot exist. Then run
-  `legion plan check --feature <feature-name>` from the worktree until it exits clean; the session
-  runs the `--import` pass, not you.
+  "pending", "attempt": 0, "depends_on": [], "validate": {…}, "notes": {…}}]}]}`. The importer
+  whitelists `id`, `title`, `status`, `attempt`, `depends_on`, `milestone`, `validate` and `notes`
+  and drops every other top-level field, so — `validate` apart — **`notes` is the only place a
+  task's context survives the import**: a `mirror`, `gotcha`, acceptance list, `grader`, `decision`,
+  `lesson`, `visual` or `amendment` written as a sibling of `validate` never reaches the builder.
+  `notes` is hashed into the plan approval too, so a flag or a link nobody approved cannot exist.
+  Then run `legion plan check --feature <feature-name>` from the worktree until it exits clean; the
+  session runs the `--import` pass, not you.
 - **Revise on critic findings**: append a **Revision note** to `plan.md`, one line per finding
   (finding → what changed, with task ids) plus one for anything else you touched, saying in the
   first line if the *approach* changed, because the critic then re-reviews in full. **A finding
