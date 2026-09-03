@@ -25,22 +25,24 @@
 //     the loader's `[pluginName, ...subdirs, name].join(':')`, but only a live session proves
 //     it. The SubagentStop matcher is written to match with or without the namespace, and
 //     hooks/builder-receipt.mjs re-checks agent_type itself, so both spellings are covered.
-//   - THAT THE `Workflow` TOOL EXISTS in the operator's build (org policy and the "Dynamic
-//     workflows" setting can disable it). `--build=sequential` is the documented fallback.
+//   - THAT THE BUILD LOOP RUNS AS WRITTEN. The Workflow build loop is gone: the build stage is
+//     prose in skills/feature/SKILL.md, driven by the feature session itself, so no build tool
+//     has to exist and there is no `--build` fallback to fall back to. What IS testable is that
+//     the stage still states its order and still names real commands — the build-stage test.
 //   - THAT THE MODEL FOLLOWS the skill's judgement and approval flow. Prose is not testable;
 //     what IS testable is that every command the prose names actually exists, which is test 8.
 //   - THAT THE ntfy TOPIC IS REACHABLE. Tests never touch the network.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, statSync, accessSync, constants, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, statSync, accessSync, constants } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { STATE_OPS, ARTIFACT_KINDS, REVIEW_RECEIPT_AGENT_ROLES } from '../src/kernel/state.mjs';
+import { STATE_OPS, ARTIFACT_KINDS, PROFILES, PROFILE_REVIEW_ROLES, REVIEW_RECEIPT_AGENT_ROLES } from '../src/kernel/state.mjs';
 import {
-  AGY_DEFAULT_MODEL, AGY_PRINT_TIMEOUT_S, AGY_WATCHDOG_MS, BACKENDS, DIFF_CAP_BYTES, PROVIDERS, REVIEW_SCHEMA,
-  TIMEOUT_MS, UNAVAILABLE_CAUSES, VERB_STAMP, composePrompt,
+  AGY_DEFAULT_MODEL, AGY_PRINT_TIMEOUT_S, AGY_WATCHDOG_MS, BACKENDS, CONFIG_KEYS, DIFF_CAP_BYTES, PLUGIN_ID,
+  PROVIDERS, REVIEW_SCHEMA, TIMEOUT_MS, UNAVAILABLE_CAUSES, composePrompt,
 } from '../src/cli/consult.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -69,8 +71,7 @@ function parseFrontmatter(text, what) {
 }
 
 const AGENT_NAMES = [
-  'architect', 'builder', 'code-reviewer', 'consult', 'kernel-op', 'plan-critic', 'product-reviewer',
-  'visual-reviewer',
+  'architect', 'builder', 'code-reviewer', 'plan-critic', 'product-reviewer', 'visual-reviewer',
 ];
 const read = (...p) => readFileSync(join(ROOT, ...p), 'utf8');
 
@@ -93,16 +94,25 @@ test('the manifest declares the consult backend userConfig — four string keys,
   // ~/.claude/settings.json under `pluginConfigs.<plugin-id>.options` — project scope is ignored
   // by design — so the consult backend is a GLOBAL choice by construction, which is the operator
   // ruling this block implements. The values reach agents/consult.md as `${user_config.<key>}`
-  // placeholders substituted when the agent is loaded (MEASURED on Claude Code 2.1.236, at both
-  // the Agent-tool and the Workflow-tool dispatch path).
+  // placeholders substituted when an agent is loaded (MEASURED on Claude Code 2.1.236). No agent
+  // reads them any more: `legion consult` resolves the same four keys out of settings.json
+  // itself, which is why the key set below is pinned against the verb's CONFIG_KEYS.
   const manifest = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
   const uc = manifest.userConfig;
   assert.ok(uc && typeof uc === 'object', 'the consult lens is configured through plugin userConfig');
   assert.deepEqual(
     Object.keys(uc).sort(),
     ['consult_backend', 'consult_base_url', 'consult_model', 'consult_token_env'],
-    'exactly the four keys agents/consult.md reads — a key added here that the agent never reads is dead config',
+    'exactly the four keys `legion consult` reads from settings.json — a key added here that the verb never reads is dead config',
   );
+  assert.deepEqual(Object.values(CONFIG_KEYS).sort(), Object.keys(uc).sort(),
+    'and the verb resolves exactly those keys — a manifest key it does not read is config the operator sets for nothing');
+  // WHERE it reads them from is `<plugin>@<marketplace>`, and both halves are manifests in this
+  // repo: a rename on either side that PLUGIN_ID did not follow makes every consult call fall
+  // back to codex silently, which is the one failure no envelope reports.
+  const marketplace = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'marketplace.json'), 'utf8'));
+  assert.equal(PLUGIN_ID, `${manifest.name}@${marketplace.name}`,
+    'the settings key the verb reads is derived from the two manifests, never a literal that can drift');
   for (const [key, field] of Object.entries(uc)) {
     assert.equal(field.type, 'string', `${key}: string is the only type the agent parses`);
     assert.ok(field.title && field.title.length > 0, `${key}: the config dialog labels the field with this`);
@@ -128,83 +138,13 @@ test('the manifest declares the consult backend userConfig — four string keys,
   assert.match(uc.consult_backend.description, /codex/, 'the accepted values are listed for the operator');
   assert.match(uc.consult_token_env.description, /NAME/,
     'the field takes the env var NAME, never the token — say so where the operator types it');
-});
-
-test('the consult agent reads its config from user_config and dispatches ONE pinned command', () => {
-  // The agent is dispatch + relay, nothing more, since 2026-08-20: every recipe moved into
-  // `legion consult` (next test). What stands between "configurable" and a lens that improvises
-  // is therefore small and pinned here: the placeholders that carry the config in, the one
-  // command line, the placeholder rule, and the ABSENCE of every fragment of the old recipes.
-  const consult = read('agents', 'consult.md');
-
-  // 1. The config actually reaches the agent. `${user_config.<key>}` is substituted into a plugin
-  //    agent's body when it is loaded — MEASURED on Claude Code 2.1.236, at both the Agent-tool and
-  //    the Workflow-tool dispatch path. Lose a placeholder and that key is silently unreadable.
-  for (const key of ['consult_backend', 'consult_model', 'consult_base_url', 'consult_token_env']) {
-    assert.ok(consult.includes(`\${user_config.${key}}`), `the agent must carry the ${key} placeholder`);
-  }
-  // MEASURED on the same build: an option the operator never set is left as the LITERAL
-  // placeholder — the manifest `default` is NOT substituted in its place. An agent that took the
-  // literal at face value would send `${user_config.consult_model}` to a provider as a model name;
-  // the rule is to pass it through untouched, and the VERB reads it as unset.
-  assert.match(consult, /NOT CONFIGURED/, 'the agent must read an unsubstituted placeholder as "unset", not as a value');
-  assert.match(consult, /verbatim and single-quoted/, 'and pass it through, quoted so bash does not expand it');
-  // AND IT MUST NOT ACT ON THAT READING (the incident: src/cli/consult.mjs, above VERB_STAMP). The
-  // prose above told the lens a placeholder means "unset"; nothing told it that unset is ORDINARY
-  // and not its call to make, and it declared the backend broken without ever running the verb.
-  assert.match(consult, /NOT CONFIGURED IS NORMAL/, 'an unset option is the ordinary case, not a fault to report');
-  assert.match(consult, /YOU NEVER DIAGNOSE THE CONFIGURATION — YOU ALWAYS DISPATCH/,
-    'the agent may not short-circuit the dispatch on the look of its own config values');
-  assert.match(consult.replace(/\s+/g, ' '), /never return `available: false` without an `EXIT:` line from a command you actually ran/,
-    'every absence it reports must be one a command it ran actually produced');
-
-  // 2. The one command. MEASURED, and the reason the recipes left the prose: a haiku dispatch with
-  //    `consult_backend` configured to one CLI opened by probing another, because the familiar one
-  //    led the list. With routing inside the verb there is nothing left to get wrong but the line.
-  assert.match(consult, /legion consult --backend '<value>' --model '<value>'/, 'the pinned invocation');
-  assert.match(consult, /--base-url '<value>' --token-env '<value>'/);
-  assert.match(consult, /\(--commit <SHA> \| --base <REF>\) --question-file "\$DIR\/q\.txt"/);
-  assert.match(consult, /echo "EXIT:\$\?"/, 'the exit code is read, because 0 and 1 mean different things');
-  assert.match(consult, /EXIT 0/);
-  assert.match(consult, /EXIT 1/, 'exit 1 is a wrong invocation, never a lens verdict');
-  assert.match(consult, /Never retry, never switch backend, never assemble anything yourself/);
-  // The recipes are GONE, not abridged. A surviving fragment is an instruction that contradicts
-  // the verb, and a haiku lens reading both has no way to tell which one is live.
-  assert.doesNotMatch(consult, /command -v|perl -e|alarm|kill -9|codex exec review|agy -p|gemini -p/,
-    'no probe, no bound, no CLI invocation of the agent\'s own');
-  assert.doesNotMatch(consult, /response_format|--max-time 900|curl -sS|api\.openai\.com|structured_output/,
-    'no api recipe, no agy envelope parsing');
-  assert.doesNotMatch(consult, /\| `error` is|\| `\$RC`|\| signal \|/, 'no outcome table: the classification is the verb\'s');
-  // Raised 125 → 140 on 2026-08-30, for the three fabrication guards and nothing else: never
-  // diagnose the config, never invent a bound, relay the verb's signature. The recipes stay fenced
-  // out by the `doesNotMatch` assertions right here, which is the check that actually enforces "no
-  // recipe in prose"; the budget is what stops the next author answering a lens defect with
-  // another paragraph instead of another invariant — which is why each of these three came with
-  // an executable pin in build-loop-order.test.mjs or the verb's own suite.
-  assert.ok(consult.trimEnd().split('\n').length <= 140,
-    'the agent is ~140 lines of dispatch + relay + contract; growth past this is a recipe creeping back into prose');
-
-  // 3. Every backend the manifest OFFERS is one the agent names, and one the verb routes — and
-  //    the manifest offers nothing the verb does not (the gemini recipe is gone).
-  const offered = JSON.parse(readFileSync(join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'))
-    .userConfig.consult_backend.description;
-  for (const b of BACKENDS) {
-    assert.ok(offered.includes(b), `the manifest description must offer ${b}`);
-    assert.ok(consult.includes(`\`${b}\``), `and the agent must name ${b}`);
-  }
-  assert.ok(!/\bgemini\b/.test(offered), 'the gemini CLI recipe was deleted on 2026-08-20 — the `google` API row is the way to a Gemini model');
-  assert.ok(!/\bgemini\b/.test(consult), 'and the agent no longer routes it anywhere');
-
-  // 4. The relay, not a re-derivation. `misconfigured` stays a cause the agent can carry; the
-  //    adjudication rides the same command with the contest in the question file.
-  assert.match(consult, /misconfigured/, 'the durable cause the return contract carries');
-  assert.match(consult, /the contest rides in\s+`q\.txt`/, 'adjudication is the same dispatch with a different question');
-  assert.match(consult, /`category`/, 'the one field of substance the agent adds');
-
-  // 5. The token. legion stores the env var NAME; the value never enters a message, a log, `raw`
-  //    or `reason`, which is the only reason it is safe to configure this from a plugin dialog.
-  assert.match(consult, /never put it — or any part of it — into `raw`, `reason`, a finding or a log line/,
-    'the token discipline must be stated where the value is passed along');
+  // The MENU the operator reads and the routing table the verb owns are one contract: a backend
+  // offered here that BACKENDS does not route is a `misconfigured` envelope for an operator who
+  // spelled it exactly as told, and the gemini CLI recipe was deleted on 2026-08-20 — the
+  // `google` API row is the way to a Gemini model.
+  const offered = uc.consult_backend.description;
+  for (const b of BACKENDS) assert.ok(offered.includes(b), `the manifest description must offer ${b}`);
+  assert.ok(!/\bgemini\b/.test(offered), 'and it must not offer the deleted gemini CLI recipe');
 });
 
 test('`legion consult` carries every recipe agents/consult.md no longer spells out', () => {
@@ -317,37 +257,8 @@ test('`legion consult` carries every recipe agents/consult.md no longer spells o
   assert.match(src, /\$\\\{user_config\\\./,
     'and so is placeholder rejection: an option the operator never set arrives as its literal ${user_config.…}');
 
-  // Every cause the verb can emit is one the loop's REVIEW_SCHEMA keeps — including cli-missing,
-  // which the api-only verb could not reach and the CLI recipes can.
-  const loop = codeOnly(read('workflows', 'build-loop.js'));
-  const enumValues = /unavailable: \{[^}]*enum: \[([^\]]+)\]/.exec(loop)[1].split(',').map((v) => v.trim().replace(/^'|'$/g, ''));
-  for (const cause of UNAVAILABLE_CAUSES) assert.ok(enumValues.includes(cause), `the loop's enum must carry '${cause}'`);
+  // cli-missing is a cause the api-only verb could not reach and the CLI recipes can.
   assert.ok(UNAVAILABLE_CAUSES.includes('cli-missing'), 'codex and agy are spawned by the verb, so a missing binary is its row to report');
-});
-
-test('the consult schema carries `backend` and `misconfigured`, and the latch treats a broken config as durable', () => {
-  // Same argument as `category` and `kind` above: an undeclared property is dropped by the
-  // runtime, so `backend` exists as evidence only because REVIEW_SCHEMA lists it — and an
-  // `unavailable` value missing from the enum arrives as nothing, which reads to the latch exactly
-  // like a lens that never classified its absence.
-  const code = codeOnly(read('workflows', 'build-loop.js'));
-  assert.match(code, /backend:\s*\{\s*type:\s*'string'/,
-    'REVIEW_SCHEMA carries backend — without it the review artifact cannot name which second opinion ran');
-  assert.match(code, /enum: \['cli-missing', 'not-authenticated', 'quota', 'network', 'timeout', 'misconfigured', 'other'\]/,
-    'the unavailable enum carries misconfigured — a broken consult config is an absence like any other');
-  assert.match(code, /CONSULT_DURABLE = \['cli-missing', 'not-authenticated', 'quota', 'misconfigured'\]/,
-    'and it LATCHES: the plugin config cannot change under a running loop, so re-asking only re-bills');
-  // THE SIGNATURE MUST BE THE SAME STRING ON BOTH SIDES. The workflow is a standalone script and
-  // cannot import the verb, so this is the only place the two spellings meet: a rename on either
-  // side leaves every absence unsigned, nothing latches, and the only symptom is a token bill.
-  assert.match(code, new RegExp(`const VERB_STAMP = '${VERB_STAMP}'`),
-    "the loop's stamp must be the verb's own, byte for byte");
-  assert.match(code, /emittedBy: \{ type: 'string'/,
-    'and it must be DECLARED in REVIEW_SCHEMA — an undeclared property is dropped by the runtime, unsigning every answer');
-  // …BUT ONLY ON THE VERB'S OWN EVIDENCE, which is CONTROL FLOW and therefore pinned where the
-  // rest of the latch is pinned — test/workflows/build-loop-order.test.mjs, executably. A source
-  // grep for the guard would pass on code where the guard sits one line too late and the 2026-08-29
-  // defect is fully restored; that mutation was run, and it is why there is no grep here.
 });
 
 test('.claude-plugin/ contains only the two manifests — components never nest inside it', () => {
@@ -415,15 +326,15 @@ test('the /legion:feature skill exists and is well-formed', () => {
   assert.equal(fm.name, 'feature');
   assert.ok(typeof fm.description === 'string' && fm.description.length > 40, 'description must be substantive');
   assert.ok(Array.isArray(fm['allowed-tools']), 'allowed-tools must be a list');
-  // Without these two the skill cannot do its job at all: Agent dispatches every role, and
-  // Workflow runs the shipped build stage (PLAN-V3 decision 11).
-  for (const tool of ['Agent', 'Workflow', 'Bash', 'Read']) {
+  // Without these the skill cannot do its job at all: Agent dispatches every role and SendMessage
+  // continues one, which is the only form a warm re-review takes now that the build stage runs here.
+  for (const tool of ['Agent', 'SendMessage', 'Bash', 'Read']) {
     assert.ok(fm['allowed-tools'].includes(tool), `allowed-tools must include ${tool}`);
   }
+  assert.ok(!fm['allowed-tools'].includes('Workflow'), 'the Workflow build loop is gone — granting the tool back would be a second build path');
   assert.ok(body.length > 2000, 'the skill body carries the whole lifecycle — it cannot be a stub');
   // PLAN-V3 §Startup, the skill's rule 0. Stated, in those words, or the rule has rotted out.
   assert.match(body, /never creates infrastructure/i);
-  assert.match(body, /--build=sequential/, 'the in-session fallback must stay documented');
 });
 
 test('every role subagent exists, parses, and declares its tools', () => {
@@ -441,12 +352,8 @@ test('every role subagent exists, parses, and declares its tools', () => {
     assert.ok(body.length > 400, `${what}: body must carry the role, not a stub`);
     assert.match(body, /## Return contract|Return contract/i, `${what}: must state its return contract`);
   }
-  // kernel-op's whole safety argument is that it can do nothing but run a shell command from a
-  // closed set. Any other tool would widen it into a general-purpose escape hatch.
-  const kernelOp = parseFrontmatter(read('agents', 'kernel-op.md'), 'kernel-op').frontmatter;
-  assert.equal(kernelOp.tools, 'Bash', 'kernel-op must have Bash and nothing else');
   // The reviewers and the critic are read-only by contract; a write tool would break it.
-  for (const ro of ['plan-critic', 'code-reviewer', 'product-reviewer', 'consult', 'visual-reviewer']) {
+  for (const ro of ['plan-critic', 'code-reviewer', 'product-reviewer', 'visual-reviewer']) {
     const tools = parseFrontmatter(read('agents', `${ro}.md`), ro).frontmatter.tools;
     for (const banned of ['Edit', 'Write', 'NotebookEdit']) {
       assert.ok(!tools.split(',').map((s) => s.trim()).includes(banned), `${ro} must stay read-only (${banned})`);
@@ -535,24 +442,16 @@ test('hooks/hooks.json matches the 2.1.219 plugin hook shape — exactly three e
 });
 
 // The waiver flag (`review-record`'s human attestation) must never be TAUGHT by shipped prose:
-// the loop never emits it, kernel-op never runs it, and no skill or agent file may name it —
+// no skill or agent file may name it —
 // an agent that learns it from its own instructions is the self-attestation hole reopened. The
 // refusal MESSAGE may name it (a refusal is kernel output to the operator, not shipped prose),
 // which is exactly where a human — and only a human at a real refusal — discovers it.
-test('no shipped component names the review-record waiver flag, and kernel-op cannot mint', () => {
+test('no shipped component names the review-record waiver flag', () => {
   for (const parts of componentFiles()) {
     const src = read(...parts);
     assert.ok(!src.includes('no-receipt-attest'),
       `${parts.join('/')} must not name the waiver flag — it is the human's, discovered at the refusal`);
   }
-  // kernel-op's CLOSED SET gains no minting form: the agent that records verdicts must never be
-  // the agent that can create the evidence those verdicts consume. The prose around the set may
-  // (and does) name `gate run` in prohibitions; the fenced command block is the permission.
-  const kernelOp = read('agents', 'kernel-op.md');
-  const fence = kernelOp.match(/## The closed command set[^\n]*\n+```\n([\s\S]*?)```/);
-  assert.ok(fence, 'kernel-op.md must carry its closed command set as a fenced block');
-  assert.ok(!fence[1].includes('review-receipt'), 'the closed set must not carry the mint command');
-  assert.ok(!fence[1].includes('gate run'), 'nor any gate-run form (pre-existing rule, re-pinned)');
 });
 
 test('every hook command resolves to a real executable and every hook script parses', () => {
@@ -585,39 +484,6 @@ test('every hook command resolves to a real executable and every hook script par
   }
 });
 
-test('workflows/build-loop.js parses under the workflow runtime contract and declares meta first', () => {
-  const src = read('workflows', 'build-loop.js');
-  // The runtime parses workflow scripts as sourceType:module WITH allowAwaitOutsideFunction and
-  // allowReturnOutsideFunction, and requires `export const meta` to be the FIRST statement and a
-  // pure literal. `node --check` on a .mjs allows top-level await but NOT top-level return, so
-  // the body is wrapped in an async function — which permits exactly those two constructs —
-  // after demoting the one `export` that only means anything at module scope. Both are
-  // mechanical single-token transforms; nothing else about the source is altered.
-  assert.ok(src.trimStart().startsWith('export const meta = {'), 'meta must be the first statement');
-  const tmp = mkdtempSync(join(tmpdir(), 'legion-wf-'));
-  const wrapped = join(tmp, 'build-loop.mjs');
-  writeFileSync(wrapped,
-    `async function __wf(args, agent, parallel, pipeline, phase, log, budget) {\n` +
-    `${src.replace(/^export const meta/, 'const meta')}\n}\n`);
-  const r = spawnSync(process.execPath, ['--check', wrapped], { encoding: 'utf8' });
-  assert.equal(r.status, 0, `workflow does not parse: ${r.stderr}`);
-
-  const metaSrc = src.slice(0, src.indexOf('\n}\n') + 2);
-  assert.match(metaSrc, /description:/);
-  assert.match(metaSrc, /phases:\s*\[/);
-  assert.ok((metaSrc.match(/title:/g) ?? []).length >= 3, 'meta.phases must name its phases');
-
-  // A plugin workflow is REGISTERED AS `<pluginName>:<meta.name>` and invoked by that name.
-  // Rename either half alone and the skill's build stage silently resolves nothing, which is
-  // exactly the dead end this suite exists to prevent — so bind them here.
-  const metaName = metaSrc.match(/name:\s*'([^']+)'/)?.[1];
-  assert.ok(metaName, 'meta.name must be a plain string literal');
-  const registered = `${JSON.parse(read('.claude-plugin', 'plugin.json')).name}:${metaName}`;
-  assert.equal(registered, 'legion:build-loop');
-  assert.ok(read('skills', 'feature', 'SKILL.md').includes(`name: "${registered}"`),
-    `the skill must invoke the workflow as name: "${registered}"`);
-});
-
 test('plugin.json declares no component paths — declaring one DISABLES the default folder', () => {
   // Validated against Claude Code 2.1.219: hooks/, agents/, skills/ and workflows/ are
   // auto-discovered at plugin root, and a `hooks`/`agents`/`skills`/`workflows` field in
@@ -629,183 +495,12 @@ test('plugin.json declares no component paths — declaring one DISABLES the def
   }
 });
 
-test('the build loop contains NO per-task planning agent — the rule must not rot', () => {
-  const src = read('workflows', 'build-loop.js');
-  // PLAN-V3 decision 11 + this file's header: an LLM planning step inside the gated build loop
-  // can author task content that no approval covers, while the plan approval still reads valid.
-  // That is the drift the kernel exists to prevent, so the prohibition is asserted, not trusted.
-  assert.match(src, /NO PER-TASK LLM RE-PLANNING/,
-    'the header sentinel is what a future editor reads before adding a planner');
-  assert.doesNotMatch(src, /agentType\s*:\s*['"][^'"]*(plan|architect|design|spec)/i,
-    'no planning/architect/spec agent may be dispatched from inside the build loop');
-  assert.doesNotMatch(src, /phase\s*:\s*['"][^'"]*plan/i, 'no phase may be a planning phase');
-  const dispatched = new Set([...src.matchAll(/agentType\s*:\s*'([^']+)'/g)].map((m) => m[1]));
-  assert.ok(dispatched.size > 0, 'the loop must dispatch something (a regex matching nothing cannot pass)');
-  // T28 widened this by exactly one: the milestone close runs the PRODUCT review per milestone
-  // (PLAN-V3 decision 11's 2026-07-29 amendment / S-008), so `legion:product-reviewer` is now
-  // dispatched from inside the loop. Everything the set excludes it still excludes — above all a
-  // planner. Widen it only when the loop genuinely gains a role, never to quiet a failure.
-  // Widened by exactly one again (after T28's product-reviewer): the milestone close dispatches
-  // `legion:visual-reviewer` for a milestone whose tasks carry `notes.visual` in the approved
-  // plan. Still no planner. Widen it only when the loop genuinely gains a role, never to quiet a
-  // failure.
-  const allowed = new Set([
-    'legion:builder', 'legion:code-reviewer', 'legion:consult', 'legion:product-reviewer', 'legion:kernel-op',
-    'legion:visual-reviewer',
-  ]);
-  for (const a of dispatched) assert.ok(allowed.has(a), `unexpected agent in the build loop: ${a}`);
-  // Every agent the loop dispatches must actually exist as a shipped component.
-  for (const a of dispatched) {
-    assert.ok(AGENT_NAMES.includes(a.replace(/^legion:/, '')), `dispatched agent has no file: ${a}`);
-  }
-});
-
-test('the design-concern channels stay DATA — schema-borne, aggregated, never dispatched', () => {
-  // The decision grammar's build-side half rides two data channels through this loop. The pins
-  // hold what a later edit would silently break: the sentinel a future editor reads before
-  // gating control flow on the signal, and the two schema fields — schema presence is the ONLY
-  // thing that lets a field survive the runtime's drop-unlisted-fields behaviour, so deleting
-  // either drops the channel while every prompt still promises it. The no-planner test above
-  // already proves neither channel grew a dispatch.
-  const src = read('workflows', 'build-loop.js');
-  const code = codeOnly(src);
-  assert.match(src, /DESIGN CONCERNS BOUNCE UP AS DATA/, 'the header sentinel');
-  assert.match(code, /enum:\s*\['question',\s*'design'\]/,
-    "BUILDER_SCHEMA carries kind — without it a design concern arrives as an ordinary question");
-  assert.match(code, /category:\s*\{\s*type:\s*'string'/,
-    'REVIEW_SCHEMA carries category — without it no recurrence is ever countable');
-  assert.match(code, /designSignals/, 'the aggregation must reach the return value');
-});
-
-test('the contest channel is schema-borne too, or the fix briefs offer a field the runtime drops', () => {
-  // Exactly the reason `kind` is pinned above: an undeclared property is stripped from the
-  // builder's return, so a contested finding would arrive as nothing while both fix briefs promise
-  // the channel — and every finding would silently stand as if it had never been contested.
-  const code = codeOnly(read('workflows', 'build-loop.js'));
-  assert.match(code, /contested:\s*\{\s*\n\s*type:\s*'array'/, 'BUILDER_SCHEMA declares contested');
-  assert.match(code, /required:\s*\['finding',\s*'reason',\s*'evidence'\]/,
-    'and a contest arrives with its title, its claim and its evidence or it is not one');
-});
-
-test('build-loop dispatch: ids are validated to the KERNEL segment shape and quoted at the shell seam — no raw interpolation (T14/R4)', () => {
-  const src = read('workflows', 'build-loop.js');
-  const code = codeOnly(src);
-  // (1) THE SHAPE IS THE KERNEL'S. The workflow sandbox has no imports, so build-loop carries a
-  // mirror of paths.mjs SEGMENT_RE — bound here byte-for-byte so the two sources cannot drift.
-  const kernelRe = read('src', 'kernel', 'paths.mjs').match(/const SEGMENT_RE = (\/[^;]+\/);/)?.[1];
-  const loopRe = src.match(/const ID_RE = (\/[^;\n]+\/)/)?.[1];
-  assert.ok(kernelRe, 'paths.mjs must declare SEGMENT_RE where this test can read it');
-  assert.ok(loopRe, 'build-loop must declare ID_RE (the validation half of the R4 fix)');
-  assert.equal(loopRe, kernelRe, 'build-loop ID_RE must equal the kernel SEGMENT_RE byte for byte');
-  // (2) VALIDATED BEFORE COMPOSING, in code — and the refusal must be reachable (a filter that
-  // feeds a throw), not a comment about one.
-  assert.match(code, /ID_RE\.test/, 'every task id must be tested against ID_RE');
-  assert.ok(code.indexOf('ID_RE.test') < code.indexOf('function brief'),
-    'validation must precede every composition site (briefs included)');
-  // (3) QUOTED AT THE SEAM: inside every kernel(`…`) dispatch template, every interpolation must
-  // go through sq(). A raw `${task.id}` here is exactly the regression this test exists to stop —
-  // the id lands in a Bash-capable agent's command string as syntax.
-  const templates = [...code.matchAll(/\bkernel\(\s*`([^`]+)`/g)].map((m) => m[1]);
-  assert.ok(templates.length >= 4, `the loop must dispatch through kernel(), found ${templates.length}`);
-  for (const t of templates) {
-    for (const hole of t.matchAll(/\$\{([^}]*)\}/g)) {
-      assert.match(hole[1].trim(), /^sq\(/, `unquoted interpolation \${${hole[1]}} in kernel dispatch: ${t}`);
-    }
-  }
-  // …and the one shell string kernel() itself composes quotes the worktree path the same way.
-  assert.match(code, /cd \$\{sq\(worktree\)\} && legion/, 'the cd path in the dispatch must be sq()-quoted');
-});
-
-test('done tasks skip — the re-runnability filter lives in the workflow, not in prose', () => {
-  const src = read('workflows', 'build-loop.js');
-  // "Skip what is already done" must never be a model's judgement: it is what makes a re-run in
-  // any session safe (PLAN-V3 decision 11).
-  assert.match(src, /\.filter\(\s*t\s*=>\s*t\.status\s*!==\s*'done'\s*\)/);
-});
-
-/** Every kernel command the build loop dispatches, as a `<family> <sub>` pair. The loop has no
- * shell: each one is a template literal handed to kernel(), which prefixes `legion `. */
-function loopCommands(src) {
-  const found = new Set();
-  for (const m of src.matchAll(/\bkernel\(\s*`([^`]+)`/g)) {
-    found.add(m[1].split(/\s+/).filter(Boolean).slice(0, 2).join(' '));
-  }
-  return found;
-}
-
-test("kernel-op's closed set covers every command the build loop dispatches", () => {
-  // The two files are two halves of one contract and they drift silently: a loop dispatching a
-  // command the agent is instructed to REFUSE gets `{"exitCode": 1, "refused: …"}` back and
-  // fails a task for no reason — a working system that stops working after an edit to one file.
-  const dispatched = loopCommands(read('workflows', 'build-loop.js'));
-  assert.ok(dispatched.size >= 4, `the loop must dispatch kernel commands, found ${[...dispatched]}`);
-  const closedSet = [...read('agents', 'kernel-op.md').matchAll(FENCE)]
-    .flatMap((m) => m[1].split('\n'))
-    .map((l) => l.trim())
-    .filter((l) => l.startsWith('legion '))
-    .map((l) => l.split(/\s+/).slice(1, 3).join(' '));
-  for (const cmd of dispatched) {
-    assert.ok(closedSet.includes(cmd), `build-loop dispatches \`legion ${cmd}\`, absent from kernel-op's closed set`);
-  }
-  // The inverse: the gate's WRITE path is never handed to the agent that has the shell.
-  assert.ok(!closedSet.includes('gate run'), 'kernel-op must never be allowed to record a receipt');
-});
-
 /** The source with every comment stripped. The assertions below are about CODE: matching a
  * header paragraph that promises the behaviour is how a test goes green against a file that
  * stopped doing it — three of these did exactly that on their first pass. */
 function codeOnly(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
 }
-
-test('the build loop VERIFIES the gate receipt with the kernel; a builder self-report is not evidence', () => {
-  const src = codeOnly(read('workflows', 'build-loop.js'));
-  // Without this, two review lenses spend a full round on a tree the gate never certified and
-  // the only thing between an ungated tree and a done task is the very last op.
-  assert.match(src, /gate verify-receipt --task \$\{/, 'the loop must ask the kernel, not the builder');
-  // Verification must precede the lenses — verifying afterwards still spends the round. Anchored
-  // to the CALL SITE: the command string also appears in the header, far above everything.
-  const firstCall = src.indexOf('receiptOk(task.id');
-  const firstLens = src.indexOf("agentType: 'legion:code-reviewer'");
-  assert.ok(firstCall > 0 && firstLens > 0, 'both anchors must exist');
-  assert.ok(firstCall < firstLens, 'the receipt is verified before the first review lens is dispatched');
-  // `build.receipt` is the builder's CLAIM. It may be reported, never believed — so it may
-  // appear in a log line or a failure payload, but never in a condition.
-  assert.doesNotMatch(src, /(if|while)\s*\([^)]*\bbuild\.receipt\b[^)]*\)\s*\{/,
-    'the builder self-report must not gate control flow');
-});
-
-test('every review verdict is recorded in state — an unrecorded review did not happen', () => {
-  const src = codeOnly(read('workflows', 'build-loop.js'));
-  // finalize counts tasks.reviews and the pre-merge subject HASHES that array, so a verdict the
-  // loop kept only in memory is a hole in the evidence chain a resumed session cannot see.
-  assert.match(src, /state review-record --role \$\{[^}]+\} --verdict \$\{[^}]+\} --subject task:\$\{/);
-  // Every lens, not just the primary: `recorded` must ACCUMULATE, or the durable-evidence rule
-  // is enforced for one lens and quietly waived for the consult lens and the re-review.
-  const records = [...src.matchAll(/recordVerdict\(/g)].length;
-  assert.ok(records >= 3, `all three verdict sites must record, found ${records}`);
-  const overwrites = [...src.matchAll(/\brecorded = await recordVerdict\(/g)].length;
-  assert.equal(overwrites, 1, 'only the FIRST verdict may assign the flag; later ones must fold into it');
-  assert.match(src, /recorded = recorded && /, 'the flag accumulates across every recorded verdict');
-  // Fail closed: a pass whose verdict the kernel never accepted must not reach task-done. The
-  // existence guard is the point — a bare indexOf comparison stays green when the whole gate is
-  // DELETED (-1 < anything), which is the same vacuity this file was already caught on once.
-  const iGate = src.indexOf('if (!recorded)');
-  assert.ok(iGate > 0, 'the unrecorded-verdict gate must exist, not merely be described');
-  assert.ok(iGate < src.indexOf('state task-done'), 'and it must precede task-done');
-});
-
-test('the brief reads the CANONICAL task shape — invented fields make silently empty briefs', () => {
-  const src = read('workflows', 'build-loop.js');
-  // `plan check --import` seeds a strict whitelist (src/cli/plan.mjs): the architect's mirror,
-  // gotcha and acceptance rows arrive inside `notes`. Reading them as top-level fields drops
-  // exactly the per-task context the brief exists to carry, and drops it without a sound.
-  assert.match(src, /task\.notes/, 'the brief must read the canonical notes field');
-  for (const phantom of ['task.note', 'task.mirror', 'task.gotcha', 'task.acceptance']) {
-    assert.ok(!new RegExp(`${phantom.replace('.', '\\.')}\\b(?!s)`).test(src),
-      `${phantom} is not a field on a canonical task row — it is seeded under task.notes`);
-  }
-});
 
 // --- kernel-command references are real -----------------------------------------------------
 // A skill or agent telling a model to run a command the router does not dispatch is a silent
@@ -853,7 +548,6 @@ function componentFiles() {
     // decision. What survives of that surface is githooks.mjs's removal report lines, which name
     // kernel commands an operator is told to run, so the scan follows the prose there.)
     ['src', 'kernel', 'githooks.mjs'],
-    ['workflows', 'build-loop.js'],
   ];
 }
 
@@ -923,16 +617,6 @@ test('no `legion state` op writes a receipt, and no shipped component names one'
     // Prose too, not only backticked invocations: an unbacked mention would still be copied.
     assert.doesNotMatch(src, /legion\s+state\s+receipt/,
       `${what}: names a receipt-writing \`legion state\` op, which does not exist`);
-  }
-  // kernel-op's CLOSED SET is the one place a shell-holding agent's vocabulary is enumerated.
-  const closedSet = [...read('agents', 'kernel-op.md').matchAll(FENCE)]
-    .flatMap((m) => m[1].split('\n'))
-    .map((l) => l.trim())
-    .filter((l) => l.startsWith('legion '))
-    .map((l) => l.split(/\s+/).slice(1, 3).join(' '));
-  assert.ok(closedSet.length > 0, 'the closed set must be non-empty (a regex matching nothing proves nothing)');
-  for (const cmd of closedSet) {
-    assert.ok(!/^state receipt/.test(cmd), `kernel-op's closed set must not contain '${cmd}'`);
   }
 });
 
@@ -1038,29 +722,19 @@ test('the intake stage reads the code BEFORE the recap, at the depth the profile
     'the corrected intent is re-recorded BEFORE the agreement that binds its hash');
 });
 
-test('the multi-repo intake form lands the mechanics and fences M1b out', () => {
+// The CLI still accepts `--add-repo`/`--initiative`, and this skill version drives neither. The rule
+// is a HOUSE RULE, above the stage table, not a step of intake: a feature resumed at plan or build
+// never re-reads intake, so a guard living there would let exactly the sessions that skip intake
+// drive a multi-repo feature as if it were single-repo.
+test('a cross-repo feature is refused as a house rule, above the stage table', () => {
   const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
-  const s = stageSection(body, 'intake');
-  assert.match(s, /intakeRepos/, 'the multi-repo form triggers on the manifest key T23 records');
-  assert.match(s, /specs\/<repo basename>\.md/, 'the per-repo spec drafts are named by path');
-  assert.match(s, /exactly \*\*one\*\* spec artifact/,
-    'the drafts must not read as this feature\'s spec — one recorded spec artifact per feature');
-  // THE FENCE MOVED, AND THIS PIN MOVED WITH IT (T34). Until c10 the fence read "create no
-  // sibling features, no initiative links, no by-reference intake records and no interface
-  // contract — that is M1b", and this assertion pinned that sentence. T32/T33 BUILT the layer, so
-  // that sentence became false prose and the pin became a pin on a lie. What still has to be
-  // fenced is not the mechanics but the CLAIM: M1b's attended FE+BE proving run is deferred, the
-  // layer ships dark, its acceptance stays OPEN (PLAN-V3 §Milestones M1b, amended 2026-07-29). So
-  // the assertion is RE-AIMED at the live mechanics plus the ships-dark fence — three checks
-  // where there was one, and nothing here is satisfied by prose that predates the build.
-  assert.match(s, /artifact-record contract/,
-    'the primary hosts the interface contract, recorded through the real op');
-  assert.match(s, /--initiative <id>/,
-    'and the siblings are started by the OPERATOR through the real flag');
-  assert.match(s, /SHIPS DARK[\s\S]{0,600}(DEFERRED|deferred)/,
-    'the fence that remains: the attended proving run is deferred and the layer ships dark');
-  assert.match(s, /acceptance stays \*\*open\*\*/i,
-    'and M1b\'s acceptance is stated as OPEN — a skill that claims it delivered is the one thing this pin exists to catch');
+  const iTable = body.indexOf('## The stage table');
+  assert.ok(iTable > 0, 'SKILL.md must still have a stage table for the house rules to sit above');
+  const rules = body.slice(0, iTable);
+  assert.match(rules, /`intakeRepos`/, 'the house rules name the cross-repo manifest field to stop on');
+  assert.match(rules, /`initiative` block/, 'and the initiative block, the other half of the shape');
+  assert.match(rules, /at whatever stage you resume/,
+    'the rule binds every stage, not just intake — a resume past intake is the case it exists for');
 });
 
 // The express mini-spec (2026-08-07): the spec STAGE stays — it anchors the acceptance
@@ -1079,21 +753,17 @@ test('express fuses the mini-spec into the intake recap, artifact before decisio
   const intake = stageSection(body, 'intake');
   const iFused = anchor(intake, /EXPRESS, the spec stage is FUSED/, 'the express fused block');
   const fused = intake.slice(iFused);
-  assert.match(fused, /replace — never precede/,
-    'the fused forms SUBORDINATE steps 7–9 — read as additional, the intake ops run twice');
+  assert.match(fused, /which \*\*replace\*\* them/,
+    'the fused forms SUBORDINATE the recap steps — read as additional, the intake ops run twice');
   assert.match(fused, /acceptance rows/, 'the mini-spec still carries the acceptance yardstick');
-  assert.match(fused, /named explicitly/, 'and a schema change is still named, never hidden');
+  assert.match(fused, /named\s+explicitly/, 'and a schema change is still named, never hidden');
   assert.match(fused, /yes covers both/, 'the single yes covers recap AND mini-spec digest');
-  assert.match(fused, /`intent\.md` \*\*and\s+the mini-spec\*\*/,
+  assert.match(fused, /folded\s+into both files/,
     'a corrected yes is folded into BOTH artifacts before anything is approved');
   const iArtifact = anchor(fused, 'artifact-record spec', 'the mini-spec artifact record');
   const iDecision = anchor(fused, 'decision-record spec', 'the mini-spec decision record');
   assert.ok(iArtifact < iDecision,
     'the artifact is recorded BEFORE the approval — reversed, the chain breaks mid-flow');
-  assert.match(fused, /minus\s+`legion state decision-record intake`/,
-    'the by-reference secondary keeps its exemption inside the fused chain');
-  assert.match(fused, /again, against the changed\s+recap/,
-    'a recap that moved re-collects the mini-spec yes — its approval subject never binds the recap');
   const spec = stageSection(body, 'spec');
   assert.match(spec, /EXPRESS profile this stage is normally already satisfied/,
     'the spec stage names the express traversal — else express features get a second spec pass');
@@ -1136,7 +806,7 @@ test('the /legion:start skill exists, is well-formed, and cannot create infrastr
   assert.match(body, /naming-and-invocation wrapper, never a second creation path/i);
   // THE NAME SHAPE IS THE KERNEL'S. The skill teaches the operator-visible rule; a shape that
   // drifts from safeSegment() teaches a name `feature start` will refuse. Bound byte-for-byte to
-  // paths.mjs, the same way build-loop's ID_RE is above.
+  // paths.mjs, read out of the kernel source rather than copied into this test.
   const kernelRe = read('src', 'kernel', 'paths.mjs').match(/const SEGMENT_RE = \/([^;]+)\/;/)?.[1];
   assert.ok(kernelRe, 'paths.mjs must declare SEGMENT_RE where this test can read it');
   assert.ok(body.includes(kernelRe),
@@ -1280,8 +950,11 @@ test('the decision grammar is declared across the plan surface', () => {
   const iInputs = architect.indexOf('## Inputs');
   assert.match(architect.slice(iInputs, architect.indexOf('## Do')), /lessons\.md/,
     'the architect reads the project lessons file whole');
-  assert.match(architect, /\*\*build\*\*/,
-    'the risk tier is stated to buy build cheapness too, not review cheapness alone');
+  // (`notes.risk` and the review tiers it bought are DELETED: no task is reviewed on any profile,
+  // so there is no tier left to write, to challenge, or to override. The pin that used to sit here
+  // graded a mechanism the build stage no longer has.)
+  assert.doesNotMatch(architect, /notes\.risk|review tier/i,
+    'the risk tier is gone from the plan surface — nothing buys a cheaper review any more');
 
   const critic = read('agents', 'plan-critic.md');
   assert.match(critic, /always present/,
@@ -1302,64 +975,123 @@ test('the decision grammar is declared across the plan surface', () => {
   assert.match(builder, /premise/, 'with the contested premise named');
   assert.match(builder, /alternative/, 'and the simpler route named');
   assert.match(builder, /plan stage/, 'and told where the concern routes — never to a task answer');
-  assert.match(builder, /re-bills/, 'the builder is told to group its reads, and why');
   assert.match(builder, /drive-by/, 'and to write the smallest diff that satisfies the task');
 
   assert.match(read('agents', 'code-reviewer.md'), /category/,
     'reviewer findings can carry the recurrence slug');
-  assert.match(read('agents', 'consult.md'), /category/,
-    'the consult translation carries it too — recurrence counting needs both lenses');
 });
 
-test('the build stage routes design signals through the PLAN stage, never task-answer', () => {
+test('the build stage drives every task, review and milestone close IN SESSION, in the kernel order', () => {
+  // The Workflow build loop is gone: the orchestration rules its own tests used to pin are prose
+  // here now, so each one below is the assertion that used to live in build-loop-order.test.mjs.
   const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
-  const s = stageSection(body, 'build — by default, the shipped workflow');
+  const s = stageSection(body, 'build');
   const at = (needle, what) => {
     const i = typeof needle === 'string' ? s.indexOf(needle) : s.search(needle);
     assert.ok(i >= 0, `build stage: ${what} is missing (${needle})`);
     return i;
   };
-  // ORDER: the kind check opens the question protocol (an answered design concern is a plan
-  // problem settled inside the very plan it contests), the light task-rewrite path stays for
-  // ordinary plan problems, and the design route follows it as the explicit exception.
-  const iProtocol = at('QUESTION PROTOCOL', 'the question protocol');
-  const iKind = at(/First check `kind`/, 'the kind check');
-  const iLight = at(/When the workflow returns failed tasks/, 'the light task-rewrite path');
-  const iRoute = at(/the DESIGN\s+ROUTE/, 'the design route');
-  assert.ok(iProtocol < iKind, 'the kind check opens the question protocol');
-  assert.ok(iKind < iLight && iLight < iRoute, 'the design route is the exception AFTER the light path');
+  // The per-task order is kernel-enforced and stated in it: started, built, VERIFIED, done.
+  const iStart = at('legion state task-start', 'task-start');
+  const iBuilder = at('`legion:builder`', 'the builder dispatch');
+  const iVerify = at('legion gate verify-receipt --task', 'the receipt verification');
+  const iDone = at('legion state task-done', 'task-done');
+  assert.ok(iStart < iBuilder && iBuilder < iVerify && iVerify < iDone,
+    'task-start → builder → verify-receipt → task-done, in that order');
+  assert.match(s, /never trust the builder's `receipt: true`/,
+    'the self-report is never the evidence — the kernel re-derives it');
+  assert.match(s, /No task is reviewed, on any profile/,
+    'no profile reviews a task any more: the milestone close is the whole code judgement');
+  // The brief is composed from the canonical rows, never from a paraphrase of the plan.
+  assert.match(s.slice(iBuilder), /canonical `tasks\.json` row, never from a paraphrase of the plan/,
+    'the brief is composed from tasks.json');
+  for (const field of ['`notes`', '`validate`']) {
+    assert.ok(s.slice(iBuilder).includes(field), `the brief carries the row's ${field}`);
+  }
+  assert.match(s, /Single-quote every task id and path you interpolate into Bash/,
+    'a task id reaching a shell unquoted is the injection this line closes');
+  assert.match(s, /a done task is skipped, and a milestone whose required close\s+verdicts are recorded passing does not close again/,
+    're-runnable: done tasks and closed milestones skip');
+  // The design route: a contested plan premise is a PLAN problem, never a task answer.
+  const iRoute = at(/kind: "design"/, 'the design route trigger');
   const route = s.slice(iRoute);
-  assert.match(route, /stage-enter plan/, 'the route re-enters the plan stage through the real op');
+  assert.match(route, /stage-enter plan/, 'it re-enters the plan stage through the real op');
   assert.match(route, /plan check --feature <name> --import/, 'and re-imports through the guard');
-  assert.match(route, /[Pp]lan-critic/, 'the critic reviews the amendment (express excused, as at plan)');
   assert.match(route, /decision-record plan/, 'and the human re-approves through the real op');
-  assert.match(route, /never the light task-rewrite/,
-    'the route must name what it is NOT — the one-task rewrite that lets a shared premise survive');
-  assert.match(route, /explicitly overrules/,
+  assert.match(route, /explicitly\s+\*\*overrules\*\*|\*\*explicitly overrules\*\*/,
     'the operator carve-out: an overruled concern settles as a recorded answer, an upheld one never does');
-  // The signal must be named where the return value is persisted AND in the completion gate —
-  // an all-green run with a recurring class is exactly the entrenchment shape.
-  assert.match(s, /`designSignals`[\s\S]{0,500}design route/,
-    'designSignals is listed among the return fields that exist only in the return');
-  assert.match(s, /designSignals` came back empty or every signal was routed/,
-    'and the stage-completion gate refuses to close over an unrouted signal');
+  assert.match(s, /bounces \*\*UP to the architect\*\*/,
+    'a thin task goes up to the architect — there is no per-task planner anywhere in this stage');
+  // The milestone close, in its order: consult FIRST and in Bash, then the lenses, then the records.
+  const iConsult = at('`legion consult` FIRST, directly in Bash', 'the consult call');
+  assert.match(s.slice(iConsult), /review-consult\.md/, 'its output is appended to the dossier file');
+  const iLenses = at('legion:code-reviewer', 'the milestone-mode code review');
+  assert.ok(iConsult < iLenses, 'the consult runs before the lenses that adjudicate its findings');
+  assert.match(s, /legion state review-record --role <role> --verdict <pass\|fail> --subject milestone:<id>/,
+    'every close verdict is recorded at the milestone subject');
+  assert.match(s, /\*\*pass and fail alike\*\*/, 'a fail is recorded exactly like a pass');
+  const iFix = at('**ONE fix round**', 'the fix round');
+  assert.match(s.slice(iFix), /SendMessage/, 'the re-review is warm — the same agent, continued');
+  // The squash is only safe in one position, and only because it preserves the tree the task
+  // receipts key to: both halves of that are prose here, so both are pinned here.
+  const close = s.slice(at('Milestone close, by this session', 'the milestone-close block'));
+  // Through at() on both sides: a raw indexOf of an absent `**Squash**` is -1, which precedes
+  // everything and passes this assertion against a file that lost the squash step entirely.
+  assert.ok(at('**Squash**', 'the squash step') < at('legion gate run --boundary', 'the boundary gate'),
+    'the squash lands BEFORE the boundary gate — after it, the boundary receipt and every verdict bound to that HEAD are orphaned');
+  assert.match(close, /`git rev-parse HEAD\^\{tree\}` before and after/,
+    'and the squash is checked content-preserving against the tree it must not move');
+  assert.doesNotMatch(s, /designSignals|build-report\.jsonl|Workflow\(/,
+    'the workflow return fields are gone with the workflow');
 });
 
-test('the EXPRESS bargain is stated at the build stage, not left to be discovered', () => {
-  // Express stopped reviewing tasks, so the close is the only code judgement there is. That is a
-  // trade the operator has to make knowingly at classification time — the tokens below are what a
-  // session reads before it picks the profile, and their silent loss turns the trade into a
-  // surprise found at the pre-merge gate.
+test('no profile reviews a task, and express also skips the critic and the product review', () => {
+  // Express stopped reviewing tasks first; the in-session build stage extended that to every
+  // profile. What the operator has to know at classification time is what express still drops.
   const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
-  const s = stageSection(body, 'build — by default, the shipped workflow');
-  const i = s.indexOf('THE EXPRESS BARGAIN');
-  assert.ok(i >= 0, 'the build stage must state the express bargain');
-  const bargain = s.slice(i, s.indexOf('\n\n', i));
-  assert.match(bargain, /judgement/, 'the close is the whole of it, not a thinner slice of a per-task review');
-  assert.match(bargain, /~3 tasks/, 'with the size past which the trade stops holding');
-  assert.match(bargain, /misclassified/, 'and what a milestone past it means — a profile to escalate, not a milestone to stretch');
-  assert.match(bargain, /escalate-profile/, 'named as the op that acts on it');
-  assert.match(bargain, /omission/, 'the empty evidence fields are by profile, and the artifact must say which');
+  assert.match(stageSection(body, 'build'), /No task is reviewed, on any profile/,
+    'the trade is stated where the tasks are built');
+  const intake = stageSection(body, 'intake');
+  assert.match(intake, /\*\*express\*\*[^.]*no plan critic and no product review/,
+    'and what express costs is stated where the profile is chosen');
+  assert.match(stageSection(body, 'plan'), /except on express, where the dispatch is\s+skipped/,
+    'the plan stage names the same exemption');
+  // The close's required-role set is stated ONCE, and it is the skill's rule, not the kernel's:
+  // PROFILE_REVIEW_ROLES names the code and product reviewers and never the visual one.
+  const close = stageSection(body, 'build').slice(stageSection(body, 'build').indexOf('Milestone close'));
+  assert.match(close, /`code-reviewer` always/, 'the code reviewer is owed by every profile');
+  assert.match(close, /`product-reviewer` on standard and full/,
+    'the product reviewer only where the profile owes one');
+  assert.match(close, /`visual-reviewer` when a task of the milestone carries `notes\.visual`/,
+    'and the visual reviewer on the plan flag, which no kernel predicate reads');
+  assert.deepEqual(PROFILE_REVIEW_ROLES.full, ['code-reviewer', 'product-reviewer'],
+    'the kernel names neither the visual reviewer nor the consult — the close set is prose, and the skill says so');
+});
+
+test('the review stage describes the predicate `stage-complete review` actually runs', () => {
+  // state.mjs takes, per required role, the LATEST product-scope verdict and demands a passing
+  // one whose binding holds. It does NOT walk the milestones — a skill that says it does invites
+  // a session to trust a backstop that is not there, so the per-milestone rule is claimed here.
+  const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
+  const review = stageSection(body, 'review');
+  assert.match(review, /LATEST product-scope verdict/, 'the op reads the latest verdict per role');
+  assert.match(review, /never iterates milestones/, 'and says plainly what it does not do');
+  assert.match(review, /THIS skill's rule/, 'per-milestone coverage is owned here');
+  assert.match(review, /stage-complete build/, 'and enforced at the build stage, before this one');
+});
+
+test('the `full` profile claims no gate the kernel does not give it', () => {
+  // The plan-stage consult was structurally unreachable: at the plan stage the branch carries no
+  // commits and the dossier is outside the worktree, so `--base` derives an empty diff and
+  // consult.mjs refuses with `available:false` every time. A profile whose only distinguishing
+  // step can never run is a false claim of rigour, so `full` now says what it is.
+  const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
+  assert.match(stageSection(body, 'intake'), /\*\*full\*\* \(accepted by the kernel, currently identical to standard\)/,
+    'full is declared identical to standard');
+  assert.doesNotMatch(stageSection(body, 'plan'), /legion consult/,
+    'and the plan stage buys no second opinion it cannot obtain');
+  assert.ok(PROFILES.includes('full'), 'the kernel still accepts the value, so the menu keeps it');
+  assert.match(body, /escalate-profile <express\\?\|standard\\?\|full>/, 'and the escalate menu still offers it');
 });
 
 test('lessons.md is wired: intake and the architect read it, the session writes it', () => {
@@ -1390,21 +1122,17 @@ function agentSection(body, heading, what) {
   return end < 0 ? rest : rest.slice(0, end);
 }
 
-test('a contested finding is adjudicated by the lens that raised it — in both lens contracts, and in the builder’s', () => {
+test('a contested finding is adjudicated by the lens that raised it — in the lens contract, and in the builder’s', () => {
   // The lens that raised a finding is the only one that may withdraw it, and a withdrawal is a
   // `note` carrying why — the shape REVIEW_SCHEMA already has, so the whole rule lives in prose
   // and nothing but this pins it.
-  for (const file of ['code-reviewer.md', 'consult.md']) {
+  for (const file of ['code-reviewer.md']) {
     const s = agentSection(read('agents', file), 'Adjudicate a contested finding', file);
     assert.match(s, /sustain/i, `${file}: the finding may stand`);
     assert.match(s, /withdraw/i, `${file}: or be withdrawn`);
     assert.match(s, /`note`/, `${file}: a withdrawal is a note, so it rides to the human instead of vanishing`);
     assert.match(s, /evidence/, `${file}: what a contest is judged on`);
   }
-  // The loop records the consult verdict on its own and re-reviews it with the consult lens, so the claim that
-  // the Claude lens filters it describes a workflow that does not exist.
-  assert.doesNotMatch(read('agents', 'consult.md'), /adjudicates every finding/,
-    'no lens adjudicates another lens’s findings — the consult lens re-reviews its own');
   const builder = agentSection(read('agents', 'builder.md'), 'Contesting a finding', 'builder.md');
   assert.match(builder, /`contested`/, 'the builder is told the channel');
   assert.match(builder, /evidence/, 'and the bar a contest must clear');
@@ -1451,8 +1179,8 @@ test('the plan critic sweeps placeholders and prices the remedy a finding asks f
 
 test('the architect prices verification machinery as a structuring choice, grader mandate intact', () => {
   const architect = read('agents', 'architect.md');
-  const trigger = architect.slice(architect.indexOf('3. **Declare structuring decisions'),
-    architect.indexOf('4. **Decompose'));
+  const trigger = architect.slice(architect.indexOf('- **Declare structuring decisions'),
+    architect.indexOf('- **Decompose'));
   assert.ok(trigger.length > 0, 'architect.md must keep its structuring-decision trigger');
   assert.match(trigger, /verification\s+machinery/,
     'the trigger names it — a bare `machinery` matches this file twice with the rule deleted');
@@ -1523,15 +1251,14 @@ test('the spec is the human-readable reformulation, and the architect and critic
   assert.match(concerns, /overruled/, 'outcome: the spec stands, recorded as a D<n> with the operator’s words');
   assert.match(concerns, /arbitrat/, 'outcome: a contested overturn is arbitrated by the human');
   assert.match(concerns, /spec route/, 'an upheld spec concern takes the amendment spec route');
-  const iLoop = at(plan, 'REJECTION LOOP', 'plan stage: the rejection loop');
+  const iLoop = at(plan, 'CRITIC LOOP, CAPPED', 'plan stage: the critic loop');
   const iApproval = at(plan, 'PLAN APPROVAL', 'plan stage: the approval gate');
   const loop = plan.slice(iLoop, iApproval);
   assert.match(loop, /overturns: "D<n>"/, 'the loop knows the overturn field');
-  assert.match(loop, /adopts or contests, never silently\s+ignores/, 'an overturn has exactly two exits');
-  assert.match(loop, /never\s+answer a concern on the human's behalf/, 'the loop’s last fence');
-  assert.match(plan.slice(iApproval), /every concern raised on the way/, 'the human gate shows what was contested');
-  assert.match(plan.slice(iApproval), /overturned/, 'and every pick the critic overturned');
-  const iFence = at(body, 'A design concern is not an amendment', 'amendments: the design-concern fence');
+  assert.match(loop, /adopts or contests, never\s+ignores/, 'an overturn has exactly two exits');
+  assert.match(loop, /route any `concerns` entry to the human first/, 'a concern still leaves the loop for the human');
+  assert.match(plan.slice(iApproval), /\*\*every concern\*\* with how it was settled/, 'the human gate shows what was contested');
+  const iFence = at(body, /a design concern is not an\s+amendment/i, 'amendments: the design-concern fence');
   assert.match(body.slice(iFence, iFence + 500), /spec concern the human upholds/i,
     'the fence names the one concern that IS an amendment — the upheld spec concern');
 

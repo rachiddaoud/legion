@@ -31,8 +31,8 @@ import { fileURLToPath } from 'node:url';
 import { applyHardenedGitEnv } from '../../src/kernel/git.mjs';
 import {
   AGY_DEFAULT_MODEL, AGY_PRINT_TIMEOUT_S, AGY_WATCHDOG_MS, BACKENDS, DIFF_CAP_BYTES, REVIEW_SCHEMA,
-  PLACEHOLDER_RE, PROVIDERS, TIMEOUT_MS, UNAVAILABLE_CAUSES, USAGE, composePrompt, consultCore,
-  VERB_STAMP, isEmptyScope, translate,
+  PLACEHOLDER_RE, PLUGIN_ID, PROVIDERS, TIMEOUT_MS, UNAVAILABLE_CAUSES, USAGE, composePrompt,
+  consultCore, VERB_STAMP, isEmptyScope, translate,
 } from '../../src/cli/consult.mjs';
 
 applyHardenedGitEnv(process.env, { identity: { name: 'legion test', email: 'test@example.invalid' } });
@@ -43,12 +43,23 @@ const NODE = process.execPath;
 
 let TMP;
 let QUESTION;
+let PREV_CONFIG_DIR;
 before(() => {
   TMP = mkdtempSync(join(tmpdir(), 'legion3-consult-'));
   QUESTION = join(TMP, 'q.txt');
   writeFileSync(QUESTION, 'Does this task commit do what its brief says, and is the error handling right?\n');
+  // The verb now falls back to the operator's own settings.json for the four consult options, so
+  // every case here — in-process and through bin/legion.mjs, which inherits this env — is pointed
+  // at a directory that holds none. Without it a developer whose plugin config names agy would
+  // run a different suite from CI's.
+  PREV_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = join(TMP, 'no-claude-config');
 });
-after(() => { rmSync(TMP, { recursive: true, force: true }); });
+after(() => {
+  if (PREV_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = PREV_CONFIG_DIR;
+  rmSync(TMP, { recursive: true, force: true });
+});
 
 /** The token every case configures. Distinctive on purpose: the hygiene test greps whole outputs
  * for these bytes, and a value like 'x' would match by accident. */
@@ -116,6 +127,7 @@ const call = (over = {}, deps = {}) => consultCore(argvFor(over), {
   env: deps.env ?? TOKEN_ENV,
   cwd: deps.cwd ?? TMP,
   ...(deps.timeoutMs === undefined ? {} : { timeoutMs: deps.timeoutMs }),
+  ...(deps.readSettings === undefined ? {} : { readSettings: deps.readSettings }),
 });
 
 /** The canned review every happy path serves, in the codex schema. The body is TWO sentences so
@@ -952,6 +964,96 @@ test('an ABSENT, EMPTY or PLACEHOLDER --backend routes to codex — the manifest
   assert.equal(run.calls[0].file, 'codex', 'an empty value is the same fact');
 });
 
+// --- the plugin config the verb reads for itself ----------------------------------------------
+// agents/consult.md was the bridge between the plugin's four `consult_*` userConfig options and
+// these flags — the loader substituted them into its prompt and it passed them through verbatim.
+// It is gone, and the feature session dispatches the verb straight from Bash, so the verb reads
+// the options itself out of `pluginConfigs['legion@legion'].options`. What these cases pin is the
+// precedence (a flag the caller set always wins — it is the only override there is), that a
+// settings file which is missing, broken or full of unsubstituted placeholders is UNSET rather
+// than an error, and that the value really travels: into the codex argv and into the envelope.
+
+/** A `deps.readSettings` fake serving one options object. The wrapper shape is spelled out here
+ * rather than passed flat, so a drift in the path the verb walks fails these cases. */
+const settingsWith = (options) => () => ({ pluginConfigs: { [PLUGIN_ID]: { options } } });
+
+test('with neither flag set, the backend and the model come from the plugin config', async () => {
+  const run = runFake(codexRun());
+  const out = await codex({ '--backend': null, '--model': null },
+    { run, readSettings: settingsWith({ consult_backend: 'codex', consult_model: 'gpt-5-codex' }) });
+  assert.equal(out.envelope.available, true, out.envelope.reason);
+  assert.equal(run.calls[0].file, 'codex');
+  assert.deepEqual(run.calls[0].args.slice(-3, -1), ['-m', 'gpt-5-codex'], "the file's model rides the argv");
+  assert.equal(out.envelope.backend, 'codex');
+  assert.equal(out.envelope.model, 'gpt-5-codex', 'and the envelope reports what actually ran');
+  // The backend half, proved against a value the default could never produce: a bad name in the
+  // file is refused naming that name, so the routing value did come from the file.
+  const unknown = await misconfigured({ '--backend': null },
+    { readSettings: settingsWith({ consult_backend: 'perplexity' }) });
+  assert.equal(unknown.backend, 'perplexity');
+});
+
+test('a flag the caller set beats the plugin config', async () => {
+  const run = runFake(codexRun());
+  const out = await codex({ '--backend': null, '--model': 'gpt-5-codex' },
+    { run, readSettings: settingsWith({ consult_backend: 'codex', consult_model: 'never-this-one' }) });
+  assert.deepEqual(run.calls[0].args.slice(-3, -1), ['-m', 'gpt-5-codex']);
+  assert.equal(out.envelope.model, 'gpt-5-codex');
+});
+
+test('a settings.json that is missing, or unparseable, is unset — codex, and never a throw', async () => {
+  // The DEFAULT readSettings is under test here, so this drives the real file read through a
+  // relocated CLAUDE_CONFIG_DIR rather than an injected fake.
+  const dir = mkdtempSync(join(TMP, 'cfg-'));
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = dir;
+  try {
+    const missing = runFake(codexRun());
+    const a = await codex({ '--backend': null, '--model': null }, { run: missing });
+    assert.equal(a.envelope.backend, 'codex', 'no file at all is the manifest default');
+    assert.ok(!missing.calls[0].args.includes('-m'));
+    writeFileSync(join(dir, 'settings.json'), '{ this is not json');
+    const broken = runFake(codexRun());
+    const b = await codex({ '--backend': null, '--model': null }, { run: broken });
+    assert.equal(b.envelope.available, true, 'a broken config file must not fail a call whose flags carry everything');
+    assert.equal(b.envelope.backend, 'codex');
+    assert.ok(!broken.calls[0].args.includes('-m'));
+  } finally { process.env.CLAUDE_CONFIG_DIR = prev; }
+});
+
+test('a REAL settings.json under CLAUDE_CONFIG_DIR supplies the model — the whole path, no fake', async () => {
+  // The cases around this one inject deps.readSettings, which proves the resolution but not the
+  // read. This drives the default readSettings against a file on disk, the way the operator's
+  // config is actually reached (the relocation pattern is test/cli/plugin-dir.test.mjs's).
+  const dir = mkdtempSync(join(TMP, 'cfg-real-'));
+  writeFileSync(join(dir, 'settings.json'), JSON.stringify({
+    pluginConfigs: { [PLUGIN_ID]: { options: { consult_model: 'gpt-5-codex-from-settings-file' } } },
+  }));
+  const prev = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = dir;
+  try {
+    const run = runFake(codexRun());
+    const out = await codex({ '--backend': null, '--model': null }, { run });
+    assert.deepEqual(run.calls[0].args.slice(-3, -1), ['-m', 'gpt-5-codex-from-settings-file'],
+      'the value on disk reaches the CLI');
+    assert.equal(out.envelope.model, 'gpt-5-codex-from-settings-file');
+  } finally { process.env.CLAUDE_CONFIG_DIR = prev; }
+});
+
+test('an unsubstituted placeholder STORED in settings.json is unset, exactly like one on the flag', async () => {
+  const run = runFake(codexRun());
+  const out = await codex({ '--backend': null, '--model': null }, {
+    run,
+    readSettings: settingsWith({
+      consult_backend: '${user_config.consult_backend}',
+      consult_model: '${user_config.consult_model}',
+    }),
+  });
+  assert.equal(run.calls[0].file, 'codex', 'an unsubstituted backend routes to the default');
+  assert.ok(!run.calls[0].args.includes('-m'), 'and an unsubstituted model is never echoed onward');
+  assert.equal(out.envelope.model, null);
+});
+
 test('the codex argv is pinned: exec --json --sandbox read-only --output-schema <tmp>/schema.json -o <tmp>/last.txt <prompt> — and no -m', async () => {
   let schemaAtCallTime = null;
   const run = runFake((file, args, opts) => {
@@ -1637,40 +1739,6 @@ test('an unsubstituted placeholder survives the shell and is read as unset, not 
   assert.ok(!out.stdout.includes('${user_config'), 'the placeholder is never echoed onward');
 });
 
-// --- §5.11 cross-pins: the verb, the loop's schema, and the prompt cannot drift apart --------
-
-test('every `unavailable` the verb can emit is in the loop\'s REVIEW_SCHEMA enum — cli-missing included', () => {
-  // An `unavailable` value missing from that enum is DROPPED by the runtime and arrives at the
-  // latch as nothing — which reads exactly like a lens that never classified its absence, i.e.
-  // like a transient failure worth re-dispatching. A cause invented here without the enum knowing
-  // it is therefore not a new row, it is a silently deleted one.
-  const loop = readFileSync(join(ROOT, 'workflows', 'build-loop.js'), 'utf8');
-  const m = /unavailable: \{[^}]*enum: \[([^\]]+)\]/.exec(loop);
-  assert.ok(m, 'the unavailable enum must still be findable in workflows/build-loop.js');
-  const enumValues = m[1].split(',').map((v) => v.trim().replace(/^'|'$/g, ''));
-  for (const cause of UNAVAILABLE_CAUSES) {
-    assert.ok(enumValues.includes(cause), `the loop's enum must carry '${cause}'`);
-  }
-  assert.ok(UNAVAILABLE_CAUSES.includes('cli-missing'),
-    'reachable again: codex and agy are spawned here, and a missing binary is this verb\'s to report');
-});
-
-test('agents/consult.md pins the invocation, and names every flag the verb reads', () => {
-  // The prompt is the only caller. A flag the verb requires and the prompt never mentions is a
-  // `misconfigured` envelope in production that no test here would ever produce, and a flag the
-  // prompt passes that the verb does not read is an argument silently dropped.
-  const md = readFileSync(join(ROOT, 'agents', 'consult.md'), 'utf8');
-  assert.match(md, /legion consult --backend/, 'the pinned invocation');
-  for (const flag of ['--backend', '--model', '--base-url', '--token-env', '--commit', '--base', '--question-file']) {
-    assert.ok(md.includes(flag), `the pinned command must name ${flag}`);
-    assert.ok(USAGE.includes(flag), `and the verb's usage line must offer ${flag}`);
-  }
-  assert.match(md, /verbatim and single-quoted/,
-    'the four configured values go through UNTOUCHED — including an unsubstituted placeholder, which the verb reads as unset');
-  assert.match(md, /EXIT 1/, 'and the prompt must know that exit 1 is a wrong invocation, never a lens verdict');
-});
-
-// --- the cap's other half, and the redaction that must not break its own envelope -------------
 // Both of these are review findings from the first pass, and both are the same shape of bug: a
 // guard whose text claims more than its code does. The empty-scope tests exercise a path the
 // cases above never reached (an inert guard passes every test that does not call it), and the

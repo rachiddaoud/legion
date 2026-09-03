@@ -205,13 +205,13 @@
 //
 // QUESTION PROTOCOL: a builder facing a decision that genuinely
 // changes the outcome returns `blocked: <question>` as DATA rather than guessing; the
-// session records the human reply via `task-answer`, and the build-loop composes the task's
-// `answers[]` into that task's next brief on re-run. question/answer are CONTENT the session
-// supplies (like task titles/notes/plan text), NOT authoritative evidence — so
+// feature session records the human reply via `task-answer` and composes the task's
+// `answers[]` into that task's next brief when it re-dispatches. question/answer are CONTENT
+// the session supplies (like task titles/notes/plan text), NOT authoritative evidence — so
 // --question/--answer are legitimate flags here; the no-flag rule covers hashes/HEAD/tree.
 // Answering a `done` task is REFUSED: the Q&A would ride into a re-brief for work already
 // accepted. Blocked-STATUS tracking deliberately does NOT live here — it belongs to the
-// build-loop; task-answer only records the Q&A the loop reads back.
+// session driving the build stage; task-answer only records the Q&A that brief reads back.
 //
 // INITIATIVES — CROSS-REPO LIVES ENTIRELY ABOVE THIS KERNEL. An
 // initiative is ONE shared intake over N repos producing N ORDINARY single-repo features linked
@@ -701,10 +701,10 @@ function projectPlanRow(x) {
 /** A row carries RECORDED EVIDENCE once a gate has certified a tree for it, or once it is
  * done. That — not "someone typed task-start" — is what a re-import must never overwrite:
  * `started` is an intention, a receipt is a fact. The distinction is load-bearing, because the
- * build loop marks a task `started` before dispatching its builder and there is no un-start
+ * build stage marks a task `started` before dispatching its builder and there is no un-start
  * op; protecting `started` alone would make a failed task's plan text permanently unrewritable
- * and wall off the loop's own bounce-up path (workflows/build-loop.js: a task that turns out
- * thin, wrong or missing a dependency goes back to the architect and re-import). */
+ * and wall off the bounce-up path the build stage owns (skills/feature/SKILL.md: a task that
+ * turns out thin, wrong or missing a dependency goes back to the architect and re-import). */
 const hasEvidence = (x) => x.status === 'done' || x.receipt != null;
 
 /** Key-order-independent value equality. seedTasks needs it because a row REBUILT by spreading

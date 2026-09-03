@@ -20,7 +20,7 @@
 // "REUSED" MEANS MORE THAN ONE REAL PROMPT, AND `EXCLUDED_PROMPTS` IS WHAT MAKES `REAL` HONEST:
 // counting `type: "user"` records reports 1535 of this machine's 1550 dispatches as reused, the six
 // shapes below — tool results and harness notices nobody typed — take that to 162, and every one of
-// the 911 build-loop dispatches then reads fresh, which is what the loop does. The markers are
+// the 911 build dispatches then reads fresh, which is what a per-task build dispatch does. The markers are
 // ANCHORED at the start of the body left once `<system-reminder>` blocks are stripped, so a prompt
 // that merely quotes one later on stays real. Both the list and the predicate are exported because
 // they are the fragile part: a marker Claude Code rewords must be pinnable per entry.

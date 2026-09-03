@@ -1,32 +1,33 @@
 // consult.mjs — `legion consult`: every recipe of the second-opinion lens — codex, agy, and the
 // OpenAI-compatible api — as one deterministic verb.
 //
-// WHY A VERB AND NOT PROSE. Each recipe of agents/consult.md used to be shell for a haiku agent
-// to assemble by hand: ~50 lines for the api one (a JSON payload built with `node -e`, a curl
+// WHY A VERB AND NOT PROSE. Each recipe below used to be shell for a consult subagent to assemble
+// by hand from prose: ~50 lines for the api one (a JSON payload built with `node -e`, a curl
 // line whose only safe spelling of the token was one shell expansion, a status table to read the
 // outcome off), ~250 for codex and agy together (a probe, a perl alarm, a backgrounded SIGKILL
 // watchdog, an event stream to read, two outcome tables with an order that mattered, and a
 // translation table). Every one of those is a step a model can get subtly right and occasionally
 // wrong, and the failure modes are the two this lens exists to prevent: a review that never ran
 // reported as a pass, and a credential that reached a transcript. The judgement is not the
-// model's to make, so it is not the model's to make: the agent passes the four userConfig values
-// through as flags and reads back one JSON object whose findings are already in the return
-// contract's shape.
+// model's to make, so it is not the model's to make: the feature session calls this verb directly
+// in Bash, the verb resolves the four options from settings.json itself, and the caller reads back
+// one JSON object whose findings are already in the shape the close needs.
 //
 // READ-ONLY, ABSOLUTELY — the same property `legion doctor` holds and for the same reason. This
 // verb resolves no dossier, takes no lock, mints no evidence and records no review; the one thing
 // it writes is a `mkdtempSync` directory under os.tmpdir() for the files the CLIs insist on
 // (codex's `-o`, agy's `--json-schema`), removed in a `finally` before the envelope is emitted.
-// Its only outputs are stdout and the exit code. (The kernel is not ignorant of consult:
-// state.mjs REVIEW_RECEIPT_AGENT_ROLES maps the `consult` review ROLE, and the build loop records
-// its verdict with `legion state review-record --role consult`. What the kernel owns no row for
-// is a consult GATE — PROFILE_REVIEW_ROLES names none, deliberately. This verb sits on neither
-// path: it fetches an opinion, and the caller does everything else with it.)
+// Its only outputs are stdout and the exit code. (The kernel is not ignorant of consult: state.mjs
+// REVIEW_RECEIPT_AGENT_ROLES still maps a `consult` review ROLE. Nothing on the shipped path uses
+// it: the milestone close appends this answer to `review-consult.md` as ADVISORY input its lenses
+// adjudicate, and records no `review-record --role consult` for it. The kernel owns no consult
+// GATE either — PROFILE_REVIEW_ROLES names none, deliberately. This verb sits on neither path: it
+// fetches an opinion, and the caller does everything else with it.)
 //
 // EXIT CODE, AND WHY `available:false` IS A ZERO. 0 means an envelope was emitted — INCLUDING an
-// `available:false` one. A missing lens is a valid, complete answer: the build loop records the
-// review as degraded and continues, and it is a ZERO exit that stops the haiku caller from
-// treating the answer as a broken command and "repairing" it into some other backend. 1 is
+// `available:false` one. A missing lens is a valid, complete answer: the close reports the
+// milestone as closed without the consult lens and continues, and it is a ZERO exit that stops the
+// SESSION from treating that answer as a broken command and "repairing" it into another backend. 1 is
 // reserved for a call that was never a review request at all — bad flags, an unreadable question
 // file, a commit that does not resolve — where the router prints `legion consult: <message>` on
 // stderr and NO envelope is written to stdout. Those two classes must not blur: an envelope on
@@ -98,21 +99,31 @@
 // below. codex and agy reach it through kernel/runner.mjs's `spawnError: 'ENOENT'`, which is the
 // one signal that means "no binary" and nothing else (no shell, so no 127 to misread).
 //
-// PLACEHOLDER REJECTION IS AN INVARIANT, NOT A COURTESY. MEASURED on Claude Code 2.1.236: a
-// userConfig option the operator never set is left in the agent prompt as the LITERAL
-// `${user_config.…}` — the manifest `default` is NOT substituted in its place. The agent is told
-// to pass all four values through verbatim precisely so it makes no judgement about them, which
-// means unsubstituted placeholders arrive here. Any flag value matching PLACEHOLDER_RE is read as
-// UNSET, and it is never echoed onward: sending `${user_config.consult_model}` to a provider as a
-// model name is the exact accident this rule exists to make impossible. An unset BACKEND routes
-// to codex — the manifest default, enforced here rather than left to the prompt.
+// THE VERB RESOLVES THE PLUGIN CONFIG ITSELF — there is no agent left to pass it through. The
+// four `consult_*` userConfig options are substituted into AGENT prompts only, and the feature
+// session now calls this verb directly from Bash, so a flag the caller did not supply is read
+// from the plugin's own settings: `pluginConfigs["legion@legion"].options` in
+// `<CLAUDE_CONFIG_DIR|~/.claude>/settings.json`, through deps.readSettings. An explicit flag
+// always wins; a missing file, unparseable JSON or a missing key is simply UNSET, which is the
+// same fact as an absent flag and takes the same default (backend → codex). That read gets a
+// real default — unlike deps.fetch and deps.run it opens no socket and spawns nothing, it reads
+// one local JSON file — so a test injects a fake object rather than a home directory.
+//
+// PLACEHOLDER REJECTION IS AN INVARIANT, NOT A COURTESY, and it covers both sources. MEASURED on
+// Claude Code 2.1.236: a userConfig option the operator never set is left in an agent prompt as
+// the LITERAL `${user_config.…}` — the manifest `default` is NOT substituted in its place, and
+// the same literal can be typed onto the command line by a caller relaying one. Any value
+// matching PLACEHOLDER_RE, from a flag or from settings.json, is read as UNSET, and it is never
+// echoed onward: sending `${user_config.consult_model}` to a provider as a model name is the
+// exact accident this rule exists to make impossible. An unset BACKEND routes to codex — the
+// manifest default, enforced here rather than left to the caller.
 //
 // SHAPE: consultCore(argv, deps) is pure — it writes nothing and returns { code, envelope, output }
 // — and run(argv) prints output and returns code. `deps.fetch` and `deps.run` have NO DEFAULT and
 // are type-checked by name: a test that forgets to inject a fake must fail loudly rather than
 // reach the network or spawn a real CLI.
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { parseArgs } from '../kernel/args.mjs';
 import { git } from '../kernel/git.mjs';
@@ -126,8 +137,8 @@ export const USAGE =
  * never of models: the model is always `--model`. `api` is a row with both columns null — the
  * "bring your own endpoint" case — so that "an explicit flag overrides its column" is ONE rule
  * with no special case, and so the API-backend list is exactly Object.keys(PROVIDERS).
- * These five rows are the ones agents/consult.md carried until 2026-08-20; moving them into code
- * is what lets test/plugin-manifest.test.mjs pin them by import instead of by regexing prose. */
+ * These five rows lived in the consult agent's prose until 2026-08-20; moving them into code is
+ * what lets test/plugin-manifest.test.mjs pin them by import instead of by regexing prose. */
 export const PROVIDERS = {
   openai: { baseUrl: 'https://api.openai.com/v1', tokenEnv: 'OPENAI_API_KEY' },
   google: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', tokenEnv: 'GEMINI_API_KEY' },
@@ -145,9 +156,35 @@ export const BACKENDS = ['codex', 'agy', ...Object.keys(PROVIDERS)];
  * real name merely CONTAINS the text is not a placeholder. */
 export const PLACEHOLDER_RE = /^\$\{user_config\./;
 
-/** The `unavailable` causes this verb can emit — a SUBSET of the enum in workflows/build-loop.js
- * (today the whole of it). A cross-pin in the test file asserts the subset relation, so adding a
- * cause here that the loop's REVIEW_SCHEMA would drop cannot pass silently. */
+/** The id the operator's settings file stores this plugin's userConfig under —
+ * `<plugin>@<marketplace>`, and this repo is its own marketplace, so both halves are `legion`. */
+export const PLUGIN_ID = 'legion@legion';
+
+/** flag name → the userConfig key that answers it when the flag is unset. The four keys are the
+ * manifest's, and plugin-manifest.test.mjs pins them against it. */
+export const CONFIG_KEYS = {
+  backend: 'consult_backend',
+  model: 'consult_model',
+  'base-url': 'consult_base_url',
+  'token-env': 'consult_token_env',
+};
+
+/** The default `deps.readSettings`: the operator's Claude settings object, or null. A missing
+ * file, unreadable file or unparseable JSON are ONE fact — nothing is configured — so none of
+ * them is reported: the caller's remedy is identical, and a verb that refused here would make an
+ * absent settings.json fatal to a call that supplied every flag itself. Read at CALL time, like
+ * every other CLAUDE_CONFIG_DIR consumer, so a test can relocate it. */
+export function readSettings() {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+  try {
+    return JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** The `unavailable` causes this verb can emit. Every caller that classifies an absence reads
+ * this list, so a cause added here must be one the caller's own vocabulary already carries. */
 export const UNAVAILABLE_CAUSES = [
   'cli-missing', 'misconfigured', 'not-authenticated', 'quota', 'network', 'timeout', 'other',
 ];
@@ -826,13 +863,15 @@ async function apiRecipe(fetchImpl, { baseUrl, tokenEnv, model, env, prompt, tim
 /**
  * The testable core. Writes NOTHING and returns everything.
  * @param {string[]} argv unsplit argv (kernel/args.mjs invariant)
- * @param {{fetch: Function, run: Function, env?: object, cwd?: string, timeoutMs?: number}} deps
+ * @param {{fetch: Function, run: Function, readSettings?: Function, env?: object, cwd?: string,
+ *          timeoutMs?: number}} deps
  * @returns {Promise<{code: number, envelope: object, output: string}>}
  */
 export async function consultCore(argv, deps = {}) {
   const {
     fetch: fetchImpl,
     run: runImpl,
+    readSettings: readSettingsImpl = readSettings,
     env = process.env,
     cwd = process.cwd(),
     timeoutMs = TIMEOUT_MS,
@@ -846,15 +885,22 @@ export async function consultCore(argv, deps = {}) {
 
   const { flags, positional } = parseArgs(argv);
 
+  /** A routing value, from the flag when the caller set one and from the plugin's userConfig
+   * otherwise. There is no agent left to substitute the four options into a prompt, so this is
+   * the ONLY place they are read; `configured()` applies to both sources, which is what keeps a
+   * `${user_config.…}` literal stored in settings.json as unset rather than as a model name. */
+  let options;
+  const resolve = (flag) => configured(flags[flag]) ?? configured(
+    (options ??= readSettingsImpl()?.pluginConfigs?.[PLUGIN_ID]?.options ?? {})[CONFIG_KEYS[flag]],
+  );
+
   // --- usage class: raised BEFORE any git read, any file read, any spawn and any HTTP call -----
   // A malformed invocation must not be answered with an envelope. An envelope is a REVIEW RESULT,
   // and "the caller typed the command wrong" is not a fact about the backend — reporting it as
-  // one would have the loop record a degraded review and latch a lens that was never asked.
+  // one would have the caller record a degraded review and latch a lens that was never asked.
+  // `resolve()` reads settings.json, so every throw below it comes FIRST: a mistyped command must
+  // not depend on the operator's plugin config being present or parseable.
   if (positional.length > 0) throw new Error(`unexpected argument '${positional[0]}'. usage: ${USAGE}`);
-
-  // Routing is settled FIRST, before anything else is looked at. Unset — absent, empty or an
-  // unsubstituted placeholder — is the manifest default, codex (header).
-  const backend = configured(flags.backend) ?? 'codex';
 
   // Exactly one scope. Neither is a review of nothing; both is a review of an ambiguity, and
   // silently preferring one would make the caller's typo invisible in the artifact.
@@ -879,11 +925,16 @@ export async function consultCore(argv, deps = {}) {
     throw new Error(`--question-file ${questionPath} is unreadable: ${e?.message ?? e}. usage: ${USAGE}`);
   }
 
+  // Routing is settled before anything is spent. Unset — absent, empty or an unsubstituted
+  // placeholder, on the flag or in the plugin config — is the manifest default, codex (header).
+  const backend = resolve('backend') ?? 'codex';
+
   // --- config law: from here on every refusal is an ENVELOPE, exit 0 ---------------------------
   // Everything below is a fact about the operator's plugin config or about the backend, i.e.
   // about whether a second opinion CAN be obtained. A config fact is the `misconfigured` absence,
-  // and the loop latches the lens off for the run when it sees one — correctly, since plugin
-  // config cannot change mid-run.
+  // which the feature session treats as durable BY POLICY and stops re-dispatching for the rest of
+  // the feature — settings.json is re-read on every call, so the operator fixes the config and the
+  // next feature (or an explicit re-run) picks it up; nothing here caches it.
   // The scrubber is installed the moment a token VALUE is read (the api recipe's onToken) and is
   // identity until then — which is not a gap: before that line no token exists in this process,
   // so no envelope can contain one.
@@ -908,7 +959,7 @@ export async function consultCore(argv, deps = {}) {
   };
   const refuse = ({ cause, reason }) => emit(unavailable(backend, cause, reason));
 
-  const model = configured(flags.model);
+  const model = resolve('model');
   let result;
   if (backend === 'codex') {
     const diff = deriveDiff(scope, cwd);
@@ -936,12 +987,12 @@ export async function consultCore(argv, deps = {}) {
     // An explicit flag OVERRIDES its column of the provider row — that is how a named provider
     // reaches a proxy or a differently-named key. For `api` both columns are null, so the same
     // expression makes them required without a branch of their own.
-    const baseUrl = configured(flags['base-url']) ?? row.baseUrl;
+    const baseUrl = resolve('base-url') ?? row.baseUrl;
     if (baseUrl === null) {
       return refuse(absent('misconfigured',
         "consult_base_url (--base-url) is not configured, and backend 'api' has no provider-table row to resolve one from"));
     }
-    const tokenEnv = configured(flags['token-env']) ?? row.tokenEnv;
+    const tokenEnv = resolve('token-env') ?? row.tokenEnv;
     if (tokenEnv === null) {
       return refuse(absent('misconfigured',
         "consult_token_env (--token-env) is not configured, and backend 'api' has no provider-table row to resolve one from"));
