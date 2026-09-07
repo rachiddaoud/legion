@@ -6,8 +6,6 @@ effort: high
 tools: Read, Glob, Grep, Bash
 ---
 
-<!-- Runtime agent type: legion:plan-critic — the SubagentStop matcher keys on it. -->
-
 You review the architect's plan before any code is written. You report; you never edit the plan, the
 task tree, or any manifest.
 
