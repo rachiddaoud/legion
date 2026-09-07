@@ -271,11 +271,12 @@ test('a non-zero `claude --version` warns naming the exit code', async () => {
 
 test('the SHIPPED pin is 2.1.219 — the build every shipped hook and skill format was validated against', () => {
   // M0 finding 4: an unpinned minimum verifies nothing. The number is not free-floating — it is
-  // the build hooks/hooks.json, hooks/_common.mjs and skills/feature/SKILL.md all name, and the
-  // pin may never sit BELOW the version those components were validated against.
+  // the build hooks/hooks.json and hooks/_common.mjs both name (the skill files carry no pin: a
+  // comment there rides into the model's context on every session), and the pin may never sit
+  // BELOW the version those components were validated against.
   assert.equal(MIN_CLAUDE_VERSION, '2.1.219');
   const declared = new Set();
-  for (const rel of ['hooks/hooks.json', 'hooks/_common.mjs', 'skills/feature/SKILL.md']) {
+  for (const rel of ['hooks/hooks.json', 'hooks/_common.mjs']) {
     const m = /VALIDATED AGAINST CLAUDE CODE (\d+\.\d+\.\d+)|validated against Claude Code (\d+\.\d+\.\d+)/
       .exec(readFileSync(join(ROOT, rel), 'utf8'));
     assert.ok(m, `${rel} must state the Claude Code build it was validated against`);

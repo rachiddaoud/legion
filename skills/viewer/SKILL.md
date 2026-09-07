@@ -5,17 +5,6 @@ argument-hint: [optional flags, e.g. --port 4700 --org acme]
 allowed-tools: [Bash, Read]
 ---
 
-<!-- Plugin-skill format: skills/<name>/SKILL.md, invoked as /legion:viewer. plugin.json declares
-     no `skills` path — declaring one would unship the sibling skills (see the header of
-     skills/start/SKILL.md). Bash and Read only, deliberately.
-
-     THIS FILE IS A TRIGGER, NOT A PROCEDURE, and it is short on purpose. Resolving the checkout
-     and building the bundle used to live here as prose; both are now kernel commands with tests
-     (src/cli/viewer-build.mjs), because a second copy of a command in a skill is a copy that
-     drifts — this file once pinned `npm install` while the kernel had moved on. What a skill
-     provides that the CLI cannot is the natural-language trigger in the description above; that
-     is the whole job. Anything mechanical that grows back into this file belongs in the CLI. -->
-
 # /legion:viewer
 
 The user wants the observation UI.

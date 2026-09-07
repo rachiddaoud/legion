@@ -111,8 +111,8 @@ recording op refuses until `tasks.json` exists. Do not re-interview or pre-class
 prevents it. What holds: the **server** is the guarantee (protected branches and the agent
 identity's permissions), and **`legion finalize` remains the only remote-write path legion itself
 takes** — it verifies the evidence chain and opens the merge request (GitLab, `glab`) or pull
-request (GitHub, `gh`) against the pinned base. The local guards were removed 2026-08-07, so the
-server refusal `legion doctor` verifies is the only barrier and the discipline is yours.
+request (GitHub, `gh`) against the pinned base. There is no local guard: the server refusal
+`legion doctor` verifies is the only barrier and the discipline is yours.
 
 **Resumes are unaffected.** Later sessions resume from the launch command the one-shot printed —
 `cd <worktree> && claude --add-dir <dossier> "/legion:feature resume <id>"` — where the
