@@ -694,9 +694,9 @@ test('the intake stage reads the code BEFORE the recap, at the depth the profile
   const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
   const s = stageSection(body, 'intake');
   const iClassify = anchor(s, 'escalate-profile', 'the profile classification');
-  const iRead = anchor(s, /READ THE TARGET REPOSITORY/, 'the repository read');
+  const iRead = anchor(s, /Read the target repository/, 'the repository read');
   const iBrief = anchor(s, 'artifact-record repo-brief', 'the repo-brief authoring step');
-  const iRecap = anchor(s, 'INTAKE RECAP', 'the recap gate');
+  const iRecap = anchor(s, 'Intake recap', 'the recap gate');
   const iAgreed = anchor(s, 'decision-record intake', 'the recorded agreement');
   assert.ok(iClassify < iRead, "the read's depth is the profile's, so classification precedes it");
   assert.ok(iRead < iBrief, 'the brief is written from the read, not before it');
@@ -704,8 +704,8 @@ test('the intake stage reads the code BEFORE the recap, at the depth the profile
   assert.ok(iRecap < iAgreed, 'the agreement is recorded after the recap, never before');
   // Both depths, each bound to the profiles it belongs to — a read whose depth is a vibe is the
   // failure this slice exists to close.
-  assert.match(s, /express ⇒ COMPACT/, 'express reads compact');
-  assert.match(s, /standard and full ⇒ COMPLETE/, 'standard and full read complete');
+  assert.match(s, /express ⇒ compact/, 'express reads compact');
+  assert.match(s, /standard and full ⇒ complete/, 'standard and full read complete');
   // The escalation door: a read that changes the classification deepens rather than shipping the
   // shallower profile's read.
   assert.match(s.slice(iRead), /escalate-profile/, 'the read must be able to re-classify');
@@ -751,7 +751,7 @@ test('a cross-repo feature is refused as a house rule, above the stage table', (
 test('express fuses the mini-spec into the intake recap, artifact before decision', () => {
   const { body } = parseFrontmatter(read('skills', 'feature', 'SKILL.md'), 'skills/feature/SKILL.md');
   const intake = stageSection(body, 'intake');
-  const iFused = anchor(intake, /EXPRESS, the spec stage is FUSED/, 'the express fused block');
+  const iFused = anchor(intake, /express, the spec stage is fused/, 'the express fused block');
   const fused = intake.slice(iFused);
   assert.match(fused, /which \*\*replace\*\* them/,
     'the fused forms SUBORDINATE the recap steps — read as additional, the intake ops run twice');
@@ -765,7 +765,7 @@ test('express fuses the mini-spec into the intake recap, artifact before decisio
   assert.ok(iArtifact < iDecision,
     'the artifact is recorded BEFORE the approval — reversed, the chain breaks mid-flow');
   const spec = stageSection(body, 'spec');
-  assert.match(spec, /EXPRESS profile this stage is normally already satisfied/,
+  assert.match(spec, /express profile this stage is normally already satisfied/,
     'the spec stage names the express traversal — else express features get a second spec pass');
   assert.match(spec, /at the mini-spec format defined at intake/,
     'the repair path points at the ONE canonical format definition, not a drifting copy');
@@ -1023,14 +1023,14 @@ test('the build stage drives every task, review and milestone close IN SESSION, 
   assert.match(s, /bounces \*\*UP to the architect\*\*/,
     'a thin task goes up to the architect — there is no per-task planner anywhere in this stage');
   // The milestone close, in its order: consult FIRST and in Bash, then the lenses, then the records.
-  const iConsult = at('`legion consult` FIRST, directly in Bash', 'the consult call');
+  const iConsult = at('`legion consult` first, directly in Bash', 'the consult call');
   assert.match(s.slice(iConsult), /review-consult\.md/, 'its output is appended to the dossier file');
   const iLenses = at('legion:code-reviewer', 'the milestone-mode code review');
   assert.ok(iConsult < iLenses, 'the consult runs before the lenses that adjudicate its findings');
   assert.match(s, /legion state review-record --role <role> --verdict <pass\|fail> --subject milestone:<id>/,
     'every close verdict is recorded at the milestone subject');
   assert.match(s, /\*\*pass and fail alike\*\*/, 'a fail is recorded exactly like a pass');
-  const iFix = at('**ONE fix round**', 'the fix round');
+  const iFix = at('**One fix round**', 'the fix round');
   assert.match(s.slice(iFix), /SendMessage/, 'the re-review is warm — the same agent, continued');
   // The squash is only safe in one position, and only because it preserves the tree the task
   // receipts key to: both halves of that are prose here, so both are pinned here.
@@ -1099,7 +1099,7 @@ test('lessons.md is wired: intake and the architect read it, the session writes 
   const intake = stageSection(body, 'intake');
   const iLessons = intake.indexOf('lessons.md');
   assert.ok(iLessons >= 0, 'intake reads the project lessons file');
-  assert.ok(iLessons < intake.indexOf('INTAKE RECAP'),
+  assert.ok(iLessons < intake.indexOf('Intake recap'),
     'and reads it BEFORE the recap — a contradicted lesson surfaces exactly like contradicted code');
   assert.match(stageSection(body, 'plan'), /lessons\.md/,
     'the architect dispatch names the lessons path — an input the dispatch omits is an input the agent never gets');
@@ -1239,7 +1239,7 @@ test('the spec is the human-readable reformulation, and the architect and critic
 
   // --- the plan stage: concerns go to the human, before any kernel op; overturns adopted or contested ---
   const plan = stageSection(body, 'plan');
-  const iConcerns = at(plan, 'CONCERNS GO TO THE HUMAN', 'plan stage: the concerns rule');
+  const iConcerns = at(plan, 'Concerns go to the human', 'plan stage: the concerns rule');
   const iImport = at(plan, 'plan check --feature <name> --import', 'plan stage: the import');
   const iCritic = at(plan, 'legion:plan-critic', 'plan stage: the critic dispatch');
   assert.ok(iConcerns < iImport && iImport < iCritic, 'concerns are routed before the import and before the critic');
@@ -1251,8 +1251,8 @@ test('the spec is the human-readable reformulation, and the architect and critic
   assert.match(concerns, /overruled/, 'outcome: the spec stands, recorded as a D<n> with the operator’s words');
   assert.match(concerns, /arbitrat/, 'outcome: a contested overturn is arbitrated by the human');
   assert.match(concerns, /spec route/, 'an upheld spec concern takes the amendment spec route');
-  const iLoop = at(plan, 'CRITIC LOOP, CAPPED', 'plan stage: the critic loop');
-  const iApproval = at(plan, 'PLAN APPROVAL', 'plan stage: the approval gate');
+  const iLoop = at(plan, 'Critic loop, capped', 'plan stage: the critic loop');
+  const iApproval = at(plan, 'Plan approval', 'plan stage: the approval gate');
   const loop = plan.slice(iLoop, iApproval);
   assert.match(loop, /overturns: "D<n>"/, 'the loop knows the overturn field');
   assert.match(loop, /adopts or contests, never\s+ignores/, 'an overturn has exactly two exits');
